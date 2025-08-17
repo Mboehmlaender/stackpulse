@@ -1,0 +1,33 @@
+import express from 'express'; 
+import axios from 'axios'; 
+import dotenv from 'dotenv'; 
+
+dotenv.config(); 
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+const PORTAINER_URL = process.env.PORTAINER_URL;
+const PORTAINER_API_KEY = process.env.PORTAINER_API_KEY;
+console.log("PORTAINER_API_KEY:", PORTAINER_API_KEY);
+
+// Root-Endpoint
+app.get('/', (req, res) => {
+  res.send('StackPulse Backend läuft. Nutze /stacks für die Daten.');
+});
+
+app.get('/api/stacks', async (req, res) => {
+  try {
+        const url = `${PORTAINER_URL}/api/stacks`;
+        console.log("Request URL:", url);
+        const response = await axios.get(url,{headers: { 'X-API-Key': PORTAINER_API_KEY}
+    });
+    res.json(response.data);
+  } catch (err) {
+    console.error('Fehler:', err.message); if (err.response) { console.error('Status:', err.response.status); console.error('Data:', err.response.data); res.status(err.response.status).json(err.response.data);
+    } else {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+app.listen(PORT, '0.0.0.0', () => { console.log(`Backend läuft auf http://0.0.0.0:${PORT}`);
+});

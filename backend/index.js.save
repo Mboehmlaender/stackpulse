@@ -1,0 +1,23 @@
+import express from 'express'; 
+import axios from 'axios'; 
+import dotenv from 'dotenv'; 
+
+dotenv.config(); 
+
+const app = express(); 
+const PORT = process.env.PORT || 4000; // <- Port geändert 
+const PORTAINER_URL = process.env.PORTAINER_URL; 
+const PORTAINER_TOKEN = process.env.PORTAINER_TOKEN; 
+
+app.get('/stacks', async (req, res) => {
+  try { const response = await axios.get(`${PORTAINER_URL}/stacks`, { headers: { 
+      'Authorization': `Bearer ${PORTAINER_TOKEN}` }
+    });
+    res.json(response.data);
+  } catch (err) {
+    console.error(err); res.status(500).json({ error: 'Fehler beim Abrufen der Stacks' });
+  }
+});
+app.listen(PORT, '0.0.0.0', () => { console.log(`Backend läuft auf 
+  http://0.0.0.0:${PORT}`);
+});
