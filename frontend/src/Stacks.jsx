@@ -1,0 +1,45 @@
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+
+export default function Stacks() {
+  const [stacks, setStacks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const fetchStacks = async () => {
+      try {
+        const res = await axios.get("/api/stacks"); // Vite-Proxy auf Backend
+        setStacks(res.data);
+      } catch (err) {
+        console.error("❌ Fehler beim Abrufen der Stacks:", err);
+        setError("Fehler beim Laden der Stacks");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchStacks();
+  }, []);
+
+  if (loading) return <p className="text-gray-600">Lade Stacks...</p>;
+  if (error) return <p className="text-red-500">{error}</p>;
+
+  return (
+    <ul className="space-y-4">
+      {stacks.map((stack) => (
+        <li
+          key={stack.Id}
+          className="p-4 bg-white rounded-xl shadow hover:shadow-md transition flex justify-between items-center"
+        >
+          <div>
+            <p className="text-lg font-semibold text-gray-800">{stack.Name}</p>
+            <p className="text-sm text-gray-500">ID: {stack.Id}</p>
+          </div>
+          <div className="text-xl">{stack.updateStatus}</div>
+        </li>
+      ))}
+      {stacks.length === 0 && <p className="text-gray-500">Keine Stacks gefunden.</p>}
+    </ul>
+  );
+}
