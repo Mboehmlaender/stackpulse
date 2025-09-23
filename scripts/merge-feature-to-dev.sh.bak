@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skript: Feature in Dev mergen mit Auswahl der Feature-Branches + Versions-Tag (Pflicht)
+# Skript: Feature in Dev mergen mit Auswahl der Feature-Branches
 
 DEV_BRANCH="dev"
 
@@ -8,9 +8,10 @@ echo "Verfügbare Feature-Branches:"
 FEATURE_BRANCHES=$(git branch -r | grep 'origin/feature/' | sed 's|origin/||')
 PS3="Bitte wähle einen Feature-Branch zum Mergen: "
 
+# in ein Array konvertieren
 BRANCH_ARRAY=($FEATURE_BRANCHES)
 
-# Auswahlmenü
+# Auswahlmenü anzeigen
 select CHOSEN_BRANCH in "${BRANCH_ARRAY[@]}"; do
   if [[ -n "$CHOSEN_BRANCH" ]]; then
     FEATURE_BRANCH=$CHOSEN_BRANCH
@@ -22,16 +23,6 @@ done
 
 echo "Ausgewählter Feature-Branch: $FEATURE_BRANCH"
 
-# Versionsnummer verpflichtend abfragen
-while true; do
-  read -p "Bitte Versionsnummer für Feature-Branch Tag eingeben (z.B. v0.2.0-featureX): " VERSION_TAG
-  if [[ -n "$VERSION_TAG" ]]; then
-    break
-  else
-    echo "Versionsnummer darf nicht leer sein. Bitte eingeben."
-  fi
-done
-
 # Dev aktuell holen
 git checkout $DEV_BRANCH
 git pull origin $DEV_BRANCH
@@ -40,16 +31,11 @@ git pull origin $DEV_BRANCH
 git checkout $FEATURE_BRANCH
 git pull origin $FEATURE_BRANCH
 
-# Tag auf Feature-Branch setzen
-git tag -a "$VERSION_TAG" -m "Feature $FEATURE_BRANCH Version $VERSION_TAG"
-git push origin "$VERSION_TAG"
-echo "Tag $VERSION_TAG für Feature $FEATURE_BRANCH gesetzt und gepusht."
-
 # Merge Feature in Dev
 git checkout $DEV_BRANCH
 git merge --no-ff $FEATURE_BRANCH -m "Merge $FEATURE_BRANCH into $DEV_BRANCH"
 
-# Dev pushen
+# Push Dev auf Remote
 git push origin $DEV_BRANCH
 
 echo "Feature $FEATURE_BRANCH wurde erfolgreich in $DEV_BRANCH gemerged."
