@@ -14,8 +14,9 @@ Ziel:
 
 - [x] Projektstruktur mit Frontend & Backend  
 - [x] Lokales Startskript (`scripts/start-dev.sh`)  
-- [ ] Frontend zeigt Stacks an (über Backend)  
-- [ ] API-Verbindung zu Portainer  
+- [x] Frontend zeigt Stacks an (über Backend)  
+- [x] API-Verbindung zu Portainer
+- [x] Stack Redeploy 
 - [ ] Docker-Image bauen & per Compose deployen  
 
 ---
