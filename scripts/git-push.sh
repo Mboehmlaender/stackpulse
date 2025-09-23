@@ -21,23 +21,28 @@ git add .
 echo "Commit wird erstellt..."
 git commit -m "$COMMIT_MSG" || echo "Nichts zu committen"
 
-# Versionsnummer verpflichtend abfragen
-while true; do
-  read -p "Bitte Versionsnummer für Tag eingeben (z.B. v0.2.0 oder v0.2.0-featureX): " VERSION_TAG
-  if [[ -n "$VERSION_TAG" ]]; then
-    break
-  else
-    echo "Versionsnummer darf nicht leer sein. Bitte eingeben."
-  fi
-done
+# Prüfen, ob Branch master ist
+if [[ "$BRANCH" == "master" ]]; then
+    # Versionsnummer verpflichtend abfragen
+    while true; do
+        read -p "Bitte Versionsnummer für Master-Release Tag eingeben (z.B. v0.2.0): " VERSION_TAG
+        if [[ -n "$VERSION_TAG" ]]; then
+            break
+        else
+            echo "Versionsnummer darf nicht leer sein. Bitte eingeben."
+        fi
+    done
+fi
 
 # Push Branch
 echo "Push nach origin/$BRANCH..."
 git push origin "$BRANCH"
 
-# Tag setzen und pushen
-git tag -a "$VERSION_TAG" -m "Tag für $BRANCH: $VERSION_TAG"
-git push origin "$VERSION_TAG"
-echo "Tag $VERSION_TAG gesetzt und gepusht."
+# Tag setzen und pushen, nur bei master
+if [[ "$BRANCH" == "master" ]]; then
+    git tag -a "$VERSION_TAG" -m "Release $VERSION_TAG"
+    git push origin "$VERSION_TAG"
+    echo "Tag $VERSION_TAG gesetzt und gepusht."
+fi
 
 echo "Push abgeschlossen."
