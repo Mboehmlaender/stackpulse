@@ -27,6 +27,9 @@ app.get('*', (req, res, next) => {
 // Backend-Port fix
 const PORT = 4001;
 
+// Endpoint-ID aus der env
+const ENDPOINT_ID = Number(process.env.PORTAINER_ENDPOINT_ID);
+
 // HTTPS Agent für Self-Signed-Zertifikate
 const agent = new https.Agent({ rejectUnauthorized: false });
 
@@ -57,19 +60,24 @@ const broadcastRedeployStatus = (stackId, status) => {
 app.get('/api/stacks', async (req, res) => {
   try {
     const stacksRes = await axiosInstance.get('/api/stacks');
+    
+    // Filter nach Endpoint-ID
+    const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
+
     const stacksWithStatus = await Promise.all(
-      stacksRes.data.map(async (stack) => {
+      filteredStacks.map(async (stack) => {
         try {
           const statusRes = await axiosInstance.get(
             `/api/stacks/${stack.Id}/images_status?refresh=true`
           );
-          let statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
+          const statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
           return { ...stack, updateStatus: statusEmoji, redeploying: redeployingStacks[stack.Id] || false };
         } catch {
           return { ...stack, updateStatus: '❌', redeploying: redeployingStacks[stack.Id] || false };
         }
       })
     );
+
     stacksWithStatus.sort((a, b) => a.Name.localeCompare(b.Name));
     res.json(stacksWithStatus);
   } catch (err) {
@@ -84,6 +92,11 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
     const stack = stackRes.data;
+
+    // Prüfen, ob Stack zum konfigurierten Endpoint gehört
+    if (stack.EndpointId !== ENDPOINT_ID) {
+      throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
+    }
 
     if (stack.Type === 1) {
       await axiosInstance.put(`/api/stacks/${id}/git/redeploy?endpointId=${stack.EndpointId}`);
