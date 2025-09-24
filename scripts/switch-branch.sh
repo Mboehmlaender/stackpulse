@@ -44,9 +44,18 @@ fi
 SELECTED_BRANCH=${BRANCH_MAP[$choice]}
 echo "Wechsle zu Branch: $SELECTED_BRANCH"
 
-# Wechseln, ggf. Branch erstellen, wenn nur Remote existiert
+# Remote-Stand holen
+git fetch origin
+
+# Branch wechseln (lokal erstellen, falls nur remote vorhanden)
 if git show-ref --verify --quiet refs/heads/$SELECTED_BRANCH; then
     git checkout $SELECTED_BRANCH
 else
     git checkout -b $SELECTED_BRANCH origin/$SELECTED_BRANCH
 fi
+
+# Arbeitsverzeichnis exakt auf Remote-Branch zurücksetzen
+git reset --hard origin/$SELECTED_BRANCH
+git clean -fd
+
+echo "Branch '$SELECTED_BRANCH' ist nun aktiv. Arbeitsverzeichnis entspricht exakt dem Remote-Stand."

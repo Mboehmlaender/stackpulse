@@ -8,15 +8,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:3300", // dein Backend
+        target: "http://localhost:4001", // dein Backend
         changeOrigin: true,
       },
     },
-    allowedHosts: [
-      "10.10.10.23",    // dein Dev-Rechner
-      "stackpulse.d-razz.de",     // der Host, den du brauchst
-      "localhost",
-    ],
+    allowedHosts: "all",
   },
 });
 
