@@ -8,6 +8,7 @@ npm-debug.log
 .idea
 frontend/build
 frontend/dist
+backend/.env
 backend/node_modules
 frontend/node_modules
 
