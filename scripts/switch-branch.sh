@@ -1,5 +1,19 @@
 #!/bin/bash
 
+# ===============================
+# Dateien sichern, die nicht gepusht werden
+# ===============================
+UNVERSIONED_FILES=("scripts/docker-release.sh")
+for f in "${UNVERSIONED_FILES[@]}"; do
+    if [[ -f $f ]]; then
+        mkdir -p /tmp/git_safe_backup
+        cp "$f" "/tmp/git_safe_backup/$(basename "$f")"
+    fi
+done
+
+# ===============================
+# Alle Branches sammeln
+# ===============================
 # Alle lokalen Branches holen, führende Sternchen und Leerzeichen entfernen
 LOCAL_BRANCHES=$(git branch | sed 's/* //' | sed 's/^[[:space:]]*//')
 
@@ -58,4 +72,16 @@ fi
 git reset --hard origin/$SELECTED_BRANCH
 git clean -fd
 
+# ===============================
+# Gesicherte unversionierte Dateien zurückkopieren
+# ===============================
+for f in "${UNVERSIONED_FILES[@]}"; do
+    if [[ -f "/tmp/git_safe_backup/$(basename "$f")" ]]; then
+        mkdir -p "$(dirname "$f")"
+        mv "/tmp/git_safe_backup/$(basename "$f")" "$f"
+    fi
+done
+rm -rf /tmp/git_safe_backup
+
 echo "Branch '$SELECTED_BRANCH' ist nun aktiv. Arbeitsverzeichnis entspricht exakt dem Remote-Stand."
+echo "Unversionierte Dateien wurden wiederhergestellt."
