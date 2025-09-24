@@ -4,82 +4,94 @@ import https from 'https';
 import axios from 'axios';
 import http from 'http';
 import { Server } from 'socket.io';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 
-// Statische Frontend-Dateien ausliefern
-app.use(express.static(path.join(__dirname, 'public')));
-
-// SPA-Fallback für React-Router
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) return next();
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Backend-Port fix
 const PORT = 4001;
 
 // HTTPS Agent für Self-Signed-Zertifikate
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-// Axios-Instance für Portainer
+// Axios-Instance für alle Portainer-Requests
 const axiosInstance = axios.create({
   httpsAgent: agent,
   headers: { "X-API-Key": process.env.PORTAINER_API_KEY },
   baseURL: process.env.PORTAINER_URL,
 });
 
-// In-Memory Redeploy-Status
-const redeployingStacks = {};
+// In-Memory Store für Redeploy-Status
+const redeployingStacks = {}; // { [stackId]: true/false }
 
 // HTTP Server + Socket.IO
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" } // ggf. auf Frontend-URL anpassen
+});
 
+// Socket.IO Verbindung
 io.on("connection", (socket) => {
   console.log("Client verbunden:", socket.id);
 });
 
+// Hilfsfunktion zum Broadcasten des Redeploy-Status
 const broadcastRedeployStatus = (stackId, status) => {
   redeployingStacks[stackId] = status;
   io.emit("redeployStatus", { stackId, status });
+  console.log(`Stack ${stackId} redeploying: ${status}`);
 };
 
-// --- API Endpoints ---
+// Root-Endpoint
+app.get('/', (req, res) => {
+  console.log("Root Endpoint aufgerufen");
+  res.send('StackPulse Backend läuft. Nutze /api/stacks für die Daten.');
+});
+
+// Alle Stacks abrufen
 app.get('/api/stacks', async (req, res) => {
   try {
     const stacksRes = await axiosInstance.get('/api/stacks');
+
     const stacksWithStatus = await Promise.all(
       stacksRes.data.map(async (stack) => {
         try {
-          const statusRes = await axiosInstance.get(
-            `/api/stacks/${stack.Id}/images_status?refresh=true`
-          );
-          let statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
-          return { ...stack, updateStatus: statusEmoji, redeploying: redeployingStacks[stack.Id] || false };
-        } catch {
-          return { ...stack, updateStatus: '❌', redeploying: redeployingStacks[stack.Id] || false };
+          const statusRes = await axiosInstance.get(`/api/stacks/${stack.Id}/images_status?refresh=true`);
+          let statusEmoji = '✅'; // up-to-date
+          if (statusRes.data.Status === 'outdated') statusEmoji = '⚠️'; // outdated
+
+          return {
+            ...stack,
+            updateStatus: statusEmoji,
+            redeploying: redeployingStacks[stack.Id] || false,
+          };
+        } catch (err) {
+          console.error(`Fehler beim Abrufen Remote Digest für Stack ${stack.Id}:`, err.message);
+          return {
+            ...stack,
+            updateStatus: '❌', // Fehler
+            redeploying: redeployingStacks[stack.Id] || false,
+          };
         }
       })
     );
+
     stacksWithStatus.sort((a, b) => a.Name.localeCompare(b.Name));
     res.json(stacksWithStatus);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Fehler beim Abrufen der Stacks:', err.message);
+    if (err.response) res.status(err.response.status).json(err.response.data);
+    else res.status(500).json({ error: err.message });
   }
 });
 
+// Redeploy eines Stacks
 app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
+
   try {
+    // Status auf "redeploying" setzen & an alle Clients senden
     broadcastRedeployStatus(id, true);
 
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
@@ -90,6 +102,7 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     } else if (stack.Type === 2) {
       const fileRes = await axiosInstance.get(`/api/stacks/${id}/file`);
       const stackFileContent = fileRes.data?.StackFileContent;
+
       if (!stackFileContent) throw new Error("Stack file konnte nicht geladen werden");
 
       const services = fileRes.data?.Config?.services || {};
@@ -100,20 +113,28 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
           await axiosInstance.post(
             `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
           );
-        } catch {}
+        } catch (pullErr) {
+          console.error(`Fehler beim Pull von ${imageName}:`, pullErr.message);
+        }
       }
 
-      await axiosInstance.put(`/api/stacks/${id}`,
+      await axiosInstance.put(
+        `/api/stacks/${id}`,
         { StackFileContent: stackFileContent, Prune: false, PullImage: true },
         { params: { endpointId: stack.EndpointId } }
       );
     }
 
+    // Redeploy beendet, Status an alle Clients senden
     broadcastRedeployStatus(id, false);
+
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
+    // Fehler → Status zurücksetzen & an Clients senden
     broadcastRedeployStatus(id, false);
-    res.status(500).json({ error: err.message });
+    console.error(`Fehler beim Redeploy von Stack ${id}:`, err.message);
+    if (err.response) res.status(err.response.status).json(err.response.data);
+    else res.status(500).json({ error: err.message });
   }
 });
 
