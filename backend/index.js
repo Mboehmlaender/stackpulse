@@ -15,35 +15,34 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// Statische Dateien ausliefern (Frontend Build)
+// Statische Frontend-Dateien ausliefern
 app.use(express.static(path.join(__dirname, 'public')));
 
-// SPA Fallback für React-Router
+// SPA-Fallback für React-Router
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) return next(); // API Requests weiterleiten
+  if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-const PORT = process.env.PORT || 5173;
+// Backend-Port fix
+const PORT = 4001;
 
 // HTTPS Agent für Self-Signed-Zertifikate
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-// Axios-Instance für Portainer-Requests
+// Axios-Instance für Portainer
 const axiosInstance = axios.create({
   httpsAgent: agent,
   headers: { "X-API-Key": process.env.PORTAINER_API_KEY },
   baseURL: process.env.PORTAINER_URL,
 });
 
-// In-Memory Store für Redeploy-Status
-const redeployingStacks = {}; // { [stackId]: true/false }
+// In-Memory Redeploy-Status
+const redeployingStacks = {};
 
 // HTTP Server + Socket.IO
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
 io.on("connection", (socket) => {
   console.log("Client verbunden:", socket.id);
@@ -52,40 +51,34 @@ io.on("connection", (socket) => {
 const broadcastRedeployStatus = (stackId, status) => {
   redeployingStacks[stackId] = status;
   io.emit("redeployStatus", { stackId, status });
-  console.log(`Stack ${stackId} redeploying: ${status}`);
 };
 
 // --- API Endpoints ---
-
 app.get('/api/stacks', async (req, res) => {
   try {
     const stacksRes = await axiosInstance.get('/api/stacks');
-
     const stacksWithStatus = await Promise.all(
       stacksRes.data.map(async (stack) => {
         try {
-          const statusRes = await axiosInstance.get(`/api/stacks/${stack.Id}/images_status?refresh=true`);
+          const statusRes = await axiosInstance.get(
+            `/api/stacks/${stack.Id}/images_status?refresh=true`
+          );
           let statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
           return { ...stack, updateStatus: statusEmoji, redeploying: redeployingStacks[stack.Id] || false };
-        } catch (err) {
-          console.error(`Fehler Remote Digest Stack ${stack.Id}:`, err.message);
+        } catch {
           return { ...stack, updateStatus: '❌', redeploying: redeployingStacks[stack.Id] || false };
         }
       })
     );
-
     stacksWithStatus.sort((a, b) => a.Name.localeCompare(b.Name));
     res.json(stacksWithStatus);
   } catch (err) {
-    console.error('Fehler beim Abrufen der Stacks:', err.message);
-    if (err.response) res.status(err.response.status).json(err.response.data);
-    else res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
-
   try {
     broadcastRedeployStatus(id, true);
 
@@ -107,13 +100,10 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
           await axiosInstance.post(
             `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
           );
-        } catch (pullErr) {
-          console.error(`Fehler Pull ${imageName}:`, pullErr.message);
-        }
+        } catch {}
       }
 
-      await axiosInstance.put(
-        `/api/stacks/${id}`,
+      await axiosInstance.put(`/api/stacks/${id}`,
         { StackFileContent: stackFileContent, Prune: false, PullImage: true },
         { params: { endpointId: stack.EndpointId } }
       );
@@ -123,9 +113,7 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
     broadcastRedeployStatus(id, false);
-    console.error(`Fehler Redeploy Stack ${id}:`, err.message);
-    if (err.response) res.status(err.response.status).json(err.response.data);
-    else res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
