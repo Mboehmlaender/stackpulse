@@ -25,7 +25,7 @@ cd ..
 echo ""
 echo "✅ StackPulse läuft lokal:"
 echo "Frontend (Vite Dev): http://localhost:5173"
-echo "Backend API:      http://localhost:4000"
+echo "Backend API:      http://localhost:4001"
 echo "Beenden mit STRG+C"
 
 # Prozesse überwachen
