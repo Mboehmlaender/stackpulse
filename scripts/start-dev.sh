@@ -18,7 +18,7 @@ FRONT_PID=$!
 
 # Optional: Kopiere Build-Dateien für Backend /public (nur für statisches Testen)
 npm run build
-cp -r dist ../backend/public
+#cp -r dist ../backend/public
 
 cd ..
 
