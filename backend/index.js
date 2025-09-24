@@ -64,8 +64,17 @@ app.get('/api/stacks', async (req, res) => {
     // Filter nach Endpoint-ID
     const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
 
+    // Deduplication nach Name: nur einmal pro Name
+    const uniqueStacksMap = {};
+    filteredStacks.forEach(stack => {
+      if (!uniqueStacksMap[stack.Name]) {
+        uniqueStacksMap[stack.Name] = stack;
+      }
+    });
+    const uniqueStacks = Object.values(uniqueStacksMap);
+
     const stacksWithStatus = await Promise.all(
-      filteredStacks.map(async (stack) => {
+      uniqueStacks.map(async (stack) => {
         try {
           const statusRes = await axiosInstance.get(
             `/api/stacks/${stack.Id}/images_status?refresh=true`
