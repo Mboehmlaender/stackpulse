@@ -5,9 +5,9 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "4000:4000"
+      - "4001:4001"
     environment:
-      PORT: 4000
-      PORTAINER_URL: "https://your-portainer.example.com"
-      PORTAINER_API_KEY: "your_api_key_here"
+      PORTAINER_URL: "Your_Portainer_Server_Address"
+      PORTAINER_API_KEY: "Your_Portainer_API_Key"
+      PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
     restart: unless-stopped
