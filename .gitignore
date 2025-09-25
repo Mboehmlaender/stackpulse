@@ -1,3 +1,13 @@
-node_modules/
-dist/
+node_modules
+**/node_modules
+npm-debug.log
+.DS_Store
+.git
+.vscode
+.idea
+frontend/build
+frontend/dist
+backend/node_modules
 backend/.env
+frontend/node_modules
+docker-compose.dev.yml
