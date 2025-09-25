@@ -17,7 +17,7 @@ Ziel:
 - [x] Frontend zeigt Stacks an (über Backend)  
 - [x] API-Verbindung zu Portainer
 - [x] Stack Redeploy 
-- [ ] Docker-Image bauen & per Compose deployen  
+- [x] Docker Image im ghcr zur Verfügung stellen
 
 ---
 
@@ -28,8 +28,11 @@ stackpulse/
 ├── backend/          # Node.js Backend mit Express
 ├── frontend/         # React Frontend mit Tailwind
 ├── scripts/          # Lokale Hilfsskripte (nicht Teil des Images)
-│   ├── start-dev.sh
-│   └── create-structure.sh
+│   ├── git-push.sh              #nicht relevant
+│   └── merge-dev-to-master.sh   #nicht relevant
+│   └── merge-feature-to-dev.sh  #nicht relevant
+│   └── start-dev.sh             #Skript für den lokalen Start
+│   └── switch-branch.sh         #nicht relevant
 ├── Dockerfile        # Multi-Stage Build für Frontend + Backend
 ├── docker-compose.yml
 └── README.md
@@ -37,7 +40,7 @@ stackpulse/
 
 ---
 
-## 🔧 Lokale Entwicklung
+## 🔧 Lokaler Start
 
 ### 1. Dev-Server starten (Frontend + Backend)
 ```bash
@@ -45,48 +48,26 @@ stackpulse/
 ```
 
 ➡️ Danach:  
-- Frontend → http://localhost:5173  
-- Backend → http://localhost:3000  
+- Frontend → http://Deine-Server-IP:5173  
 
 ---
 
 ## 🐳 Docker-Setup
 
-### Image bauen
-```bash
-docker build -t stackpulse:dev .
-```
-
 ### Mit Compose starten
 ```bash
-docker-compose up -d
+version: "2.4"
+services:
+    stackpulse:
+        container_name: stackpulse
+        image: ghcr.io/mboehmlaender/stackpulse
+        ports:
+          - '4001:4001'
+        environment:
+          - PORTAINER_URL=Deine_Portainer_Adresse/
+          - PORTAINER_API_KEY=Dein_Portainer_API_Key
+          - PORTAINER_ENDPOINT_ID=Deine_Portainer_Endpoint_ID
 ```
-
----
-
-## 🌳 Git-Workflow
-
-- `master` → Release-Branch  
-- `dev` → Entwicklung & Integration  
-- `feature/*` → einzelne Features  
-
-**Ablauf:**  
-1. Feature-Branch anlegen (`git checkout -b feature/...`)  
-2. Entwicklung & lokaler Test  
-3. Merge → `dev` (Review/Test)  
-4. Merge → `master` für Release (z. B. `v0.1`)  
-
----
-
-## 📦 Release
-
-1. Alles auf `master` mergen  
-2. Tag setzen:  
-   ```bash
-   git tag -a v0.1 -m "First release"
-   git push origin v0.1
-   ```
-3. Docker-Image bauen & pushen (optional GitHub Container Registry / Docker Hub)
 
 ---
 
