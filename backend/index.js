@@ -48,7 +48,7 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 io.on("connection", (socket) => {
-  console.log("🔌 Client verbunden:", socket.id);
+  console.log("Client verbunden:", socket.id);
 });
 
 const broadcastRedeployStatus = (stackId, status) => {
@@ -59,13 +59,12 @@ const broadcastRedeployStatus = (stackId, status) => {
 // --- API Endpoints ---
 app.get('/api/stacks', async (req, res) => {
   try {
-    console.log("📦 Stacks werden von Portainer abgefragt …");
     const stacksRes = await axiosInstance.get('/api/stacks');
-
+    
     // Filter nach Endpoint-ID
     const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
 
-    // Deduplication nach Name
+    // Deduplication nach Name: nur einmal pro Name
     const uniqueStacksMap = {};
     filteredStacks.forEach(stack => {
       if (!uniqueStacksMap[stack.Name]) {
@@ -91,17 +90,13 @@ app.get('/api/stacks', async (req, res) => {
     stacksWithStatus.sort((a, b) => a.Name.localeCompare(b.Name));
     res.json(stacksWithStatus);
   } catch (err) {
-    console.error("❌ Fehler beim Laden der Stacks:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
-  const startTime = Date.now();
-
   try {
-    console.log(`🟢 Redeploy gestartet für Stack ${id} …`);
     broadcastRedeployStatus(id, true);
 
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
@@ -113,11 +108,8 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     }
 
     if (stack.Type === 1) {
-      console.log(`📂 Git-Stack erkannt (${stack.Name}) → Git-Redeploy`);
       await axiosInstance.put(`/api/stacks/${id}/git/redeploy?endpointId=${stack.EndpointId}`);
     } else if (stack.Type === 2) {
-      console.log(`🐳 Docker-Compose-Stack erkannt (${stack.Name}) → Images pullen & neu deployen`);
-
       const fileRes = await axiosInstance.get(`/api/stacks/${id}/file`);
       const stackFileContent = fileRes.data?.StackFileContent;
       if (!stackFileContent) throw new Error("Stack file konnte nicht geladen werden");
@@ -127,29 +119,21 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
         const imageName = services[serviceName].image;
         if (!imageName) continue;
         try {
-          console.log(`⬇️  Pulling image: ${imageName}`);
           await axiosInstance.post(
             `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
           );
-        } catch (err) {
-          console.warn(`⚠️  Konnte Image ${imageName} nicht pullen:`, err.message);
-        }
+        } catch {}
       }
 
-      await axiosInstance.put(
-        `/api/stacks/${id}`,
+      await axiosInstance.put(`/api/stacks/${id}`,
         { StackFileContent: stackFileContent, Prune: false, PullImage: true },
         { params: { endpointId: stack.EndpointId } }
       );
     }
 
-    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`✅ Redeploy erfolgreich abgeschlossen für Stack ${id} (${stack.Name}) in ${duration}s`);
-
     broadcastRedeployStatus(id, false);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
-    console.error(`❌ Redeploy-Fehler für Stack ${id}:`, err.message);
     broadcastRedeployStatus(id, false);
     res.status(500).json({ error: err.message });
   }
@@ -157,5 +141,5 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 
 // Server starten
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Backend läuft auf Port ${PORT}`);
+  console.log(`Backend läuft auf Port ${PORT}`);
 });
