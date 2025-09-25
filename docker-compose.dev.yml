@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4001:4001"    # Host 5173 → Container 5173
+    environment:
+      PORTAINER_URL: "https://10.10.10.21:9443/"
+      PORTAINER_API_KEY: "ptr_ce3Wufxf+EKpqxc5ebcQjBkUMUoJmMpY3wGIvkgdxV0="
+      ENDPOINT_ID: "1"
+    restart: unless-stopped

@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      PORTAINER_URL: "https://your-portainer.example.com"
+      PORTAINER_API_KEY: "your_api_key_here"
+    restart: unless-stopped
