@@ -6,37 +6,40 @@ export default function Stacks() {
   const [stacks, setStacks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [redeploying, setRedeploying] = useState({});
 
-  // WebSocket initialisieren
   useEffect(() => {
-    const socket = io("/");
-    console.log("Socket connected");
+    const socket = io("/", { transports: ["websocket"] });
+    console.log("🔌 Socket connected");
 
     socket.on("redeployStatus", async ({ stackId, status }) => {
-      setRedeploying(prev => ({ ...prev, [stackId]: status }));
+      console.log(`🔄 Stack ${stackId} Redeploy Status: ${status ? "running" : "finished"}`);
 
-      // Wenn Redeploy beendet, Stack-Status neu laden
       if (!status) {
+        // Status nach Redeploy neu vom Server holen
         try {
           const res = await axios.get("/api/stacks");
-          const sortedStacks = res.data.sort((a, b) => a.Name.localeCompare(b.Name));
-          setStacks(sortedStacks);
+          setStacks(res.data.sort((a, b) => a.Name.localeCompare(b.Name)));
         } catch (err) {
-          console.error("Fehler beim Aktualisieren des Status nach Redeploy:", err);
+          console.error("Fehler beim Aktualisieren nach Redeploy:", err);
         }
+      } else {
+        // UI direkt auf redeploying setzen
+        setStacks(prev =>
+          prev.map(stack =>
+            stack.Id === stackId ? { ...stack, redeploying: true } : stack
+          )
+        );
       }
     });
 
     return () => socket.disconnect();
   }, []);
 
-  // Stacks initial laden
   const fetchStacks = async () => {
+    setLoading(true);
     try {
       const res = await axios.get("/api/stacks");
-      const sortedStacks = res.data.sort((a, b) => a.Name.localeCompare(b.Name));
-      setStacks(sortedStacks);
+      setStacks(res.data.map(stack => ({ ...stack, redeploying: stack.redeploying || false })));
     } catch (err) {
       console.error("❌ Fehler beim Abrufen der Stacks:", err);
       setError("Fehler beim Laden der Stacks");
@@ -49,15 +52,19 @@ export default function Stacks() {
     fetchStacks();
   }, []);
 
-  // Redeploy eines Stacks
   const handleRedeploy = async (stackId) => {
-    setRedeploying(prev => ({ ...prev, [stackId]: true }));
+    setStacks(prev =>
+      prev.map(stack => stack.Id === stackId ? { ...stack, redeploying: true } : stack)
+    );
 
     try {
       await axios.put(`/api/stacks/${stackId}/redeploy`);
+      // Socket.IO Event aktualisiert Status automatisch
     } catch (err) {
       console.error("❌ Fehler beim Redeploy:", err);
-      setRedeploying(prev => ({ ...prev, [stackId]: false }));
+      setStacks(prev =>
+        prev.map(stack => stack.Id === stackId ? { ...stack, redeploying: false } : stack)
+      );
     }
   };
 
@@ -67,8 +74,7 @@ export default function Stacks() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
       {stacks.map(stack => {
-        const isRedeploying = redeploying[stack.Id] || false;
-        const isUpToDate = stack.updateStatus === "✅";
+        const isRedeploying = stack.redeploying;
 
         return (
           <div
@@ -77,29 +83,26 @@ export default function Stacks() {
               ${isRedeploying ? "bg-gray-700 cursor-not-allowed" : "bg-gray-800 hover:bg-gray-700"}`}
           >
             <div className="flex items-center space-x-4">
-              {/* Status Indicator */}
               <div className={`w-12 h-12 flex items-center justify-center rounded-full
                 ${stack.updateStatus === "✅" ? "bg-green-500" :
                   stack.updateStatus === "⚠️" ? "bg-yellow-500" :
                   "bg-red-500"}`}
-              >
-              </div>
+              />
               <div>
                 <p className="text-lg font-semibold text-white">{stack.Name}</p>
                 <p className="text-sm text-gray-400">ID: {stack.Id}</p>
               </div>
             </div>
 
-            {!isUpToDate && (
-              <button
-                onClick={() => handleRedeploy(stack.Id)}
-                disabled={isRedeploying}
-                className={`px-5 py-2 rounded-lg font-medium transition
-                  ${isRedeploying ? "bg-orange-500 cursor-not-allowed" : "bg-blue-500 hover:bg-blue-600"}`}
-              >
-                {isRedeploying ? "Redeploying" : "Redeploy"}
-              </button>
-            )}
+            <button
+              onClick={() => handleRedeploy(stack.Id)}
+              disabled={isRedeploying}
+              className={`px-5 py-2 rounded-lg font-medium transition
+                ${isRedeploying ? "bg-orange-500 cursor-not-allowed" :
+                  "bg-blue-500 hover:bg-blue-600"}`}
+            >
+              {isRedeploying ? "Redeploying" : "Redeploy"}
+            </button>
           </div>
         );
       })}
