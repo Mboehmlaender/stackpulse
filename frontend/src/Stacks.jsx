@@ -6,35 +6,30 @@ export default function Stacks() {
   const [stacks, setStacks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // Map: { [stackId]: boolean }
-  const [redeploying, setRedeploying] = useState({});
+  const [redeploying, setRedeploying] = useState({}); // { [stackId]: boolean }
 
   // -------------------------
   // WebSocket: connect + events
   // -------------------------
   useEffect(() => {
-    // wenn Frontend und Backend auf verschiedenen Hosts/Ports laufen:
-    // const socket = io("http://localhost:4001");
-    const socket = io(); // gleiche Origin (Express static) -> passt normalerweise
-    socket.on("connect", () => console.log("Socket connected:", socket.id));
+    const socket = io(); // gleiche Origin
+    socket.on("connect", () => console.log("🔌 Socket connected:", socket.id));
 
     socket.on("redeployStatus", async ({ stackId, status }) => {
-      // sofort den lokalen map-state setzen (optimistisch)
       setRedeploying(prev => ({ ...prev, [stackId]: status }));
 
-      // Wenn der Redeploy zu false geht, holen wir die aktuellen Stacks (aktualisieren UI)
       if (!status) {
         try {
           const res = await axios.get("/api/stacks");
           const sortedStacks = res.data.sort((a, b) => a.Name.localeCompare(b.Name));
           setStacks(sortedStacks);
 
-          // Map aus API-Daten aufbauen (wichtig für F5 / Konsistenz)
+          // Map aus API-Daten aufbauen
           const map = {};
           sortedStacks.forEach(s => { map[s.Id] = !!s.redeploying; });
           setRedeploying(map);
         } catch (err) {
-          console.error("Fehler beim Aktualisieren des Status nach Redeploy:", err);
+          console.error("Fehler beim Aktualisieren der Stacks:", err);
         }
       }
     });
@@ -46,7 +41,7 @@ export default function Stacks() {
   }, []);
 
   // -------------------------
-  // Initiale Stacks laden (auch setzt redeploying map)
+  // Initiale Stacks laden
   // -------------------------
   const fetchStacks = async () => {
     setLoading(true);
@@ -55,7 +50,7 @@ export default function Stacks() {
       const sortedStacks = res.data.sort((a, b) => a.Name.localeCompare(b.Name));
       setStacks(sortedStacks);
 
-      // Wichtig: redeploying-Map aus API-Daten setzen, damit F5 den echten Zustand zeigt
+      // Map aus API-Daten setzen
       const map = {};
       sortedStacks.forEach(s => { map[s.Id] = !!s.redeploying; });
       setRedeploying(map);
@@ -75,15 +70,13 @@ export default function Stacks() {
   // Redeploy Trigger
   // -------------------------
   const handleRedeploy = async (stackId) => {
-    // sofort UI-Feedback
     setRedeploying(prev => ({ ...prev, [stackId]: true }));
 
     try {
       await axios.put(`/api/stacks/${stackId}/redeploy`);
-      // kein sofortiges setRedeploying(false) – Backend sendet das finale Event
+      // Backend sendet Event → UI wird dann automatisch zurückgesetzt
     } catch (err) {
       console.error("❌ Fehler beim Redeploy:", err);
-      // Fehlerfall: wieder auf false setzen damit UI nicht hängen bleibt
       setRedeploying(prev => ({ ...prev, [stackId]: false }));
     }
   };
@@ -102,9 +95,8 @@ export default function Stacks() {
         return (
           <div
             key={stack.Id}
-            // wenn redeploying -> "gedämpfter" Container (sichtbar deaktiviert)
             className={`flex justify-between items-center p-5 rounded-xl shadow-lg transition
-              ${isRedeploying ? "bg-gray-700 opacity-60" : "bg-gray-800 hover:bg-gray-700"}`}
+              ${isRedeploying ? "bg-gray-700 opacity-60 cursor-not-allowed" : "bg-gray-800 hover:bg-gray-700"}`}
             aria-disabled={isRedeploying}
           >
             <div className="flex items-center space-x-4">
@@ -119,7 +111,6 @@ export default function Stacks() {
               </div>
             </div>
 
-            {/* Button ist jetzt immer sichtbar */}
             <button
               onClick={() => handleRedeploy(stack.Id)}
               disabled={isRedeploying}
@@ -127,7 +118,6 @@ export default function Stacks() {
                 ${isRedeploying
                   ? "bg-orange-500 cursor-not-allowed"
                   : "bg-blue-500 hover:bg-blue-600"}`}
-              // Browser-Default Disabled-Opacity überschreiben
               style={isRedeploying ? { opacity: 1 } : {}}
             >
               {isRedeploying ? "Redeploying…" : "Redeploy"}
