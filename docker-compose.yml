@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4001:4001"
+    environment:
+      PORTAINER_URL: "Your_Portainer_Server_Address"
+      PORTAINER_API_KEY: "Your_Portainer_API_Key"
+      PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
+    restart: unless-stopped
