@@ -9,5 +9,5 @@ services:
     environment:
       PORTAINER_URL: "https://10.10.10.21:9443/"
       PORTAINER_API_KEY: "ptr_ce3Wufxf+EKpqxc5ebcQjBkUMUoJmMpY3wGIvkgdxV0="
-      ENDPOINT_ID: "1"
+      PORTAINER_ENDPOINT_ID: "3"
     restart: unless-stopped
