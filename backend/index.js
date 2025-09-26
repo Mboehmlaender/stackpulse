@@ -14,7 +14,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
-
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('*', (req, res, next) => {
@@ -35,8 +34,10 @@ const axiosInstance = axios.create({
 const redeployingStacks = {};
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
+const io = new Server(server, {
+  path: "/socket.io",
+  cors: { origin: "*" }
+});
 io.on("connection", (socket) => {
   console.log(`🔌 [Socket] Client verbunden: ${socket.id}`);
 });
@@ -49,6 +50,7 @@ const broadcastRedeployStatus = (stackId, status) => {
 
 // --- API Endpoints ---
 
+// Stacks abrufen
 app.get('/api/stacks', async (req, res) => {
   console.log("ℹ️ [API] GET /api/stacks: Abruf gestartet");
   try {
@@ -89,6 +91,7 @@ app.get('/api/stacks', async (req, res) => {
   }
 });
 
+// Einzel-Redeploy
 app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
@@ -138,6 +141,51 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
   } catch (err) {
     broadcastRedeployStatus(id, false);
     console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Redeploy ALL
+app.put('/api/stacks/redeploy-all', async (req, res) => {
+  console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
+
+  try {
+    const stacksRes = await axiosInstance.get('/api/stacks');
+    const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
+
+    console.log("📦 Redeploy ALL für folgende Stacks:");
+    filteredStacks.forEach(s => console.log(`   - ${s.Name}`));
+
+    filteredStacks.forEach(async (stack) => {
+      try {
+        broadcastRedeployStatus(stack.Id, true);
+
+        if (stack.Type === 1) {
+          console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id})`);
+          await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
+        } else if (stack.Type === 2) {
+          console.log(`🔄 [Redeploy] Compose Stack "${stack.Name}" (${stack.Id})`);
+          const fileRes = await axiosInstance.get(`/api/stacks/${stack.Id}/file`);
+          const stackFileContent = fileRes.data?.StackFileContent;
+          if (stackFileContent) {
+            await axiosInstance.put(`/api/stacks/${stack.Id}`,
+              { StackFileContent: stackFileContent, Prune: false, PullImage: true },
+              { params: { endpointId: stack.EndpointId } }
+            );
+          }
+        }
+
+        broadcastRedeployStatus(stack.Id, false);
+        console.log(`✅ Redeploy abgeschlossen: ${stack.Name}`);
+      } catch (err) {
+        broadcastRedeployStatus(stack.Id, false);
+        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, err.message);
+      }
+    });
+
+    res.json({ success: true, message: 'Redeploy ALL gestartet' });
+  } catch (err) {
+    console.error(`❌ Fehler beim Redeploy ALL:`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
