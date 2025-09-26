@@ -10,8 +10,9 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo "Aktueller Branch: $CURRENT_BRANCH"
 echo "Was möchtest du tun?"
 echo "1) Neuen Stash anlegen"
-echo "2) Vorhandenen Stash laden"
+echo "2) Vorhandenen Stash laden (apply)"
 echo "3) Vorhandenen Stash löschen"
+echo "4) Stash anwenden und löschen (pop)"
 read -p "Auswahl: " action
 
 case $action in
@@ -97,6 +98,37 @@ case $action in
     SELECTED_STASH=${STASH_MAP[$choice]}
     echo "Lösche Stash: $SELECTED_STASH"
     git stash drop "$SELECTED_STASH"
+    ;;
+
+  4)
+    # ========== Stash anwenden und löschen (pop) ==========
+    echo "Liste aller Stashes für Branch '$CURRENT_BRANCH':"
+    STASHES=$(git stash list | grep "$CURRENT_BRANCH")
+
+    if [[ -z "$STASHES" ]]; then
+      echo "Keine Stashes für diesen Branch vorhanden."
+      exit 0
+    fi
+
+    i=1
+    declare -A STASH_MAP
+    while IFS= read -r line; do
+      STASH_REF=$(echo "$line" | awk -F: '{print $1}')
+      STASH_MSG=$(echo "$line" | cut -d':' -f3- | sed 's/^ //')
+      echo "$i) $STASH_REF -> $STASH_MSG"
+      STASH_MAP[$i]=$STASH_REF
+      ((i++))
+    done <<< "$STASHES"
+
+    read -p "Wähle einen Stash zum Anwenden & Löschen (Nummer): " choice
+    if [[ -z "${STASH_MAP[$choice]}" ]]; then
+      echo "Ungültige Auswahl!"
+      exit 1
+    fi
+
+    SELECTED_STASH=${STASH_MAP[$choice]}
+    echo "Wende Stash an und lösche ihn: $SELECTED_STASH"
+    git stash pop "$SELECTED_STASH"
     ;;
 
   *)
