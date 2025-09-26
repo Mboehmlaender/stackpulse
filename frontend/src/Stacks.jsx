@@ -8,7 +8,10 @@ export default function Stacks() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const socket = io("/", { transports: ["websocket"] });
+const socket = io("/", {
+  path: "/socket.io",
+  transports: ["websocket"]
+});
     console.log("🔌 Socket connected");
 
     socket.on("redeployStatus", async ({ stackId, status }) => {

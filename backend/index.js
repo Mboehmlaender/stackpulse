@@ -34,8 +34,10 @@ const axiosInstance = axios.create({
 const redeployingStacks = {};
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
+const io = new Server(server, {
+  path: "/socket.io",
+  cors: { origin: "*" }
+});
 io.on("connection", (socket) => {
   console.log(`🔌 [Socket] Client verbunden: ${socket.id}`);
 });
