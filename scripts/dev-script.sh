@@ -72,12 +72,12 @@ create_new_feature() {
 
 merge_feature_into_dev() {
   local dev_branch="dev"
-  local feature_branches feature_branch
+  local feature_branch
   local -a branch_array
   local choice index=1
 
   echo "Verfügbare Feature-Branches:"
-  mapfile -t branch_array < <(git branch -r | grep 'origin/feature/' | sed 's|origin/||') || true
+  mapfile -t branch_array < <(git for-each-ref --format='%(refname:lstrip=2)' 'refs/remotes/origin/feature/*') || true
 
   if [[ ${#branch_array[@]} -eq 0 ]]; then
     echo "Keine Feature-Branches gefunden."
@@ -334,7 +334,7 @@ switch_branch() {
   done
 
   local_branches=$(git branch | sed 's/* //' | sed 's/^[[:space:]]*//')
-  remote_branches=$(git branch -r | grep -v 'HEAD' | sed 's|origin/||' | sed 's/^[[:space:]]*//')
+  remote_branches=$(git branch -r | grep -v 'HEAD' | sed 's|^[[:space:]]*origin/||' | sed 's/^[[:space:]]*//')
   all_branches=$(printf "%s\n%s\n" "$local_branches" "$remote_branches" | sort -u)
 
   master_branch=$(echo "$all_branches" | grep -x 'master' || true)
