@@ -11,3 +11,4 @@ backend/node_modules
 backend/.env
 frontend/node_modules
 docker-compose.dev.yml
+devscripts
