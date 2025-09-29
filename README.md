@@ -28,6 +28,7 @@ Ziel:
   <summary>🟡 v0.2.0 – In Entwicklung</summary>
 
 ### Backend
+- [ ] Anbindung einer SQLite-Datenbank  
 - [ ] Logging der Redeploy-Aktionen in SQLite speichern  
 - [ ] API-Endpunkte für Log-Abfragen  
 
