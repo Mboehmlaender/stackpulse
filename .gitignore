@@ -11,5 +11,13 @@ backend/node_modules
 backend/.env
 frontend/node_modules
 docker-compose.dev.yml
-scripts/docker-release.sh
 scripts/dev-script.sh
+scripts/docker-release.sh
+scripts/git-push.sh
+scripts/merge-dev-to-master.sh
+scripts/merge-feature-to-dev.sh
+scripts/new-feature.sh
+scripts/stash.sh
+scripts/switch-branch.sh
+
+
