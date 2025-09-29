@@ -10,14 +10,47 @@ Ziel:
 
 ---
 
-## 🚀 Features (0.1 Roadmap)
+## 🚀 Features & Roadmap
 
-- [x] Projektstruktur mit Frontend & Backend  
-- [x] Lokales Startskript (`scripts/start-dev.sh`)  
-- [x] Frontend zeigt Stacks an (über Backend)  
-- [x] API-Verbindung zu Portainer
-- [x] Stack Redeploy 
-- [x] Docker Image im ghcr zur Verfügung stellen
+<details>
+  <summary>✅ v0.1.0 – Initial Release</summary>
+
+- Projektstruktur mit Frontend & Backend  
+- Lokales Startskript (`scripts/start-dev.sh`)  
+- Frontend zeigt Stacks an (über Backend)  
+- API-Verbindung zu Portainer  
+- Stack Redeploy  
+- Bereitstellung eines Docker Images über GHCR  
+
+</details>
+
+<details open>
+  <summary>🟡 v0.2.0 – In Entwicklung</summary>
+
+### Backend
+- [ ] Anbindung einer SQLite-Datenbank  
+- [ ] Logging der Redeploy-Aktionen in SQLite speichern  
+- [ ] API-Endpunkte für Log-Abfragen  
+
+### Frontend
+- [ ] Anzeige der Logs (inkl. Statusfarben)  
+- [ ] UI-Komponenten für Log-Details  
+
+### Features
+- [ ] Selektive Auswahl: einzelne Stacks oder Services neu deployen  
+
+</details>
+
+<details>
+  <summary>🔮 Geplante Features (v0.3+)</summary>
+
+- Notifications (z. B. via Webhooks oder Mail)  
+- Authentifizierung & Benutzerverwaltung  
+- Monitoring (Status, CPU/RAM)  
+- Verbesserte UI/UX  
+
+</details>
+
 
 ---
 
