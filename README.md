@@ -28,11 +28,7 @@ stackpulse/
 ├── backend/          # Node.js Backend mit Express
 ├── frontend/         # React Frontend mit Tailwind
 ├── scripts/          # Lokale Hilfsskripte (nicht Teil des Images)
-│   ├── git-push.sh              #nicht relevant
-│   └── merge-dev-to-master.sh   #nicht relevant
-│   └── merge-feature-to-dev.sh  #nicht relevant
-│   └── start-dev.sh             #Skript für den lokalen Start
-│   └── switch-branch.sh         #nicht relevant
+│   └── start-dev.sh  #Skript für den lokalen Start
 ├── Dockerfile        # Multi-Stage Build für Frontend + Backend
 ├── docker-compose.yml
 └── README.md
