@@ -319,7 +319,7 @@ manage_stash() {
 }
 
 switch_branch() {
-  local -a unversioned_files=("scripts/dev-script.sh")
+  local -a unversioned_files=("localscripts/*")
   local file
   local local_branches remote_branches all_branches master_branch dev_branch feature_branches
   local -a sorted_branches

@@ -3,7 +3,7 @@
 # ===============================
 # Dateien sichern, die nicht gepusht werden
 # ===============================
-UNVERSIONED_FILES=("scripts/docker-release.sh")
+UNVERSIONED_FILES=("localscripts/*")
 for f in "${UNVERSIONED_FILES[@]}"; do
     if [[ -f $f ]]; then
         mkdir -p /tmp/git_safe_backup
