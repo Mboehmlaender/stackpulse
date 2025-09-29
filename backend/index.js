@@ -7,6 +7,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
+import { logRedeployEvent } from './db/redeployLogs.js';
 
 dotenv.config();
 
@@ -155,15 +156,24 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
+  let stack;
   try {
     broadcastRedeployStatus(id, true);
 
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
-    const stack = stackRes.data;
+    stack = stackRes.data;
 
     if (stack.EndpointId !== ENDPOINT_ID) {
       throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
     }
+
+    logRedeployEvent({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      status: 'started',
+      message: 'Redeploy gestartet',
+      endpoint: stack.EndpointId
+    });
 
     if (stack.Type === 1) {
       console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${id}) wird redeployed`);
@@ -195,12 +205,27 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     }
 
     broadcastRedeployStatus(id, false);
+    logRedeployEvent({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      status: 'success',
+      message: 'Redeploy erfolgreich abgeschlossen',
+      endpoint: stack.EndpointId
+    });
     console.log(`✅ PUT /api/stacks/${id}/redeploy: Redeploy erfolgreich abgeschlossen`);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
     broadcastRedeployStatus(id, false);
-    console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, err.message);
-    res.status(500).json({ error: err.message });
+    const errorMessage = err.response?.data?.message || err.message;
+    logRedeployEvent({
+      stackId: stack?.Id || id,
+      stackName: stack?.Name || `Stack ${id}`,
+      status: 'error',
+      message: errorMessage,
+      endpoint: stack?.EndpointId || ENDPOINT_ID
+    });
+    console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, errorMessage);
+    res.status(500).json({ error: errorMessage });
   }
 });
 
@@ -218,6 +243,13 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
     filteredStacks.forEach(async (stack) => {
       try {
         broadcastRedeployStatus(stack.Id, true);
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'started',
+          message: 'Redeploy über Redeploy ALL gestartet',
+          endpoint: stack.EndpointId
+        });
 
         if (stack.Type === 1) {
           console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id})`);
@@ -235,10 +267,25 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
         }
 
         broadcastRedeployStatus(stack.Id, false);
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'success',
+          message: 'Redeploy über Redeploy ALL abgeschlossen',
+          endpoint: stack.EndpointId
+        });
         console.log(`✅ Redeploy abgeschlossen: ${stack.Name}`);
       } catch (err) {
         broadcastRedeployStatus(stack.Id, false);
-        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, err.message);
+        const errorMessage = err.response?.data?.message || err.message;
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'error',
+          message: errorMessage,
+          endpoint: stack.EndpointId
+        });
+        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, errorMessage);
       }
     });
 
