@@ -6,6 +6,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { db } from './db/index.js';
 
 dotenv.config();
 
@@ -88,6 +89,64 @@ app.get('/api/stacks', async (req, res) => {
   } catch (err) {
     console.error(`❌ Fehler beim Abrufen der Stacks:`, err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Redeploy-Logs abrufen
+app.get('/api/logs', (req, res) => {
+  const { stackId, status, from, to } = req.query;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+  const filters = [];
+  const params = { limit, offset };
+
+  if (stackId) {
+    filters.push('stack_id = @stackId');
+    params.stackId = stackId;
+  }
+
+  if (status) {
+    filters.push('status = @status');
+    params.status = status;
+  }
+
+  if (from) {
+    filters.push('timestamp >= @from');
+    params.from = from;
+  }
+
+  if (to) {
+    filters.push('timestamp <= @to');
+    params.to = to;
+  }
+
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const query = `
+    SELECT
+      id,
+      timestamp,
+      stack_id AS stackId,
+      stack_name AS stackName,
+      status,
+      message,
+      endpoint
+    FROM redeploy_logs
+    ${whereClause}
+    ORDER BY datetime(timestamp) DESC
+    LIMIT @limit OFFSET @offset
+  `;
+
+  try {
+    const stmt = db.prepare(query);
+    const logs = stmt.all(params);
+    res.json(logs);
+  } catch (err) {
+    console.error('❌ Fehler beim Abrufen der Redeploy-Logs:', err.message);
+    if (err.message.includes('no such table')) {
+      return res.status(500).json({ error: 'redeploy_logs table nicht gefunden. Bitte Migration ausführen.' });
+    }
+    res.status(500).json({ error: 'Fehler beim Abrufen der Redeploy-Logs' });
   }
 });
 

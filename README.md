@@ -31,7 +31,7 @@ Ziel:
 - [ ] Anbindung einer SQLite-Datenbank  
 - [ ] Logging der Redeploy-Aktionen in SQLite speichern  
 - [ ] API-Endpunkte für Log-Abfragen  
-
+2
 ### Frontend
 - [ ] Anzeige der Logs (inkl. Statusfarben)  
 - [ ] UI-Komponenten für Log-Details  
