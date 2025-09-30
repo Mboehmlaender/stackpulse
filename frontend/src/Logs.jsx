@@ -30,6 +30,15 @@ const normalizeDateParam = (value) => {
 const FILTER_STORAGE_KEY = "redeployLogFilters";
 const ALL_OPTION_VALUE = "__all__";
 const ALL_OPTION_LABEL = "- Alle -";
+const PER_PAGE_DEFAULT = "50";
+const PER_PAGE_OPTIONS = [
+  { value: "10", label: "10" },
+  { value: "25", label: "25" },
+  { value: "50", label: "50" },
+  { value: "100", label: "100" },
+  { value: "all", label: "Alle" }
+];
+const VALID_PER_PAGE_VALUES = new Set(PER_PAGE_OPTIONS.map((option) => option.value));
 
 const hasActiveFilters = (filters) => Boolean(
   (filters.stacks && filters.stacks.length) ||
@@ -42,8 +51,10 @@ const hasActiveFilters = (filters) => Boolean(
 
 export default function Logs() {
   const [logs, setLogs] = useState([]);
+  const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
 
   const [stackOptions, setStackOptions] = useState([]);
   const [statusOptions, setStatusOptions] = useState([]);
@@ -60,7 +71,12 @@ export default function Logs() {
   const [filtersReady, setFiltersReady] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
-  const updateFilterOptions = useCallback((logsPayload) => {
+  const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
+  const [page, setPage] = useState(1);
+
+  const updateFilterOptions = useCallback((payload) => {
+    const logsPayload = Array.isArray(payload) ? payload : payload?.items ?? [];
+
     setStackOptions((prev) => {
       const map = new Map(prev.map((entry) => [entry.value, entry.label]));
       logsPayload.forEach((log) => {
@@ -93,6 +109,14 @@ export default function Logs() {
     });
   }, []);
 
+  const stackLabelMap = useMemo(() => {
+    const map = new Map();
+    stackOptions.forEach((option) => {
+      map.set(option.value, option.label);
+    });
+    return map;
+  }, [stackOptions]);
+
   useEffect(() => {
     if (typeof window === "undefined") {
       setFiltersReady(true);
@@ -105,6 +129,7 @@ export default function Logs() {
         const parsed = JSON.parse(storedValue);
         const storedFilters = parsed?.filters ?? parsed ?? {};
         const storedOptions = parsed?.options ?? {};
+        const storedPagination = parsed?.pagination ?? {};
 
         setSelectedStacks(storedFilters.stacks || []);
         setSelectedStatuses(storedFilters.statuses || []);
@@ -125,6 +150,19 @@ export default function Logs() {
         if (Array.isArray(storedOptions.endpoints) && storedOptions.endpoints.length) {
           setEndpointOptions(storedOptions.endpoints);
         }
+
+        const rawPerPage = storedPagination.perPage;
+        if (rawPerPage !== undefined) {
+          const parsedPerPage = String(rawPerPage);
+          if (VALID_PER_PAGE_VALUES.has(parsedPerPage)) {
+            setPerPage(parsedPerPage);
+          }
+        }
+
+        const rawPage = storedPagination.page;
+        if (typeof rawPage === 'number' && rawPage > 0) {
+          setPage(rawPage);
+        }
       }
     } catch (storageError) {
       console.error("❌ Fehler beim Laden der gespeicherten Log-Filter:", storageError);
@@ -133,11 +171,43 @@ export default function Logs() {
     }
   }, []);
 
+  const buildFilterParams = useCallback(() => {
+    const params = {};
+
+    if (selectedStacks.length) {
+      params.stackIds = selectedStacks.join(",");
+    }
+
+    if (selectedStatuses.length) {
+      params.statuses = selectedStatuses.join(",");
+    }
+
+    if (selectedEndpoints.length) {
+      params.endpoints = selectedEndpoints.join(",");
+    }
+
+    if (messageQuery.trim()) {
+      params.message = messageQuery.trim();
+    }
+
+    const fromParam = normalizeDateParam(fromDate);
+    if (fromParam) {
+      params.from = fromParam;
+    }
+
+    const toParam = normalizeDateParam(toDate);
+    if (toParam) {
+      params.to = toParam;
+    }
+
+    return params;
+  }, [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
+
   useEffect(() => {
     if (!filtersReady) return;
 
     let cancelled = false;
-    axios.get("/api/logs", { params: { limit: 500 } })
+    axios.get("/api/logs", { params: { ...buildFilterParams(), perPage: 'all', page: 1 } })
       .then((response) => {
         if (cancelled) return;
         updateFilterOptions(response.data);
@@ -150,7 +220,7 @@ export default function Logs() {
     return () => {
       cancelled = true;
     };
-  }, [filtersReady, updateFilterOptions, refreshSignal]);
+  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal]);
 
   const currentFilters = useMemo(() => ({
     stacks: selectedStacks,
@@ -161,13 +231,126 @@ export default function Logs() {
     to: toDate
   }), [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
 
-  const stackLabelMap = useMemo(() => {
-    const map = new Map();
-    stackOptions.forEach((option) => {
-      map.set(option.value, option.label);
-    });
-    return map;
-  }, [stackOptions]);
+  useEffect(() => {
+    if (!filtersReady) return;
+
+    const params = { ...buildFilterParams() };
+    if (perPage === 'all') {
+      params.perPage = 'all';
+      params.page = 1;
+    } else {
+      params.perPage = perPage;
+      params.page = page;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+
+    axios.get("/api/logs", { params })
+      .then((response) => {
+        if (cancelled) return;
+        const data = response.data || {};
+        const items = Array.isArray(data) ? data : data.items ?? [];
+        const total = Array.isArray(data) ? items.length : data.total ?? items.length;
+
+        setLogs(items);
+        setTotalLogs(total);
+        updateFilterOptions(response.data);
+
+        if (perPage === 'all') {
+          if (page !== 1) setPage(1);
+        } else {
+          const totalPages = Math.max(1, Math.ceil((total || 0) / Number(perPage)));
+          const nextPage = Math.min(Math.max(page, 1), totalPages);
+          if (nextPage !== page) {
+            setPage(nextPage);
+          }
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("❌ Fehler beim Laden der Logs:", err);
+        setError("Fehler beim Laden der Redeploy-Logs");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal, perPage, page]);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(
+        FILTER_STORAGE_KEY,
+        JSON.stringify({
+          filters: currentFilters,
+          options: {
+            stacks: stackOptions,
+            statuses: statusOptions,
+            endpoints: endpointOptions,
+          },
+          pagination: {
+            perPage,
+            page
+          }
+        })
+      );
+    } catch (storageError) {
+      console.error("⚠️ Konnte Filter nicht speichern:", storageError);
+    }
+  }, [filtersReady, currentFilters, stackOptions, statusOptions, endpointOptions, perPage, page]);
+
+  const handleMultiSelectChange = (setter) => (event) => {
+    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
+    if (values.includes(ALL_OPTION_VALUE)) {
+      setter([]);
+    } else {
+      setter(values);
+    }
+    setPage(1);
+  };
+
+  const handleResetFilters = () => {
+    setSelectedStacks([]);
+    setSelectedStatuses([]);
+    setSelectedEndpoints([]);
+    setMessageQuery("");
+    setFromDate("");
+    setToDate("");
+    setFiltersOpen(false);
+    setPage(1);
+  };
+
+  const handleToggleFilters = () => {
+    setFiltersOpen((prev) => !prev);
+  };
+
+  const handleRefresh = () => {
+    setRefreshSignal((prev) => prev + 1);
+  };
+
+  const handlePerPageChange = (event) => {
+    const value = event.target.value;
+    if (!VALID_PER_PAGE_VALUES.has(value)) return;
+    setPerPage(value);
+    setPage(1);
+  };
+
+  const handlePageChange = (nextPage) => {
+    if (perPage === 'all') return;
+    if (nextPage < 1) return;
+    const totalPages = Math.max(1, Math.ceil((totalLogs || 0) / Number(perPage)));
+    if (nextPage > totalPages) return;
+    setPage(nextPage);
+  };
 
   const stackSelectOptions = useMemo(() => {
     const entries = stackOptions.filter((option) => option.value !== ALL_OPTION_VALUE);
@@ -197,110 +380,6 @@ export default function Logs() {
     ];
   }, [endpointOptions]);
 
-  useEffect(() => {
-    if (!filtersReady) return;
-
-    const params = { limit: 200 };
-
-    if (currentFilters.stacks.length) {
-      params.stackIds = currentFilters.stacks.join(",");
-    }
-
-    if (currentFilters.statuses.length) {
-      params.statuses = currentFilters.statuses.join(",");
-    }
-
-    if (currentFilters.endpoints.length) {
-      params.endpoints = currentFilters.endpoints.join(",");
-    }
-
-    if (currentFilters.message.trim()) {
-      params.message = currentFilters.message.trim();
-    }
-
-    const fromParam = normalizeDateParam(currentFilters.from);
-    if (fromParam) {
-      params.from = fromParam;
-    }
-
-    const toParam = normalizeDateParam(currentFilters.to);
-    if (toParam) {
-      params.to = toParam;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-
-    axios.get("/api/logs", { params })
-      .then((response) => {
-        if (cancelled) return;
-        setLogs(response.data);
-        updateFilterOptions(response.data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error("❌ Fehler beim Laden der Logs:", err);
-        setError("Fehler beim Laden der Redeploy-Logs");
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [filtersReady, currentFilters, updateFilterOptions, refreshSignal]);
-
-  useEffect(() => {
-    if (!filtersReady) return;
-    if (typeof window === "undefined") return;
-
-    try {
-      window.localStorage.setItem(
-        FILTER_STORAGE_KEY,
-        JSON.stringify({
-          filters: currentFilters,
-          options: {
-            stacks: stackOptions,
-            statuses: statusOptions,
-            endpoints: endpointOptions,
-          }
-        })
-      );
-    } catch (storageError) {
-      console.error("⚠️ Konnte Filter nicht speichern:", storageError);
-    }
-  }, [filtersReady, currentFilters, stackOptions, statusOptions, endpointOptions]);
-
-  const handleMultiSelectChange = (setter) => (event) => {
-    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
-    if (values.includes(ALL_OPTION_VALUE)) {
-      setter([]);
-      return;
-    }
-    setter(values);
-  };
-
-  const handleResetFilters = () => {
-    setSelectedStacks([]);
-    setSelectedStatuses([]);
-    setSelectedEndpoints([]);
-    setMessageQuery("");
-    setFromDate("");
-    setToDate("");
-    setFiltersOpen(false);
-  };
-
-  const handleToggleFilters = () => {
-    setFiltersOpen((prev) => !prev);
-  };
-
-  const handleRefresh = () => {
-    setRefreshSignal((prev) => prev + 1);
-  };
-
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (selectedStacks.length) count += selectedStacks.length;
@@ -312,15 +391,133 @@ export default function Logs() {
     return count;
   }, [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
 
+  const totalPages = useMemo(() => {
+    if (perPage === 'all') return 1;
+    const numeric = Number(perPage) || Number(PER_PAGE_DEFAULT);
+    return Math.max(1, Math.ceil((totalLogs || 0) / numeric));
+  }, [perPage, totalLogs]);
+
+  const rangeStart = useMemo(() => {
+    if (totalLogs === 0) return 0;
+    if (perPage === 'all') return 1;
+    return (page - 1) * Number(perPage) + 1;
+  }, [totalLogs, perPage, page]);
+
+  const rangeEnd = useMemo(() => {
+    if (totalLogs === 0) return 0;
+    if (perPage === 'all') return totalLogs;
+    return Math.min(totalLogs, (page - 1) * Number(perPage) + logs.length);
+  }, [totalLogs, perPage, page, logs.length]);
+
+  const handleDeleteLog = async (id) => {
+    if (!window.confirm("Diesen Log-Eintrag dauerhaft löschen?")) return;
+    setActionLoading(true);
+    setError("");
+    try {
+      await axios.delete(`/api/logs/${id}`);
+      setRefreshSignal((prev) => prev + 1);
+    } catch (err) {
+      console.error("❌ Fehler beim Löschen des Logs:", err);
+      setError("Fehler beim Löschen des Redeploy-Logs");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteFiltered = async () => {
+    if (!logs.length) return;
+    if (!window.confirm("Alle angezeigten Logs (entsprechend Filter) löschen?")) return;
+    setActionLoading(true);
+    setError("");
+    try {
+      const params = {
+        ...buildFilterParams(),
+        ids: logs.map((log) => log.id).join(',')
+      };
+      await axios.delete("/api/logs", { params });
+      setRefreshSignal((prev) => prev + 1);
+    } catch (err) {
+      console.error("❌ Fehler beim Löschen der gefilterten Logs:", err);
+      setError("Fehler beim Löschen der gefilterten Logs");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleExport = async (format) => {
+    setActionLoading(true);
+    setError("");
+    try {
+      const response = await axios.get("/api/logs/export", {
+        params: { ...buildFilterParams(), format },
+        responseType: "blob"
+      });
+
+      const contentType = response.headers["content-type"] || (format === "sql" ? "application/sql" : "text/plain");
+      const disposition = response.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      const filename = match?.[1] || `redeploy-logs.${format}`;
+
+      const blob = new Blob([response.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("❌ Fehler beim Export der Logs:", err);
+      setError("Fehler beim Export der Redeploy-Logs");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-gray-100">Redeploy-Logs</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <span>Einträge pro Seite</span>
+            <select
+              value={perPage}
+              onChange={handlePerPageChange}
+              className="rounded-md border border-gray-700 bg-gray-900/70 px-3 py-1.5 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            >
+              {PER_PAGE_OPTIONS.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={() => handleExport('txt')}
+            disabled={actionLoading || loading}
+            className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+          >
+            Export TXT
+          </button>
+          <button
+            onClick={() => handleExport('sql')}
+            disabled={actionLoading || loading}
+            className="rounded-md border border-gray-600 px-3 py-1.5 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+          >
+            Export SQL
+          </button>
+          <button
+            onClick={handleDeleteFiltered}
+            disabled={actionLoading || loading || logs.length === 0}
+            className="rounded-md border border-red-600 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-600/20 disabled:opacity-60"
+          >
+            Angezeigte löschen
+          </button>
           {loading && <span className="text-sm text-gray-400">Aktualisiere…</span>}
           <button
             onClick={handleRefresh}
-            className="px-4 py-2 rounded-md font-medium transition bg-purple-500 hover:bg-purple-600"
+            disabled={actionLoading}
+            className="px-4 py-2 rounded-md font-medium transition bg-purple-500 hover:bg-purple-600 disabled:opacity-60"
           >
             Aktualisieren
           </button>
@@ -472,7 +669,10 @@ export default function Logs() {
                 <input
                   type="text"
                   value={messageQuery}
-                  onChange={(event) => setMessageQuery(event.target.value)}
+                  onChange={(event) => {
+                    setMessageQuery(event.target.value);
+                    setPage(1);
+                  }}
                   placeholder="Textsuche in Log-Nachrichten..."
                   className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                 />
@@ -483,7 +683,10 @@ export default function Logs() {
                 <input
                   type="datetime-local"
                   value={fromDate}
-                  onChange={(event) => setFromDate(event.target.value)}
+                  onChange={(event) => {
+                    setFromDate(event.target.value);
+                    setPage(1);
+                  }}
                   className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                 />
               </div>
@@ -493,7 +696,10 @@ export default function Logs() {
                 <input
                   type="datetime-local"
                   value={toDate}
-                  onChange={(event) => setToDate(event.target.value)}
+                  onChange={(event) => {
+                    setToDate(event.target.value);
+                    setPage(1);
+                  }}
                   className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                 />
               </div>
@@ -520,12 +726,13 @@ export default function Logs() {
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Nachricht</th>
               <th className="px-4 py-3">Endpoint</th>
+              <th className="px-4 py-3 text-right">Aktionen</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700 text-sm">
             {logs.length === 0 && !loading && (
               <tr>
-                <td colSpan="5" className="px-4 py-6 text-center text-gray-400">
+                <td colSpan="6" className="px-4 py-6 text-center text-gray-400">
                   Keine Logs vorhanden.
                 </td>
               </tr>
@@ -552,11 +759,51 @@ export default function Logs() {
                   <td className="px-4 py-3 text-gray-400">
                     {log.endpoint ?? "-"}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => handleDeleteLog(log.id)}
+                      disabled={actionLoading}
+                      className="rounded-md border border-red-600 px-3 py-1 text-xs text-red-300 transition hover:bg-red-600/20 disabled:opacity-60"
+                    >
+                      Löschen
+                    </button>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-gray-300">
+        <span>
+          {totalLogs === 0
+            ? "Keine Einträge"
+            : perPage === 'all'
+              ? `Zeige alle ${totalLogs} Einträge`
+              : `Zeige ${rangeStart.toLocaleString()} – ${rangeEnd.toLocaleString()} von ${totalLogs.toLocaleString()} Einträgen`}
+        </span>
+        {perPage !== 'all' && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handlePageChange(page - 1)}
+              disabled={page <= 1 || actionLoading}
+              className="rounded-md border border-gray-600 px-3 py-1 text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+            >
+              Zurück
+            </button>
+            <span className="text-gray-400">
+              Seite {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => handlePageChange(page + 1)}
+              disabled={page >= totalPages || actionLoading}
+              className="rounded-md border border-gray-600 px-3 py-1 text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+            >
+              Weiter
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
