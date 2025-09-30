@@ -95,28 +95,67 @@ app.get('/api/stacks', async (req, res) => {
 
 // Redeploy-Logs abrufen
 app.get('/api/logs', (req, res) => {
-  const { stackId, status, from, to } = req.query;
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+  const valueToArray = (value) => {
+    if (!value && value !== 0) return [];
+    const base = Array.isArray(value) ? value : [value];
+    return base
+      .flatMap((entry) => String(entry).split(','))
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  };
+
+  const singleValue = (value) => {
+    if (value === undefined || value === null) return undefined;
+    return Array.isArray(value) ? value[0] : value;
+  };
 
   const filters = [];
   const params = { limit, offset };
 
-  if (stackId) {
-    filters.push('stack_id = @stackId');
-    params.stackId = stackId;
+  const stackIds = valueToArray(req.query.stackIds ?? req.query.stackId);
+  if (stackIds.length) {
+    const placeholders = stackIds.map((_, idx) => `@stackId${idx}`);
+    filters.push(`stack_id IN (${placeholders.join(', ')})`);
+    stackIds.forEach((stack, idx) => {
+      params[`stackId${idx}`] = stack;
+    });
   }
 
-  if (status) {
-    filters.push('status = @status');
-    params.status = status;
+  const statuses = valueToArray(req.query.statuses ?? req.query.status);
+  if (statuses.length) {
+    const placeholders = statuses.map((_, idx) => `@status${idx}`);
+    filters.push(`status IN (${placeholders.join(', ')})`);
+    statuses.forEach((entry, idx) => {
+      params[`status${idx}`] = entry;
+    });
   }
 
+  const endpoints = valueToArray(req.query.endpoints ?? req.query.endpoint);
+  if (endpoints.length) {
+    const placeholders = endpoints.map((_, idx) => `@endpoint${idx}`);
+    filters.push(`endpoint IN (${placeholders.join(', ')})`);
+    endpoints.forEach((entry, idx) => {
+      const numeric = Number(entry);
+      params[`endpoint${idx}`] = Number.isNaN(numeric) ? entry : numeric;
+    });
+  }
+
+  const messageQuery = singleValue(req.query.message);
+  if (messageQuery && String(messageQuery).trim()) {
+    filters.push('message LIKE @message');
+    params.message = `%${String(messageQuery).trim()}%`;
+  }
+
+  const from = singleValue(req.query.from);
   if (from) {
     filters.push('timestamp >= @from');
     params.from = from;
   }
 
+  const to = singleValue(req.query.to);
   if (to) {
     filters.push('timestamp <= @to');
     params.to = to;
