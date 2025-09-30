@@ -35,6 +35,9 @@ COPY backend/ ./
 # public leeren
 RUN rm -rf ./public/*
 
+# frische Datenbank vorbereiten
+RUN rm -rf ./data && mkdir -p ./data && chown node:node ./data
+
 # Inhalt von dist inklusive Unterordner direkt nach public kopieren
 COPY --from=frontend-build /app/frontend/dist/. ./public/
 
