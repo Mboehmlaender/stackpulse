@@ -12,3 +12,6 @@ backend/.env
 frontend/node_modules
 docker-compose.dev.yml
 devscripts
+backend/data/stackpulse.db
+backend/data/stackpulse.db-shm
+backend/data/stackpulse.db-wal
