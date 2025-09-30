@@ -6,6 +6,7 @@ echo "🚀 Starte StackPulse Dev-Umgebung..."
 # --- Backend ---
 cd backend
 npm install
+npm run migrate
 npm start &
 BACK_PID=$!
 cd ..
