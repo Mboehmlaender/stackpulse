@@ -28,13 +28,14 @@ Ziel:
   <summary>🟡 v0.2.0 – In Entwicklung</summary>
 
 ### Backend
-- [ ] Anbindung einer SQLite-Datenbank  
-- [ ] Logging der Redeploy-Aktionen in SQLite speichern  
-- [ ] API-Endpunkte für Log-Abfragen  
-
+- [x] Anbindung einer SQLite-Datenbank  
+- [x] Logging der Redeploy-Aktionen in SQLite speichern  
+- [x] API-Endpunkte für Log-Abfragen  
+2
 ### Frontend
-- [ ] Anzeige der Logs (inkl. Statusfarben)  
-- [ ] UI-Komponenten für Log-Details  
+- [x] Anzeige der Logs (inkl. Statusfarben)  
+- [x] UI-Komponenten für Log-Details  
+- [x] Filterfunktionen für die Logs
 
 ### Features
 - [ ] Selektive Auswahl: einzelne Stacks oder Services neu deployen  

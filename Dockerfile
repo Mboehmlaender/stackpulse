@@ -31,9 +31,16 @@ RUN npm ci --only=production
 
 # Backend-Code kopieren
 COPY backend/ ./
+COPY backend/docker-entrypoint.sh ./docker-entrypoint.sh
 
 # public leeren
 RUN rm -rf ./public/*
+
+# frische Datenbank vorbereiten
+RUN rm -rf ./data && mkdir -p ./data && chown node:node ./data
+
+# EntryPoint vorbereiten
+RUN chmod +x ./docker-entrypoint.sh && chown node:node ./docker-entrypoint.sh
 
 # Inhalt von dist inklusive Unterordner direkt nach public kopieren
 COPY --from=frontend-build /app/frontend/dist/. ./public/
@@ -50,4 +57,5 @@ EXPOSE 5173
 USER node
 
 # Container startet das Backend (liefert statisches Frontend)
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "index.js"]

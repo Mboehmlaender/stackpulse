@@ -6,6 +6,14 @@ import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { db } from './db/index.js';
+import {
+  logRedeployEvent,
+  buildLogFilter,
+  deleteLogById,
+  deleteLogsByFilters,
+  exportLogsByFilters
+} from './db/redeployLogs.js';
 
 dotenv.config();
 
@@ -91,20 +99,133 @@ app.get('/api/stacks', async (req, res) => {
   }
 });
 
+// Redeploy-Logs abrufen
+app.get('/api/logs', (req, res) => {
+  const perPageParam = req.query.perPage ?? req.query.limit;
+  const perPage = perPageParam === 'all' ? 'all' : Math.min(parseInt(perPageParam, 10) || 50, 500);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+
+  const limit = perPage === 'all' ? undefined : perPage;
+  const offset = perPage === 'all' ? 0 : (page - 1) * perPage;
+
+  const { whereClause, params } = buildLogFilter(req.query);
+  const baseQuery = `
+    SELECT
+      id,
+      timestamp,
+      stack_id AS stackId,
+      stack_name AS stackName,
+      status,
+      message,
+      endpoint
+    FROM redeploy_logs
+    ${whereClause}
+    ORDER BY datetime(timestamp) DESC
+  `;
+
+  const countQuery = `
+    SELECT COUNT(*) as total
+    FROM redeploy_logs
+    ${whereClause}
+  `;
+
+  const query = limit !== undefined
+    ? `${baseQuery} LIMIT @limit OFFSET @offset`
+    : baseQuery;
+
+  if (limit !== undefined) {
+    params.limit = limit;
+    params.offset = offset;
+  }
+
+  try {
+    const stmt = db.prepare(query);
+    const logs = stmt.all(params);
+    const total = db.prepare(countQuery).get(params)?.total ?? logs.length;
+
+    res.json({
+      total,
+      items: logs,
+      page,
+      perPage: perPage === 'all' ? 'all' : limit
+    });
+  } catch (err) {
+    console.error('❌ Fehler beim Abrufen der Redeploy-Logs:', err.message);
+    if (err.message.includes('no such table')) {
+      return res.status(500).json({ error: 'redeploy_logs table nicht gefunden. Bitte Migration ausführen.' });
+    }
+    res.status(500).json({ error: 'Fehler beim Abrufen der Redeploy-Logs' });
+  }
+});
+
+app.delete('/api/logs/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ error: 'Ungültige ID' });
+  }
+
+  try {
+    const changes = deleteLogById(id);
+    if (!changes) {
+      return res.status(404).json({ error: 'Eintrag nicht gefunden' });
+    }
+    res.json({ success: true, deleted: changes });
+  } catch (err) {
+    console.error('❌ Fehler beim Löschen des Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen des Redeploy-Logs' });
+  }
+});
+
+app.delete('/api/logs', (req, res) => {
+  try {
+    const deleted = deleteLogsByFilters(req.query);
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error('❌ Fehler beim Löschen der Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen der Redeploy-Logs' });
+  }
+});
+
+app.get('/api/logs/export', (req, res) => {
+  const format = (req.query.format || 'txt').toLowerCase();
+  if (!['txt', 'sql'].includes(format)) {
+    return res.status(400).json({ error: 'Ungültiges Export-Format' });
+  }
+
+  try {
+    const payload = exportLogsByFilters(req.query, format);
+    res.setHeader('Content-Type', payload.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
+    res.send(payload.content);
+  } catch (err) {
+    console.error('❌ Fehler beim Export der Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Export der Redeploy-Logs' });
+  }
+});
+
 // Einzel-Redeploy
 app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
+  let stack;
   try {
     broadcastRedeployStatus(id, true);
 
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
-    const stack = stackRes.data;
+    stack = stackRes.data;
 
     if (stack.EndpointId !== ENDPOINT_ID) {
       throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
     }
+
+    logRedeployEvent({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      status: 'started',
+      message: 'Redeploy gestartet',
+      endpoint: stack.EndpointId
+    });
 
     if (stack.Type === 1) {
       console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${id}) wird redeployed`);
@@ -136,12 +257,27 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     }
 
     broadcastRedeployStatus(id, false);
+    logRedeployEvent({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      status: 'success',
+      message: 'Redeploy erfolgreich abgeschlossen',
+      endpoint: stack.EndpointId
+    });
     console.log(`✅ PUT /api/stacks/${id}/redeploy: Redeploy erfolgreich abgeschlossen`);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
     broadcastRedeployStatus(id, false);
-    console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, err.message);
-    res.status(500).json({ error: err.message });
+    const errorMessage = err.response?.data?.message || err.message;
+    logRedeployEvent({
+      stackId: stack?.Id || id,
+      stackName: stack?.Name || `Stack ${id}`,
+      status: 'error',
+      message: errorMessage,
+      endpoint: stack?.EndpointId || ENDPOINT_ID
+    });
+    console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, errorMessage);
+    res.status(500).json({ error: errorMessage });
   }
 });
 
@@ -159,6 +295,13 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
     filteredStacks.forEach(async (stack) => {
       try {
         broadcastRedeployStatus(stack.Id, true);
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'started',
+          message: 'Redeploy über Redeploy ALL gestartet',
+          endpoint: stack.EndpointId
+        });
 
         if (stack.Type === 1) {
           console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id})`);
@@ -176,10 +319,25 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
         }
 
         broadcastRedeployStatus(stack.Id, false);
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'success',
+          message: 'Redeploy über Redeploy ALL abgeschlossen',
+          endpoint: stack.EndpointId
+        });
         console.log(`✅ Redeploy abgeschlossen: ${stack.Name}`);
       } catch (err) {
         broadcastRedeployStatus(stack.Id, false);
-        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, err.message);
+        const errorMessage = err.response?.data?.message || err.message;
+        logRedeployEvent({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          status: 'error',
+          message: errorMessage,
+          endpoint: stack.EndpointId
+        });
+        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, errorMessage);
       }
     });
 
