@@ -7,7 +7,13 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
-import { logRedeployEvent } from './db/redeployLogs.js';
+import {
+  logRedeployEvent,
+  buildLogFilter,
+  deleteLogById,
+  deleteLogsByFilters,
+  exportLogsByFilters
+} from './db/redeployLogs.js';
 
 dotenv.config();
 
@@ -95,74 +101,15 @@ app.get('/api/stacks', async (req, res) => {
 
 // Redeploy-Logs abrufen
 app.get('/api/logs', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const perPageParam = req.query.perPage ?? req.query.limit;
+  const perPage = perPageParam === 'all' ? 'all' : Math.min(parseInt(perPageParam, 10) || 50, 500);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
 
-  const valueToArray = (value) => {
-    if (!value && value !== 0) return [];
-    const base = Array.isArray(value) ? value : [value];
-    return base
-      .flatMap((entry) => String(entry).split(','))
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-  };
+  const limit = perPage === 'all' ? undefined : perPage;
+  const offset = perPage === 'all' ? 0 : (page - 1) * perPage;
 
-  const singleValue = (value) => {
-    if (value === undefined || value === null) return undefined;
-    return Array.isArray(value) ? value[0] : value;
-  };
-
-  const filters = [];
-  const params = { limit, offset };
-
-  const stackIds = valueToArray(req.query.stackIds ?? req.query.stackId);
-  if (stackIds.length) {
-    const placeholders = stackIds.map((_, idx) => `@stackId${idx}`);
-    filters.push(`stack_id IN (${placeholders.join(', ')})`);
-    stackIds.forEach((stack, idx) => {
-      params[`stackId${idx}`] = stack;
-    });
-  }
-
-  const statuses = valueToArray(req.query.statuses ?? req.query.status);
-  if (statuses.length) {
-    const placeholders = statuses.map((_, idx) => `@status${idx}`);
-    filters.push(`status IN (${placeholders.join(', ')})`);
-    statuses.forEach((entry, idx) => {
-      params[`status${idx}`] = entry;
-    });
-  }
-
-  const endpoints = valueToArray(req.query.endpoints ?? req.query.endpoint);
-  if (endpoints.length) {
-    const placeholders = endpoints.map((_, idx) => `@endpoint${idx}`);
-    filters.push(`endpoint IN (${placeholders.join(', ')})`);
-    endpoints.forEach((entry, idx) => {
-      const numeric = Number(entry);
-      params[`endpoint${idx}`] = Number.isNaN(numeric) ? entry : numeric;
-    });
-  }
-
-  const messageQuery = singleValue(req.query.message);
-  if (messageQuery && String(messageQuery).trim()) {
-    filters.push('message LIKE @message');
-    params.message = `%${String(messageQuery).trim()}%`;
-  }
-
-  const from = singleValue(req.query.from);
-  if (from) {
-    filters.push('timestamp >= @from');
-    params.from = from;
-  }
-
-  const to = singleValue(req.query.to);
-  if (to) {
-    filters.push('timestamp <= @to');
-    params.to = to;
-  }
-
-  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  const query = `
+  const { whereClause, params } = buildLogFilter(req.query);
+  const baseQuery = `
     SELECT
       id,
       timestamp,
@@ -174,19 +121,85 @@ app.get('/api/logs', (req, res) => {
     FROM redeploy_logs
     ${whereClause}
     ORDER BY datetime(timestamp) DESC
-    LIMIT @limit OFFSET @offset
   `;
+
+  const countQuery = `
+    SELECT COUNT(*) as total
+    FROM redeploy_logs
+    ${whereClause}
+  `;
+
+  const query = limit !== undefined
+    ? `${baseQuery} LIMIT @limit OFFSET @offset`
+    : baseQuery;
+
+  if (limit !== undefined) {
+    params.limit = limit;
+    params.offset = offset;
+  }
 
   try {
     const stmt = db.prepare(query);
     const logs = stmt.all(params);
-    res.json(logs);
+    const total = db.prepare(countQuery).get(params)?.total ?? logs.length;
+
+    res.json({
+      total,
+      items: logs,
+      page,
+      perPage: perPage === 'all' ? 'all' : limit
+    });
   } catch (err) {
     console.error('❌ Fehler beim Abrufen der Redeploy-Logs:', err.message);
     if (err.message.includes('no such table')) {
       return res.status(500).json({ error: 'redeploy_logs table nicht gefunden. Bitte Migration ausführen.' });
     }
     res.status(500).json({ error: 'Fehler beim Abrufen der Redeploy-Logs' });
+  }
+});
+
+app.delete('/api/logs/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ error: 'Ungültige ID' });
+  }
+
+  try {
+    const changes = deleteLogById(id);
+    if (!changes) {
+      return res.status(404).json({ error: 'Eintrag nicht gefunden' });
+    }
+    res.json({ success: true, deleted: changes });
+  } catch (err) {
+    console.error('❌ Fehler beim Löschen des Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen des Redeploy-Logs' });
+  }
+});
+
+app.delete('/api/logs', (req, res) => {
+  try {
+    const deleted = deleteLogsByFilters(req.query);
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error('❌ Fehler beim Löschen der Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen der Redeploy-Logs' });
+  }
+});
+
+app.get('/api/logs/export', (req, res) => {
+  const format = (req.query.format || 'txt').toLowerCase();
+  if (!['txt', 'sql'].includes(format)) {
+    return res.status(400).json({ error: 'Ungültiges Export-Format' });
+  }
+
+  try {
+    const payload = exportLogsByFilters(req.query, format);
+    res.setHeader('Content-Type', payload.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
+    res.send(payload.content);
+  } catch (err) {
+    console.error('❌ Fehler beim Export der Redeploy-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Export der Redeploy-Logs' });
   }
 });
 
