@@ -17,7 +17,8 @@ export default function Stacks() {
       return {
         ...stack,
         redeploying: previous?.redeploying || stack.redeploying || false,
-        redeployDisabled: stack.redeployDisabled ?? previous?.redeployDisabled ?? false
+        redeployDisabled: stack.redeployDisabled ?? previous?.redeployDisabled ?? false,
+        duplicateName: stack.duplicateName ?? previous?.duplicateName ?? false
       };
     });
   };
@@ -94,9 +95,6 @@ export default function Stacks() {
   };
 
   const handleRedeploy = async (stackId) => {
-    const targetStack = stacks.find((stack) => stack.Id === stackId);
-    if (targetStack?.redeployDisabled) return;
-
     setSelectedStackIds((prev) => prev.filter((id) => id !== stackId));
     setStacks((prev) =>
       prev.map((stack) =>
@@ -254,6 +252,9 @@ export default function Stacks() {
                 <div>
                   <p className="text-lg font-semibold text-white">{stack.Name}</p>
                   <p className="text-sm text-gray-400">ID: {stack.Id}</p>
+                  {stack.duplicateName && (
+                    <p className="text-xs text-amber-300">⚠️ Doppelter Name erkannt</p>
+                  )}
                 </div>
               </div>
 
@@ -275,8 +276,6 @@ export default function Stacks() {
                   </>
                 ) : (
                   <>
-                    <span className="text-xs uppercase tracking-wide text-gray-400">Status</span>
-                    <span className="text-amber-300">Veraltet</span>
                     <button
                       onClick={() => handleRedeploy(stack.Id)}
                       disabled={isRedeploying}
