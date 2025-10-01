@@ -2,7 +2,7 @@
   <img src="assets/images/stackpulse.png" alt="StackPulse Logo" height="90" wdith="auto"/>
 </div>
 
----
+#
 
 # 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
 
