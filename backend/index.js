@@ -62,6 +62,8 @@ const REDEPLOY_TYPES = {
   SELECTION: 'Auswahl'
 };
 
+const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+
 const isStackOutdated = async (stackId) => {
   try {
     const statusRes = await axiosInstance.get(`/api/stacks/${stackId}/images_status?refresh=true`);
@@ -76,7 +78,9 @@ const filterOutdatedStacks = async (stacks = []) => {
   const results = await Promise.all(
     stacks.map(async (stack) => ({
       stack,
-      outdated: await isStackOutdated(stack.Id)
+      outdated: SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID
+        ? false
+        : await isStackOutdated(stack.Id)
     }))
   );
 
@@ -95,11 +99,31 @@ app.get('/api/stacks', async (req, res) => {
     const stacksRes = await axiosInstance.get('/api/stacks');
     const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
 
-    const uniqueStacksMap = {};
+    const stacksByName = new Map();
+    const duplicateNames = new Set();
+
     filteredStacks.forEach(stack => {
-      if (!uniqueStacksMap[stack.Name]) uniqueStacksMap[stack.Name] = stack;
+      const name = stack.Name;
+      const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
+      const existingEntry = stacksByName.get(name);
+
+      if (!existingEntry) {
+        stacksByName.set(name, { stack, isSelf });
+        return;
+      }
+
+      duplicateNames.add(name);
+
+      if (!existingEntry.isSelf && isSelf) {
+        stacksByName.set(name, { stack, isSelf });
+      }
     });
-    const uniqueStacks = Object.values(uniqueStacksMap);
+
+    const uniqueStacks = Array.from(stacksByName.values()).map(entry => entry.stack);
+
+    if (duplicateNames.size) {
+      console.warn(`⚠️ [API] GET /api/stacks: Doppelte Stack-Namen erkannt: ${Array.from(duplicateNames).join(', ')}`);
+    }
 
     const stacksWithStatus = await Promise.all(
       uniqueStacks.map(async (stack) => {
@@ -111,11 +135,17 @@ app.get('/api/stacks', async (req, res) => {
           return { 
             ...stack, 
             updateStatus: statusEmoji, 
-            redeploying: redeployingStacks[stack.Id] || false
+            redeploying: redeployingStacks[stack.Id] || false,
+            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false
           };
         } catch (err) {
           console.error(`❌ Fehler beim Abrufen des Status für Stack ${stack.Id}:`, err.message);
-          return { ...stack, updateStatus: '❌', redeploying: redeployingStacks[stack.Id] || false };
+          return {
+            ...stack,
+            updateStatus: '❌',
+            redeploying: redeployingStacks[stack.Id] || false,
+            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false
+          };
         }
       })
     );

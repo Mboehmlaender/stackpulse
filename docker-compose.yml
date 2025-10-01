@@ -12,6 +12,7 @@ services:
       PORTAINER_URL: "Your_Portainer_Server_Address"
       PORTAINER_API_KEY: "Your_Portainer_API_Key"
       PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
+      SELF_STACK_ID: "Stackpulse ID"
     restart: unless-stopped
 
 volumes:
