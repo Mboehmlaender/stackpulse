@@ -1,5 +1,6 @@
 ![StackPulse Logo](assets/images/stackpulse.png)
 
+
 # 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
 
 **StackPulse** ist eine kleine Web-App, die über die Portainer-API deine Docker-Stacks verwaltet und aktualisiert.  
