@@ -25,7 +25,7 @@ Ziel:
 </details>
 
 <details open>
-  <summary>ðŸŸ¡ v0.2.0 â€“ In Entwicklung</summary>
+  <summary>ð^|^e¡ v0.2.0 â€“ In Entwicklung</summary>
 
 ### Backend
 - [x] Anbindung einer SQLite-Datenbank  
@@ -99,6 +99,7 @@ services:
           - PORTAINER_URL=Deine_Portainer_Adresse/
           - PORTAINER_API_KEY=Dein_Portainer_API_Key
           - PORTAINER_ENDPOINT_ID=Deine_Portainer_Endpoint_ID
+          - STACK_SELF_ID=ID_deiner_stackpulse_ID
 ```
 
 ---
