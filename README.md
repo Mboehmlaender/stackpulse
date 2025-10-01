@@ -96,11 +96,18 @@ services:
         image: ghcr.io/mboehmlaender/stackpulse
         ports:
           - '4001:4001'
+        volumes:
+          - stackpulse_data:/app/backend/data
         environment:
-          - PORTAINER_URL=Deine_Portainer_Adresse/
-          - PORTAINER_API_KEY=Dein_Portainer_API_Key
-          - PORTAINER_ENDPOINT_ID=Deine_Portainer_Endpoint_ID
-          - SELF_STACK_ID=ID_deiner_stackpulse_ID
+          PORTAINER_URL: "Your_Portainer_Server_Address"
+          PORTAINER_API_KEY: "Your_Portainer_API_Key"
+          PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
+          SELF_STACK_ID: "Stackpulse ID"
+        restart: unless-stopped
+
+volumes:
+  stackpulse_data:
+
 ```
 
 Die PORTAINER_ENDPOINT_ID erhältst du, wenn du die die URL im Browser ansiehst, wenn du das Dashboard in Portainer öffnest:
