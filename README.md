@@ -31,14 +31,16 @@ Ziel:
 - [x] Anbindung einer SQLite-Datenbank  
 - [x] Logging der Redeploy-Aktionen in SQLite speichern  
 - [x] API-Endpunkte für Log-Abfragen  
-2
+- [x] Funktionen für Pagination, Löschen und Export 
+
 ### Frontend
 - [x] Anzeige der Logs (inkl. Statusfarben)  
 - [x] UI-Komponenten für Log-Details  
 - [x] Filterfunktionen für die Logs
+- [x] Pagination, Lösch- und Exportanzeigen
 
 ### Features
-- [ ] Selektive Auswahl: einzelne Stacks oder Services neu deployen  
+- [x] Selektive Auswahl: einzelne Stacks oder Services neu deployen  
 
 </details>
 

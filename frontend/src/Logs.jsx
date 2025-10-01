@@ -40,10 +40,20 @@ const PER_PAGE_OPTIONS = [
 ];
 const VALID_PER_PAGE_VALUES = new Set(PER_PAGE_OPTIONS.map((option) => option.value));
 
+const REDEPLOY_TYPE_LABELS = {
+  Einzeln: "Einzeln",
+  Alle: "Alle",
+  Auswahl: "Auswahl",
+  single: "Einzeln",
+  all: "Alle",
+  selection: "Auswahl"
+};
+
 const hasActiveFilters = (filters) => Boolean(
   (filters.stacks && filters.stacks.length) ||
   (filters.statuses && filters.statuses.length) ||
   (filters.endpoints && filters.endpoints.length) ||
+  (filters.redeployTypes && filters.redeployTypes.length) ||
   (filters.message && filters.message.trim()) ||
   (filters.from && filters.from.trim()) ||
   (filters.to && filters.to.trim())
@@ -59,16 +69,19 @@ export default function Logs() {
   const [stackOptions, setStackOptions] = useState([]);
   const [statusOptions, setStatusOptions] = useState([]);
   const [endpointOptions, setEndpointOptions] = useState([]);
+  const [redeployTypeOptions, setRedeployTypeOptions] = useState([]);
 
   const [selectedStacks, setSelectedStacks] = useState([]);
   const [selectedStatuses, setSelectedStatuses] = useState([]);
   const [selectedEndpoints, setSelectedEndpoints] = useState([]);
+  const [selectedRedeployTypes, setSelectedRedeployTypes] = useState([]);
   const [messageQuery, setMessageQuery] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
 
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filtersReady, setFiltersReady] = useState(false);
+  const [optionsInitialized, setOptionsInitialized] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
   const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
@@ -77,36 +90,42 @@ export default function Logs() {
   const updateFilterOptions = useCallback((payload) => {
     const logsPayload = Array.isArray(payload) ? payload : payload?.items ?? [];
 
-    setStackOptions((prev) => {
-      const map = new Map(prev.map((entry) => [entry.value, entry.label]));
-      logsPayload.forEach((log) => {
-        if (!log.stackId) return;
+    const stackMap = new Map();
+    const statusSet = new Set();
+    const endpointSet = new Set();
+    const redeployTypeSet = new Set();
+
+    logsPayload.forEach((log) => {
+      if (log.stackId) {
         const value = String(log.stackId);
-        if (!map.has(value)) {
-          map.set(value, log.stackName || `Stack ${value}`);
-        }
-      });
-      return Array.from(map.entries())
-        .map(([value, label]) => ({ value, label }))
-        .sort((a, b) => a.label.localeCompare(b.label));
+        const label = log.stackName || `Stack ${value}`;
+        stackMap.set(value, label);
+      }
+
+      if (log.status) {
+        statusSet.add(log.status);
+      }
+
+      if (log.endpoint !== null && log.endpoint !== undefined && log.endpoint !== "") {
+        endpointSet.add(String(log.endpoint));
+      }
+
+      if (log.redeployType) {
+        redeployTypeSet.add(log.redeployType);
+      }
     });
 
-    setStatusOptions((prev) => {
-      const next = new Set(prev);
-      logsPayload.forEach((log) => {
-        if (log.status) next.add(log.status);
-      });
-      return Array.from(next).sort();
-    });
+    setStackOptions(Array.from(stackMap.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label)));
 
-    setEndpointOptions((prev) => {
-      const next = new Set(prev);
-      logsPayload.forEach((log) => {
-        if (log.endpoint === null || log.endpoint === undefined || log.endpoint === "") return;
-        next.add(String(log.endpoint));
-      });
-      return Array.from(next).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    });
+    setStatusOptions(Array.from(statusSet).sort());
+
+    setEndpointOptions(Array.from(endpointSet)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
+
+    setRedeployTypeOptions(Array.from(redeployTypeSet).sort());
+    setOptionsInitialized(true);
   }, []);
 
   const stackLabelMap = useMemo(() => {
@@ -116,6 +135,38 @@ export default function Logs() {
     });
     return map;
   }, [stackOptions]);
+
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedStacks((prev) => {
+      const valid = prev.filter((value) => stackOptions.some((option) => option.value === value));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [optionsInitialized, stackOptions]);
+
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedStatuses((prev) => {
+      const valid = prev.filter((value) => statusOptions.includes(value));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [optionsInitialized, statusOptions]);
+
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedEndpoints((prev) => {
+      const valid = prev.filter((value) => endpointOptions.includes(value));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [optionsInitialized, endpointOptions]);
+
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedRedeployTypes((prev) => {
+      const valid = prev.filter((value) => redeployTypeOptions.includes(value));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [optionsInitialized, redeployTypeOptions]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -128,28 +179,16 @@ export default function Logs() {
       if (storedValue) {
         const parsed = JSON.parse(storedValue);
         const storedFilters = parsed?.filters ?? parsed ?? {};
-        const storedOptions = parsed?.options ?? {};
         const storedPagination = parsed?.pagination ?? {};
 
         setSelectedStacks(storedFilters.stacks || []);
         setSelectedStatuses(storedFilters.statuses || []);
         setSelectedEndpoints(storedFilters.endpoints || []);
+        setSelectedRedeployTypes(storedFilters.redeployTypes || []);
         setMessageQuery(storedFilters.message || "");
         setFromDate(storedFilters.from || "");
         setToDate(storedFilters.to || "");
         setFiltersOpen(hasActiveFilters(storedFilters));
-
-        if (Array.isArray(storedOptions.stacks) && storedOptions.stacks.length) {
-          setStackOptions(storedOptions.stacks);
-        }
-
-        if (Array.isArray(storedOptions.statuses) && storedOptions.statuses.length) {
-          setStatusOptions(storedOptions.statuses);
-        }
-
-        if (Array.isArray(storedOptions.endpoints) && storedOptions.endpoints.length) {
-          setEndpointOptions(storedOptions.endpoints);
-        }
 
         const rawPerPage = storedPagination.perPage;
         if (rawPerPage !== undefined) {
@@ -186,6 +225,10 @@ export default function Logs() {
       params.endpoints = selectedEndpoints.join(",");
     }
 
+    if (selectedRedeployTypes.length) {
+      params.redeployTypes = selectedRedeployTypes.join(",");
+    }
+
     if (messageQuery.trim()) {
       params.message = messageQuery.trim();
     }
@@ -201,13 +244,13 @@ export default function Logs() {
     }
 
     return params;
-  }, [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
+  }, [selectedStacks, selectedStatuses, selectedEndpoints, selectedRedeployTypes, messageQuery, fromDate, toDate]);
 
   useEffect(() => {
     if (!filtersReady) return;
 
     let cancelled = false;
-    axios.get("/api/logs", { params: { ...buildFilterParams(), perPage: 'all', page: 1 } })
+    axios.get("/api/logs", { params: { perPage: 'all', page: 1 } })
       .then((response) => {
         if (cancelled) return;
         updateFilterOptions(response.data);
@@ -220,16 +263,17 @@ export default function Logs() {
     return () => {
       cancelled = true;
     };
-  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal]);
+  }, [filtersReady, updateFilterOptions, refreshSignal]);
 
   const currentFilters = useMemo(() => ({
     stacks: selectedStacks,
     statuses: selectedStatuses,
     endpoints: selectedEndpoints,
+    redeployTypes: selectedRedeployTypes,
     message: messageQuery,
     from: fromDate,
     to: toDate
-  }), [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
+  }), [selectedStacks, selectedStatuses, selectedEndpoints, selectedRedeployTypes, messageQuery, fromDate, toDate]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -256,7 +300,6 @@ export default function Logs() {
 
         setLogs(items);
         setTotalLogs(total);
-        updateFilterOptions(response.data);
 
         if (perPage === 'all') {
           if (page !== 1) setPage(1);
@@ -288,25 +331,20 @@ export default function Logs() {
     if (typeof window === "undefined") return;
 
     try {
-      window.localStorage.setItem(
-        FILTER_STORAGE_KEY,
-        JSON.stringify({
-          filters: currentFilters,
-          options: {
-            stacks: stackOptions,
-            statuses: statusOptions,
-            endpoints: endpointOptions,
-          },
-          pagination: {
-            perPage,
-            page
-          }
-        })
-      );
-    } catch (storageError) {
-      console.error("⚠️ Konnte Filter nicht speichern:", storageError);
-    }
-  }, [filtersReady, currentFilters, stackOptions, statusOptions, endpointOptions, perPage, page]);
+    window.localStorage.setItem(
+      FILTER_STORAGE_KEY,
+      JSON.stringify({
+        filters: currentFilters,
+        pagination: {
+          perPage,
+          page
+        }
+      })
+    );
+  } catch (storageError) {
+    console.error("⚠️ Konnte Filter nicht speichern:", storageError);
+  }
+  }, [filtersReady, currentFilters, perPage, page]);
 
   const handleMultiSelectChange = (setter) => (event) => {
     const values = Array.from(event.target.selectedOptions).map((option) => option.value);
@@ -318,10 +356,32 @@ export default function Logs() {
     setPage(1);
   };
 
+  const handleOptionMouseDown = (event, currentValues, setter) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const { value } = event.target;
+    if (value === ALL_OPTION_VALUE) {
+      if (currentValues.length) {
+        setter([]);
+        setPage(1);
+      }
+      return;
+    }
+
+    const nextValues = currentValues.includes(value)
+      ? currentValues.filter((entry) => entry !== value)
+      : [...currentValues, value];
+
+    setter(nextValues);
+    setPage(1);
+  };
+
   const handleResetFilters = () => {
     setSelectedStacks([]);
     setSelectedStatuses([]);
     setSelectedEndpoints([]);
+    setSelectedRedeployTypes([]);
     setMessageQuery("");
     setFromDate("");
     setToDate("");
@@ -380,11 +440,22 @@ export default function Logs() {
     ];
   }, [endpointOptions]);
 
+  const redeployTypeSelectOptions = useMemo(() => {
+    const entries = redeployTypeOptions
+      .filter((type) => type !== ALL_OPTION_VALUE)
+      .map((type) => ({ value: type, label: REDEPLOY_TYPE_LABELS[type] ?? type }));
+    return [
+      { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
+      ...entries
+    ];
+  }, [redeployTypeOptions]);
+
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (selectedStacks.length) count += selectedStacks.length;
     if (selectedStatuses.length) count += selectedStatuses.length;
     if (selectedEndpoints.length) count += selectedEndpoints.length;
+    if (selectedRedeployTypes.length) count += selectedRedeployTypes.length;
     if (messageQuery.trim()) count += 1;
     if (fromDate) count += 1;
     if (toDate) count += 1;
@@ -549,7 +620,7 @@ export default function Logs() {
 
         {filtersOpen && (
           <div className="space-y-4 border-t border-gray-700 px-4 py-4">
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               <div>
                 <label className="mb-2 block text-sm font-medium text-gray-300">Stack</label>
                 <select
@@ -562,6 +633,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedStacks, setSelectedStacks)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -600,6 +672,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedStatuses, setSelectedStatuses)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -638,6 +711,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedEndpoints, setSelectedEndpoints)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -664,7 +738,46 @@ export default function Logs() {
                 </div>
               </div>
 
-              <div className="md:col-span-2 lg:col-span-3">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-300">Redeploy-Typ</label>
+                <select
+                  multiple
+                  value={selectedRedeployTypes}
+                  onChange={handleMultiSelectChange(setSelectedRedeployTypes)}
+                  className="w-full min-h-[8rem] rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  {redeployTypeSelectOptions.map(({ value, label }) => (
+                    <option
+                      key={value}
+                      value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedRedeployTypes, setSelectedRedeployTypes)}
+                      className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
+                    >
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                  {selectedRedeployTypes.length === 0 ? (
+                    <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                      Alle Typen
+                    </span>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedRedeployTypes.map((type) => (
+                        <span
+                          key={type}
+                          className="rounded-full bg-teal-500/20 px-2 py-0.5 text-teal-200"
+                        >
+                          {REDEPLOY_TYPE_LABELS[type] ?? type}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="md:col-span-2 lg:col-span-4">
                 <label className="mb-2 block text-sm font-medium text-gray-300">Nachricht (Freitext)</label>
                 <input
                   type="text"
@@ -723,6 +836,7 @@ export default function Logs() {
             <tr className="text-left text-sm uppercase tracking-wide text-gray-400">
               <th className="px-4 py-3">Zeitpunkt</th>
               <th className="px-4 py-3">Stack</th>
+              <th className="px-4 py-3">Art</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Nachricht</th>
               <th className="px-4 py-3">Endpoint</th>
@@ -732,13 +846,18 @@ export default function Logs() {
           <tbody className="divide-y divide-gray-700 text-sm">
             {logs.length === 0 && !loading && (
               <tr>
-                <td colSpan="6" className="px-4 py-6 text-center text-gray-400">
+                <td colSpan="7" className="px-4 py-6 text-center text-gray-400">
                   Keine Logs vorhanden.
                 </td>
               </tr>
             )}
             {logs.map((log) => {
               const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
+              const stackDisplayName = log.stackName || "Unbekannt";
+              const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
+              const redeployTypeLabel = log.redeployType
+                ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
+                : '---';
               return (
                 <tr key={log.id} className="hover:bg-gray-700/40">
                   <td className="px-4 py-3 whitespace-nowrap text-gray-300">
@@ -746,9 +865,14 @@ export default function Logs() {
                   </td>
                   <td className="px-4 py-3 text-gray-200">
                     <div className="flex flex-col">
-                      <span className="font-medium">{log.stackName || "Unbekannt"}</span>
-                      <span className="text-xs text-gray-400">ID: {log.stackId}</span>
+                      <span className="font-medium">{stackDisplayName}</span>
+                      {showStackId && (
+                        <span className="text-xs text-gray-400">ID: {log.stackId}</span>
+                      )}
                     </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-300">
+                    {redeployTypeLabel}
                   </td>
                   <td className={`px-4 py-3 font-semibold ${statusClass}`}>
                     {log.status}

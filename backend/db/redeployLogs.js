@@ -57,6 +57,15 @@ export function buildLogFilter(queryParams = {}) {
     });
   }
 
+  const redeployTypes = valueToArray(queryParams.redeployTypes ?? queryParams.redeployType);
+  if (redeployTypes.length) {
+    const placeholders = redeployTypes.map((_, idx) => `@redeployType${idx}`);
+    filters.push(`redeploy_type IN (${placeholders.join(', ')})`);
+    redeployTypes.forEach((entry, idx) => {
+      params[`redeployType${idx}`] = entry;
+    });
+  }
+
   const messageQuery = singleValue(queryParams.message);
   if (messageQuery && String(messageQuery).trim()) {
     filters.push('message LIKE @message');
@@ -82,18 +91,19 @@ export function buildLogFilter(queryParams = {}) {
 }
 
 const insertRedeployLogStmt = db.prepare(`
-  INSERT INTO redeploy_logs (stack_id, stack_name, status, message, endpoint)
-  VALUES (@stackId, @stackName, @status, @message, @endpoint)
+  INSERT INTO redeploy_logs (stack_id, stack_name, status, message, endpoint, redeploy_type)
+  VALUES (@stackId, @stackName, @status, @message, @endpoint, @redeployType)
 `);
 
-export function logRedeployEvent({ stackId, stackName, status, message = null, endpoint = null }) {
+export function logRedeployEvent({ stackId, stackName, status, message = null, endpoint = null, redeployType = null }) {
   try {
     insertRedeployLogStmt.run({
       stackId: String(stackId),
       stackName: stackName ?? 'Unknown',
       status,
       message,
-      endpoint
+      endpoint,
+      redeployType: redeployType ?? null
     });
   } catch (err) {
     console.error('❌ Fehler beim Speichern des Redeploy-Logs:', err.message);
@@ -116,7 +126,7 @@ export function deleteLogsByFilters(queryParams = {}) {
 export function exportLogsByFilters(queryParams = {}, format = 'txt') {
   const { whereClause, params } = buildLogFilter(queryParams);
   const rows = db.prepare(`
-    SELECT id, timestamp, stack_id AS stackId, stack_name AS stackName, status, message, endpoint
+    SELECT id, timestamp, stack_id AS stackId, stack_name AS stackName, status, message, endpoint, redeploy_type AS redeployType
     FROM redeploy_logs
     ${whereClause}
     ORDER BY datetime(timestamp) DESC
@@ -126,7 +136,7 @@ export function exportLogsByFilters(queryParams = {}, format = 'txt') {
 
   if (format === 'sql') {
     const statements = rows.map((row) => {
-      const columns = ['id', 'timestamp', 'stack_id', 'stack_name', 'status', 'message', 'endpoint'];
+      const columns = ['id', 'timestamp', 'stack_id', 'stack_name', 'status', 'message', 'endpoint', 'redeploy_type'];
       const values = [
         row.id,
         row.timestamp,
@@ -134,7 +144,8 @@ export function exportLogsByFilters(queryParams = {}, format = 'txt') {
         row.stackName,
         row.status,
         row.message,
-        row.endpoint
+        row.endpoint,
+        row.redeployType
       ].map((value) => {
         if (value === null || value === undefined) return 'NULL';
         return `'${String(value).replace(/'/g, "''")}'`;
@@ -156,7 +167,8 @@ export function exportLogsByFilters(queryParams = {}, format = 'txt') {
       `Stack: ${row.stackName ?? 'Unbekannt'} (ID: ${row.stackId})`,
       `Status: ${row.status}`,
       `Endpoint: ${row.endpoint ?? '-'}`,
-      `Nachricht: ${row.message ?? '-'}`
+      `Nachricht: ${row.message ?? '-'}`,
+      `Redeploy: ${row.redeployType ?? '-'}`
     ];
     return parts.join(' | ');
   });
