@@ -100,7 +100,7 @@ services:
           - PORTAINER_URL=Deine_Portainer_Adresse/
           - PORTAINER_API_KEY=Dein_Portainer_API_Key
           - PORTAINER_ENDPOINT_ID=Deine_Portainer_Endpoint_ID
-          - STACK_SELF_ID=ID_deiner_stackpulse_ID
+          - SELF_STACK_ID=ID_deiner_stackpulse_ID
 ```
 
 Die PORTAINER_ENDPOINT_ID erhältst du, wenn du die die URL im Browser ansiehst, wenn du das Dashboard in Portainer öffnest:
