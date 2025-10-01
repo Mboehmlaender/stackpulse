@@ -1,4 +1,4 @@
-[![Release](https://img.shields.io/badge/release-v0.2-blue.svg)] [![Dev](https://img.shields.io/badge/dev-v0.3-green.svg)]
+![Release](https://img.shields.io/badge/release-v0.2-blue.svg) ![Dev](https://img.shields.io/badge/dev-v0.3-green.svg)
 
 
 # 📦 StackPulse
