@@ -1,4 +1,4 @@
-# 📦 StackPulse
+# 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
 
 **StackPulse** ist eine kleine Web-App, die über die Portainer-API deine Docker-Stacks verwaltet und aktualisiert.  
 Sie besteht aus einem **Backend (Node.js/Express)** und einem **Frontend (React/Tailwind)**.  
@@ -25,7 +25,7 @@ Ziel:
 </details>
 
 <details open>
-  <summary>�^|^e� v0.2.0 – In Entwicklung</summary>
+  <summary>✅ v0.2.0 – Release</summary>
 
 ### Backend
 - [x] Anbindung einer SQLite-Datenbank  
@@ -54,7 +54,6 @@ Ziel:
 
 </details>
 
-
 ---
 
 ## 🗂️ Projektstruktur
@@ -62,6 +61,8 @@ Ziel:
 ```bash
 stackpulse/
 ├── backend/          # Node.js Backend mit Express
+│   └── data          # SQlite Datenbank
+│   └── db            # Datenbank-Integration
 ├── frontend/         # React Frontend mit Tailwind
 ├── scripts/          # Lokale Hilfsskripte (nicht Teil des Images)
 │   └── start-dev.sh  #Skript für den lokalen Start
@@ -99,8 +100,20 @@ services:
           - PORTAINER_URL=Deine_Portainer_Adresse/
           - PORTAINER_API_KEY=Dein_Portainer_API_Key
           - PORTAINER_ENDPOINT_ID=Deine_Portainer_Endpoint_ID
-          - STACK_SELF_ID=ID_deiner_stackpulse_ID
+          - SELF_STACK_ID=ID_deiner_stackpulse_ID
 ```
+
+Die PORTAINER_ENDPOINT_ID erhältst du, wenn du die die URL im Browser ansiehst, wenn du das Dashboard in Portainer öffnest:
+
+![PORTAINER_ENDPOINT_ID](assets/images/ENDPOINT_ID.png)
+
+Die 3 wäre in diesem Fall Endpoint-ID.
+
+Die STACK_SELF_ID findest du, wenn du das Frontend von StackPulse öffnest:
+
+![SELF_STACK_ID](assets/images/SELF_STACK_ID.png)
+
+Diese ID kann erst nach dem Deploy von Stackpulse ausgelesen werden. Vergiss daher nicht, nach dem Hinterlegen der ID in den Variablen das Stack noch einmal zu redeployen!
 
 ---
 
