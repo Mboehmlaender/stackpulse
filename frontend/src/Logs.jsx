@@ -250,7 +250,7 @@ export default function Logs() {
     if (!filtersReady) return;
 
     let cancelled = false;
-    axios.get("/api/logs", { params: { ...buildFilterParams(), perPage: 'all', page: 1 } })
+    axios.get("/api/logs", { params: { perPage: 'all', page: 1 } })
       .then((response) => {
         if (cancelled) return;
         updateFilterOptions(response.data);
@@ -263,7 +263,7 @@ export default function Logs() {
     return () => {
       cancelled = true;
     };
-  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal]);
+  }, [filtersReady, updateFilterOptions, refreshSignal]);
 
   const currentFilters = useMemo(() => ({
     stacks: selectedStacks,
@@ -300,7 +300,6 @@ export default function Logs() {
 
         setLogs(items);
         setTotalLogs(total);
-        updateFilterOptions(response.data);
 
         if (perPage === 'all') {
           if (page !== 1) setPage(1);
@@ -354,6 +353,27 @@ export default function Logs() {
     } else {
       setter(values);
     }
+    setPage(1);
+  };
+
+  const handleOptionMouseDown = (event, currentValues, setter) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const { value } = event.target;
+    if (value === ALL_OPTION_VALUE) {
+      if (currentValues.length) {
+        setter([]);
+        setPage(1);
+      }
+      return;
+    }
+
+    const nextValues = currentValues.includes(value)
+      ? currentValues.filter((entry) => entry !== value)
+      : [...currentValues, value];
+
+    setter(nextValues);
     setPage(1);
   };
 
@@ -613,6 +633,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedStacks, setSelectedStacks)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -651,6 +672,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedStatuses, setSelectedStatuses)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -689,6 +711,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedEndpoints, setSelectedEndpoints)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
@@ -727,6 +750,7 @@ export default function Logs() {
                     <option
                       key={value}
                       value={value}
+                      onMouseDown={(event) => handleOptionMouseDown(event, selectedRedeployTypes, setSelectedRedeployTypes)}
                       className={`bg-gray-900 text-gray-200 ${value === ALL_OPTION_VALUE ? 'font-semibold text-gray-100' : ''}`}
                     >
                       {label}
