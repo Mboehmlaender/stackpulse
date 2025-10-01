@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/images/stackpulse.png" alt="StackPulse Logo" height="50" wdith="auto"/>
+  <img src="assets/images/stackpulse.png" alt="StackPulse Logo" height="90" wdith="auto"/>
 </div>
 
 ---
