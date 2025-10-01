@@ -22,7 +22,8 @@ export default function Stacks() {
         // Status nach Redeploy neu vom Server holen
         try {
           const res = await axios.get("/api/stacks");
-          setStacks(res.data.sort((a, b) => a.Name.localeCompare(b.Name)));
+          const sortedStacks = [...res.data].sort((a, b) => a.Name.localeCompare(b.Name));
+          setStacks(sortedStacks.map(stack => ({ ...stack, redeploying: stack.redeploying || false })));
         } catch (err) {
           console.error("Fehler beim Aktualisieren nach Redeploy:", err);
         }
@@ -59,7 +60,10 @@ export default function Stacks() {
 
   useEffect(() => {
     setSelectedStackIds(prev => {
-      const filtered = prev.filter(id => stacks.some(stack => stack.Id === id));
+      const filtered = prev.filter(id => {
+        const match = stacks.find(stack => stack.Id === id);
+        return match && match.updateStatus !== '✅';
+      });
       return filtered.length === prev.length ? prev : filtered;
     });
   }, [stacks]);
@@ -74,55 +78,88 @@ export default function Stacks() {
   };
 
   const handleRedeploy = async (stackId) => {
-    setSelectedStackIds(prev => prev.filter(id => id !== stackId));
-    setStacks(prev =>
-      prev.map(stack => stack.Id === stackId ? { ...stack, redeploying: true } : stack)
+    setSelectedStackIds((prev) => prev.filter((id) => id !== stackId));
+    setStacks((prev) =>
+      prev.map((stack) =>
+        stack.Id === stackId ? { ...stack, redeploying: true } : stack
+      )
     );
 
     try {
       await axios.put(`/api/stacks/${stackId}/redeploy`);
-      // Socket.IO Event aktualisiert Status automatisch
+      // Statusupdates kommen über Socket.IO
     } catch (err) {
       console.error("❌ Fehler beim Redeploy:", err);
-      setStacks(prev =>
-        prev.map(stack => stack.Id === stackId ? { ...stack, redeploying: false } : stack)
+      setStacks((prev) =>
+        prev.map((stack) =>
+          stack.Id === stackId ? { ...stack, redeploying: false } : stack
+        )
       );
     }
   };
 
   const handleRedeployAll = async () => {
-    setStacks(prev => prev.map(stack => ({ ...stack, redeploying: true })));
+    const outdatedStacks = stacks.filter((stack) => stack.updateStatus !== '✅');
+    if (!outdatedStacks.length) return;
 
-    try {
-      await axios.put("/api/stacks/redeploy-all");
-      setSelectedStackIds([]);
-      // Statusupdates kommen über Socket.IO
-    } catch (err) {
-      console.error("❌ Fehler beim Redeploy ALL:", err);
-      setStacks(prev => prev.map(stack => ({ ...stack, redeploying: false })));
-    }
-  };
-
-  const handleRedeploySelection = async () => {
-    if (!selectedStackIds.length) return;
+    const outdatedIds = new Set(outdatedStacks.map((stack) => stack.Id));
 
     setStacks(prev =>
       prev.map(stack =>
-        selectedStackIds.includes(stack.Id)
+        outdatedIds.has(stack.Id)
           ? { ...stack, redeploying: true }
           : stack
       )
     );
 
     try {
-      await axios.put("/api/stacks/redeploy-selection", { stackIds: selectedStackIds });
+      await axios.put("/api/stacks/redeploy-all");
+      setSelectedStackIds((prev) => prev.filter((id) => !outdatedIds.has(id)));
+      // Statusupdates kommen über Socket.IO
+    } catch (err) {
+      console.error("❌ Fehler beim Redeploy ALL:", err);
+      setStacks(prev =>
+        prev.map(stack =>
+          outdatedIds.has(stack.Id)
+            ? { ...stack, redeploying: false }
+            : stack
+        )
+      );
+    }
+  };
+
+  const handleRedeploySelection = async () => {
+    if (!selectedStackIds.length) return;
+
+    const eligibleIds = selectedStackIds.filter((id) => {
+      const stack = stacks.find((entry) => entry.Id === id);
+      return stack && stack.updateStatus !== '✅';
+    });
+
+    if (!eligibleIds.length) {
       setSelectedStackIds([]);
+      return;
+    }
+
+    const eligibleSet = new Set(eligibleIds);
+
+    setStacks(prev =>
+      prev.map(stack =>
+        eligibleSet.has(stack.Id)
+          ? { ...stack, redeploying: true }
+          : stack
+      )
+    );
+
+    try {
+      await axios.put("/api/stacks/redeploy-selection", { stackIds: eligibleIds });
+      setSelectedStackIds((prev) => prev.filter((id) => !eligibleSet.has(id)));
       // Statusupdates kommen über Socket.IO
     } catch (err) {
       console.error("❌ Fehler beim Redeploy Auswahl:", err);
       setStacks(prev =>
         prev.map(stack =>
-          selectedStackIds.includes(stack.Id)
+          eligibleSet.has(stack.Id)
             ? { ...stack, redeploying: false }
             : stack
         )
@@ -131,16 +168,17 @@ export default function Stacks() {
   };
 
   const hasSelection = selectedStackIds.length > 0;
+  const hasOutdatedStacks = stacks.some((stack) => stack.updateStatus !== '✅');
   const bulkButtonLabel = hasSelection
     ? `Redeploy Auswahl (${selectedStackIds.length})`
     : 'Redeploy All';
 
   const bulkActionDisabled = hasSelection
-    ? selectedStackIds.every(id => {
+    ? selectedStackIds.length === 0 || selectedStackIds.every(id => {
         const targetStack = stacks.find(stack => stack.Id === id);
-        return targetStack?.redeploying;
+        return !targetStack || targetStack.redeploying || targetStack.updateStatus === '✅';
       })
-    : stacks.every(stack => stack.redeploying);
+    : !hasOutdatedStacks || stacks.every(stack => stack.updateStatus !== '✅' || stack.redeploying);
 
   const handleBulkRedeploy = () => {
     if (hasSelection) {
@@ -169,26 +207,29 @@ export default function Stacks() {
         {stacks.map(stack => {
           const isRedeploying = stack.redeploying;
           const isSelected = selectedStackIds.includes(stack.Id);
+          const isCurrent = stack.updateStatus === '✅';
+          const isSelectable = !isRedeploying && !isCurrent;
 
           return (
             <div
               key={stack.Id}
               className={`flex justify-between items-center p-5 rounded-xl shadow-lg transition border
                 ${isSelected ? 'border-purple-500 ring-1 ring-purple-500/40' : 'border-transparent'}
-                ${isRedeploying ? "bg-gray-700 cursor-not-allowed" : "bg-gray-800 hover:bg-gray-700"}`}
+                ${isRedeploying ? 'bg-gray-700 cursor-wait' : 'bg-gray-800 hover:bg-gray-700'}
+                ${!isSelectable && !isRedeploying ? 'opacity-75' : ''}`}
             >
               <div className="flex items-center space-x-4">
                 <input
                   type="checkbox"
                   checked={isSelected}
-                  onChange={() => toggleStackSelection(stack.Id, isRedeploying)}
-                  className="h-5 w-5 text-purple-500 focus:ring-purple-400 border-gray-600 bg-gray-900 rounded"
-                  disabled={isRedeploying}
+                  onChange={() => toggleStackSelection(stack.Id, !isSelectable)}
+                  className={`h-5 w-5 text-purple-500 focus:ring-purple-400 border-gray-600 bg-gray-900 rounded ${!isSelectable ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  disabled={!isSelectable}
                 />
                 <div className={`w-12 h-12 flex items-center justify-center rounded-full
-                  ${stack.updateStatus === "✅" ? "bg-green-500" :
-                    stack.updateStatus === "⚠️" ? "bg-yellow-500" :
-                    "bg-red-500"}`}
+                  ${stack.updateStatus === '✅' ? 'bg-green-500' :
+                    stack.updateStatus === '⚠️' ? 'bg-yellow-500' :
+                    'bg-red-500'}`}
                 />
                 <div>
                   <p className="text-lg font-semibold text-white">{stack.Name}</p>
@@ -196,15 +237,29 @@ export default function Stacks() {
                 </div>
               </div>
 
-              <button
-                onClick={() => handleRedeploy(stack.Id)}
-                disabled={isRedeploying}
-                className={`px-5 py-2 rounded-lg font-medium transition
-                  ${isRedeploying ? "bg-orange-500 cursor-not-allowed" :
-                    "bg-blue-500 hover:bg-blue-600"}`}
-              >
-                {isRedeploying ? "Redeploying" : "Redeploy"}
-              </button>
+              <div className="flex flex-col items-end gap-1 text-sm">
+                {isRedeploying ? (
+                  <>
+                    <span className="text-xs uppercase tracking-wide text-orange-300">Redeploy</span>
+                    <span className="text-orange-200">läuft…</span>
+                  </>
+                ) : isCurrent ? (
+                  <>
+                    <span className="text-xs uppercase tracking-wide text-gray-400">Status</span>
+                    <span className="text-green-300">Aktuell</span>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => handleRedeploy(stack.Id)}
+                      disabled={isRedeploying}
+                      className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600"
+                    >
+                      Redeploy
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           );
         })}
