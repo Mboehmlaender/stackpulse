@@ -40,7 +40,7 @@ Ziel:
 - [x] Pagination, Lösch- und Exportanzeigen
 
 ### Features
-- [ ] Selektive Auswahl: einzelne Stacks oder Services neu deployen  
+- [x] Selektive Auswahl: einzelne Stacks oder Services neu deployen  
 
 </details>
 
