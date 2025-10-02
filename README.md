@@ -26,7 +26,7 @@ Ziel:
 
 </details>
 
-<details open>
+<details>
   <summary>✅ v0.2.0 – Release</summary>
 
 ### Backend
@@ -46,13 +46,43 @@ Ziel:
 
 </details>
 
+<details open>
+  <summary>🟡 v0.3 – Release</summary>
+
+### Backend
+- [ ] Scheduler-Service mit Cron/Timer (Jobs erstellen, starten, stoppen, löschen)  
+- [ ] Speicherung der Scheduler-Jobs in SQLite (Stack-ID, Zeit, Status, History)  
+- [ ] API-Endpunkte für Scheduler-Verwaltung (CRUD + Statusabfrage)  
+- [ ] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen
+- [ ] Erweiterung der Logs  
+- [ ] API für Filter & Suche (Stacks nach Name/Status abrufen)  
+
+### Frontend
+- [ ] UI für Scheduler (Stack auswählen, Zeit festlegen, Übersicht der Jobs)  
+- [ ] Filter: Stacks nach Name oder Status durchsuchen  
+- [ ] Benachrichtigungen im UI: erfolgreicher/fehlgeschlagener Redeploy (Toast + Notification-Center)  
+- [ ] Anzeige & Verwaltung der Scheduler-Jobs (Tabelle mit Status, Pause/Resume/Delete)  
+- [ ] Visualisierung der Datenbereinigung (Konflikt/Auto-Fix Meldungen)  
+
+### Features
+- [ ] Automatische Redeploys nach Zeitplan (einmalig oder wiederkehrend)  
+- [ ] Frontend-Filter für schnellere Navigation bei vielen Stacks  
+- [ ] Echtzeit-Feedback im UI (Notifications)  
+- [ ] Datenkonsistenz sichern: keine doppelten Stack-IDs mehr
+
+</details>
+
 <details>
-  <summary>🔮 Geplante Features (v0.3+)</summary>
+  <summary>🔮 Geplante Features (v0.4+)</summary>
 
 - Notifications (z. B. via Webhooks oder Mail)  
 - Authentifizierung & Benutzerverwaltung  
 - Monitoring (Status, CPU/RAM)  
 - Verbesserte UI/UX  
+- Export/Import von Scheduler-Jobs (z. B. JSON)  
+- Health-Checks nach Redeploy (automatisierte Tests, Statusprüfung)   
+
+</details>
 
 </details>
 
