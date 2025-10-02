@@ -47,7 +47,7 @@ Ziel:
 </details>
 
 <details open>
-  <summary>🟡 v0.3 – Release</summary>
+  <summary>🟡 v0.3 – In Entwicklung</summary>
 
 ### Backend
 - [ ] Scheduler-Service mit Cron/Timer (Jobs erstellen, starten, stoppen, löschen)  
