@@ -15,7 +15,7 @@ Ziel:
 ## 🚀 Features & Roadmap
 
 <details>
-  <summary>✅ v0.1.0 – Initial Release</summary>
+  <summary>✅ v0.1 – Initial Release</summary>
 
 - Projektstruktur mit Frontend & Backend  
 - Lokales Startskript (`scripts/start-dev.sh`)  
@@ -27,7 +27,7 @@ Ziel:
 </details>
 
 <details open>
-  <summary>✅ v0.2.0 – Release</summary>
+  <summary>✅ v0.2 – Release</summary>
 
 ### Backend
 - [x] Anbindung einer SQLite-Datenbank  
