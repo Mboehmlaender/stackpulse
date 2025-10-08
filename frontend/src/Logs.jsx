@@ -547,22 +547,10 @@ export default function Logs() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-6xl space-y-4 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-gray-100">Redeploy-Logs</h2>
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <span>Einträge pro Seite</span>
-            <select
-              value={perPage}
-              onChange={handlePerPageChange}
-              className="rounded-md border border-gray-700 bg-gray-900/70 px-3 py-1.5 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              {PER_PAGE_OPTIONS.map(({ value, label }) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
           <button
             onClick={() => handleExport('txt')}
             disabled={actionLoading || loading}
@@ -828,6 +816,19 @@ export default function Logs() {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-end gap-2 text-sm text-gray-300">
+        <span>Einträge pro Seite</span>
+        <select
+          value={perPage}
+          onChange={handlePerPageChange}
+          className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+        >
+          {PER_PAGE_OPTIONS.map(({ value, label }) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
       </div>
 
       <div className="overflow-x-auto bg-gray-800/60 rounded-xl border border-gray-700">

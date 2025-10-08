@@ -24,7 +24,6 @@ export default function Stacks() {
   const [selectionPromptVisible, setSelectionPromptVisible] = useState(false);
   const [rememberSelectionChoice, setRememberSelectionChoice] = useState(false);
   const [selectionPreferenceStored, setSelectionPreferenceStored] = useState(false);
-  const [showRedeployingOnly, setShowRedeployingOnly] = useState(false);
   const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
   const [page, setPage] = useState(1);
 
@@ -111,7 +110,6 @@ export default function Stacks() {
     return stacks.filter((stack) => {
       if (statusFilter === "current" && stack.updateStatus !== '✅') return false;
       if (statusFilter === "outdated" && stack.updateStatus === '✅') return false;
-      if (showRedeployingOnly && !stack.redeploying) return false;
 
       if (normalizedSearch) {
         const identifier = `${stack.Name ?? ""} ${stack.Id ?? ""}`.toLowerCase();
@@ -120,7 +118,7 @@ export default function Stacks() {
 
       return true;
     });
-  }, [stacks, statusFilter, normalizedSearch, showRedeployingOnly]);
+  }, [stacks, statusFilter, normalizedSearch]);
 
   const eligibleFilteredStacks = useMemo(
     () => filteredStacks.filter((stack) => stack.updateStatus !== '✅' && !stack.redeployDisabled),
@@ -154,7 +152,7 @@ export default function Stacks() {
   );
 
   const selectionPreferenceRef = useRef({ action: 'keep', remember: false });
-  const previousFiltersRef = useRef({ status: statusFilter, search: normalizedSearch, redeploying: showRedeployingOnly });
+  const previousFiltersRef = useRef({ status: statusFilter, search: normalizedSearch });
   const didMountRef = useRef(false);
 
   useEffect(() => {
@@ -177,28 +175,28 @@ export default function Stacks() {
     const normalized = normalizedSearch;
     if (!didMountRef.current) {
       didMountRef.current = true;
-      previousFiltersRef.current = { status: statusFilter, search: normalized, redeploying: showRedeployingOnly };
+      previousFiltersRef.current = { status: statusFilter, search: normalized };
       return;
     }
 
     const prev = previousFiltersRef.current;
-    const filtersChanged = prev.status !== statusFilter || prev.search !== normalized || prev.redeploying !== showRedeployingOnly;
+    const filtersChanged = prev.status !== statusFilter || prev.search !== normalized;
 
     if (!filtersChanged) {
-      if (statusFilter === 'all' && normalized.length === 0 && !showRedeployingOnly && selectionPromptVisible) {
+      if (statusFilter === 'all' && normalized.length === 0 && selectionPromptVisible) {
         setSelectionPromptVisible(false);
       }
       return;
     }
 
-    previousFiltersRef.current = { status: statusFilter, search: normalized, redeploying: showRedeployingOnly };
+    previousFiltersRef.current = { status: statusFilter, search: normalized };
 
     if (selectedStackIds.length === 0) {
       setSelectionPromptVisible(false);
       return;
     }
 
-    const hasFilters = statusFilter !== 'all' || normalized.length > 0 || showRedeployingOnly;
+    const hasFilters = statusFilter !== 'all' || normalized.length > 0;
     if (!hasFilters) {
       setSelectionPromptVisible(false);
       return;
@@ -223,11 +221,11 @@ export default function Stacks() {
     }
   }, [selectedStackIds.length, selectionPromptVisible]);
 
-  const hasActiveFilters = statusFilter !== "all" || normalizedSearch.length > 0 || showRedeployingOnly;
+  const hasActiveFilters = statusFilter !== "all" || normalizedSearch.length > 0;
 
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, normalizedSearch, showRedeployingOnly]);
+  }, [statusFilter, normalizedSearch]);
 
   useEffect(() => {
     if (perPage === 'all') {
@@ -452,7 +450,7 @@ export default function Stacks() {
   if (error) return <p className="text-red-400">{error}</p>;
 
   return (
-    <div className="p-6">
+    <div className="mx-auto max-w-6xl p-6">
       <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-6">
           <div>
@@ -491,18 +489,9 @@ export default function Stacks() {
               placeholder="Name oder ID"
               className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
             />
-            <label className="mt-2 flex items-center gap-2 text-sm text-gray-300">
-              <input
-                type="checkbox"
-                checked={showRedeployingOnly}
-                onChange={(event) => setShowRedeployingOnly(event.target.checked)}
-                className="h-4 w-4 rounded border border-purple-400 bg-gray-900 text-purple-400 focus:ring-purple-400"
-              />
-              <span>Nur Redeploy läuft</span>
-            </label>
           </div>
         </div>
-        <div className="flex flex-col items-start gap-2 md:items-end">
+        <div className="flex flex-col items-end gap-2">
           {selectionPreferenceStored && (
             <button
               type="button"
@@ -519,18 +508,8 @@ export default function Stacks() {
           >
             {bulkButtonLabel}
           </button>
-        </div>
-      </div>
-
-      <div className="mb-6 flex flex-col gap-3 text-sm text-gray-300 md:flex-row md:items-center md:justify-between">
-        <div>
-          {totalItems === 0
-            ? 'Keine Stacks verfügbar'
-            : `Zeige ${pageStart}-${pageEnd} von ${totalItems} Stacks`}
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2">
-            <span>Einträge pro Seite:</span>
+          <label className="flex items-center gap-2 text-sm text-gray-300">
+            <span>Einträge pro Seite</span>
             <select
               value={perPage}
               onChange={handlePerPageChange}
@@ -543,25 +522,6 @@ export default function Stacks() {
               ))}
             </select>
           </label>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handlePrevPage}
-              disabled={page <= 1 || totalItems === 0 || perPage === 'all'}
-              className="rounded-md border border-gray-700 px-2 py-1 text-xs font-medium uppercase tracking-wide text-gray-200 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Zurück
-            </button>
-            <span>{`Seite ${Math.min(page, totalPages)} / ${totalPages}`}</span>
-            <button
-              type="button"
-              onClick={handleNextPage}
-              disabled={perPage === 'all' || totalItems === 0 || page >= totalPages}
-              className="rounded-md border border-gray-700 px-2 py-1 text-xs font-medium uppercase tracking-wide text-gray-200 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Weiter
-            </button>
-          </div>
         </div>
       </div>
 
@@ -714,6 +674,39 @@ export default function Stacks() {
           <p className="text-gray-400">
             {hasActiveFilters ? 'Keine Stacks für die gesetzten Filter.' : 'Keine Stacks gefunden.'}
           </p>
+        )}
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-300">
+        <span>
+          {totalItems === 0
+            ? 'Keine Stacks verfügbar'
+            : perPage === 'all'
+              ? `Zeige alle ${totalItems} Stacks`
+              : `Zeige ${pageStart}-${pageEnd} von ${totalItems} Stacks`}
+        </span>
+        {perPage !== 'all' && totalItems > 0 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePrevPage}
+              disabled={page <= 1}
+              className="rounded-md border border-gray-600 px-3 py-1 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+            >
+              Zurück
+            </button>
+            <span className="text-gray-400">
+              Seite {Math.min(page, totalPages)} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={handleNextPage}
+              disabled={page >= totalPages}
+              className="rounded-md border border-gray-600 px-3 py-1 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-60"
+            >
+              Weiter
+            </button>
+          </div>
         )}
       </div>
     </div>
