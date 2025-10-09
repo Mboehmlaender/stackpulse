@@ -50,10 +50,24 @@ io.on("connection", (socket) => {
   console.log(`🔌 [Socket] Client verbunden: ${socket.id}`);
 });
 
-const broadcastRedeployStatus = (stackId, status) => {
-  redeployingStacks[stackId] = status;
-  io.emit("redeployStatus", { stackId, status });
-  console.log(`🔄 [RedeployStatus] Stack ${stackId} ist jetzt ${status ? "im Redeploy" : "fertig"}`);
+const broadcastRedeployStatus = ({ stackId, stackName, phase, message }) => {
+  const normalizedPhase = phase || (message ? 'info' : undefined);
+  const isRedeploying = normalizedPhase === 'started';
+  redeployingStacks[stackId] = Boolean(isRedeploying);
+
+  const payload = {
+    stackId,
+    stackName,
+    phase: normalizedPhase,
+    message,
+    isRedeploying
+  };
+
+  io.emit("redeployStatus", payload);
+
+  const label = stackName ? `${stackName} (${stackId})` : `Stack ${stackId}`;
+  const phaseLabel = normalizedPhase ?? (isRedeploying ? 'started' : 'success');
+  console.log(`🔄 [RedeployStatus] ${label} -> ${phaseLabel}${message ? `: ${message}` : ""}`);
 };
 
 const REDEPLOY_TYPES = {
@@ -271,14 +285,18 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 
   let stack;
   try {
-    broadcastRedeployStatus(id, true);
-
     const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
     stack = stackRes.data;
 
     if (stack.EndpointId !== ENDPOINT_ID) {
       throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
     }
+
+    broadcastRedeployStatus({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      phase: 'started'
+    });
 
     logRedeployEvent({
       stackId: stack.Id || id,
@@ -318,7 +336,11 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
       );
     }
 
-    broadcastRedeployStatus(id, false);
+    broadcastRedeployStatus({
+      stackId: stack.Id || id,
+      stackName: stack.Name,
+      phase: 'success'
+    });
     logRedeployEvent({
       stackId: stack.Id || id,
       stackName: stack.Name,
@@ -330,8 +352,13 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
     console.log(`✅ PUT /api/stacks/${id}/redeploy: Redeploy erfolgreich abgeschlossen`);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
-    broadcastRedeployStatus(id, false);
     const errorMessage = err.response?.data?.message || err.message;
+    broadcastRedeployStatus({
+      stackId: stack?.Id || id,
+      stackName: stack?.Name,
+      phase: 'error',
+      message: errorMessage
+    });
     logRedeployEvent({
       stackId: stack?.Id || id,
       stackName: stack?.Name || `Stack ${id}`,
@@ -389,7 +416,11 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
 
     for (const stack of eligibleStacks) {
       try {
-        broadcastRedeployStatus(stack.Id, true);
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'started'
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
@@ -414,7 +445,11 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
           }
         }
 
-        broadcastRedeployStatus(stack.Id, false);
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'success'
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
@@ -425,8 +460,13 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
         });
         console.log(`✅ Redeploy abgeschlossen: ${stack.Name}`);
       } catch (err) {
-        broadcastRedeployStatus(stack.Id, false);
         const errorMessage = err.response?.data?.message || err.message;
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'error',
+          message: errorMessage
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
@@ -511,7 +551,11 @@ app.put('/api/stacks/redeploy-selection', async (req, res) => {
 
     for (const stack of eligibleStacks) {
       try {
-        broadcastRedeployStatus(stack.Id, true);
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'started'
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
@@ -536,7 +580,11 @@ app.put('/api/stacks/redeploy-selection', async (req, res) => {
           }
         }
 
-        broadcastRedeployStatus(stack.Id, false);
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'success'
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
@@ -547,8 +595,13 @@ app.put('/api/stacks/redeploy-selection', async (req, res) => {
         });
         console.log(`✅ Redeploy Auswahl abgeschlossen: ${stack.Name}`);
       } catch (err) {
-        broadcastRedeployStatus(stack.Id, false);
         const errorMessage = err.response?.data?.message || err.message;
+        broadcastRedeployStatus({
+          stackId: stack.Id,
+          stackName: stack.Name,
+          phase: 'error',
+          message: errorMessage
+        });
         logRedeployEvent({
           stackId: stack.Id,
           stackName: stack.Name,
