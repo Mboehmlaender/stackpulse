@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
+import { useToast } from "./components/ToastProvider.jsx";
 
 const SELECTION_PROMPT_STORAGE_KEY = "stackSelectionPreference";
 
@@ -13,10 +14,25 @@ const PER_PAGE_OPTIONS = [
   { value: "all", label: "Alle" }
 ];
 const VALID_PER_PAGE_VALUES = new Set(PER_PAGE_OPTIONS.map((option) => option.value));
+const STACKS_CACHE_DURATION = 30 * 1000;
+const STACKS_REFRESH_INTERVAL = 30 * 1000;
+let stacksCache = { data: null, timestamp: 0 };
+let stacksCachePromise = null;
+
+const isCacheFresh = () => Boolean(stacksCache.data) && (Date.now() - stacksCache.timestamp < STACKS_CACHE_DURATION);
+const updateStacksCache = (data) => {
+  stacksCache = { data, timestamp: Date.now() };
+};
+
+const prepareInitialStacks = (data) => {
+  if (!Array.isArray(data)) return [];
+  return [...data].sort((a, b) => (a?.Name || '').localeCompare(b?.Name || ''));
+};
+
 
 export default function Stacks() {
-  const [stacks, setStacks] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [stacks, setStacks] = useState(() => prepareInitialStacks(stacksCache.data));
+  const [loading, setLoading] = useState(() => !stacksCache.data);
   const [error, setError] = useState("");
   const [selectedStackIds, setSelectedStackIds] = useState([]);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -27,12 +43,26 @@ export default function Stacks() {
   const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
   const [page, setPage] = useState(1);
 
-  const mergeStackState = (previousStacks, incomingStacks) => {
+  const { showToast } = useToast();
+
+  const stacksByIdRef = useRef(new Map());
+
+  const mergeStackState = useCallback((previousStacks, incomingStacks) => {
     const prevMap = new Map(previousStacks.map((stack) => [stack.Id, stack]));
     const sortedIncoming = [...incomingStacks].sort((a, b) => a.Name.localeCompare(b.Name));
 
     return sortedIncoming.map((stack) => {
       const previous = prevMap.get(stack.Id);
+
+      if (previous && previous.updateStatus === '✅' && stack.updateStatus === '⚠️') {
+        const stackLabel = stack.Name ? `${stack.Name} (ID: ${stack.Id})` : `Stack ${stack.Id}`;
+        showToast({
+          variant: 'warning',
+          title: 'Aktualisierung gefunden',
+          description: stackLabel
+        });
+      }
+
       return {
         ...stack,
         redeploying: previous?.redeploying || stack.redeploying || false,
@@ -40,7 +70,7 @@ export default function Stacks() {
         duplicateName: stack.duplicateName ?? previous?.duplicateName ?? false
       };
     });
-  };
+  }, [showToast]);
 
   useEffect(() => {
     const socket = io("/", {
@@ -49,27 +79,77 @@ export default function Stacks() {
     });
     console.log("🔌 Socket connected");
 
-    socket.on("redeployStatus", async ({ stackId, status }) => {
-      console.log(`🔄 Stack ${stackId} Redeploy Status: ${status ? "running" : "finished"}`);
+    socket.on("redeployStatus", async (payload = {}) => {
+      const { stackId } = payload;
+      if (!stackId) return;
+
+      const hasBooleanStatus = typeof payload.status === 'boolean';
+      const isRedeploying = typeof payload.isRedeploying === 'boolean'
+        ? payload.isRedeploying
+        : (hasBooleanStatus ? payload.status : undefined);
+      const resolvedPhase = payload.phase ?? (hasBooleanStatus
+        ? (payload.status ? 'started' : 'success')
+        : undefined);
+
+      const stackSnapshot = stacksByIdRef.current.get(stackId);
+      const stackName = payload.stackName ?? stackSnapshot?.Name;
+      const stackLabel = stackName ? `${stackName} (ID: ${stackId})` : `Stack ${stackId}`;
+
+      console.log(`🔄 Stack ${stackId} Redeploy Update: ${resolvedPhase ?? (isRedeploying ? 'running' : 'finished')}`);
+
+      if (resolvedPhase === 'started') {
+        showToast({
+          variant: 'info',
+          title: 'Redeploy gestartet',
+          description: stackLabel
+        });
+      } else if (resolvedPhase === 'success') {
+        showToast({
+          variant: 'success',
+          title: 'Redeploy abgeschlossen',
+          description: stackLabel
+        });
+      } else if (resolvedPhase === 'error') {
+        const detail = payload.message ? ` – ${payload.message}` : '';
+        showToast({
+          variant: 'error',
+          title: 'Redeploy fehlgeschlagen',
+          description: `${stackLabel}${detail}`
+        });
+      }
 
       setStacks(prev =>
         prev.map(stack => {
           if (stack.Id !== stackId) return stack;
-          return {
-            ...stack,
-            redeploying: status,
-            updateStatus: status ? stack.updateStatus : '✅'
-          };
+
+          if (resolvedPhase === 'started' || isRedeploying === true) {
+            return { ...stack, redeploying: true };
+          }
+
+          if (resolvedPhase === 'success') {
+            return { ...stack, redeploying: false, updateStatus: '✅' };
+          }
+
+          if (resolvedPhase === 'error' || isRedeploying === false) {
+            return { ...stack, redeploying: false };
+          }
+
+          return stack;
         })
       );
 
-      if (!status) {
-        // Status nach Redeploy neu vom Server holen
+      const shouldRefresh =
+        resolvedPhase === 'success' ||
+        resolvedPhase === 'error' ||
+        (hasBooleanStatus && payload.status === false);
+
+      if (shouldRefresh) {
         try {
-          const res = await axios.get("/api/stacks");
+          const res = await axios.get('/api/stacks');
+          updateStacksCache(res.data);
           setStacks(prev => mergeStackState(prev, res.data));
         } catch (err) {
-          console.error("Fehler beim Aktualisieren nach Redeploy:", err);
+          console.error('Fehler beim Aktualisieren nach Redeploy:', err);
         }
       }
     });
@@ -77,22 +157,81 @@ export default function Stacks() {
     return () => socket.disconnect();
   }, []);
 
-  const fetchStacks = async () => {
-    setLoading(true);
+  const fetchStacks = useCallback(async ({ force = false, silent = false } = {}) => {
+    const hadCache = Boolean(stacksCache.data);
+
+    if (!force && hadCache) {
+      setStacks(prev => mergeStackState(prev, stacksCache.data));
+      if (!silent) {
+        setLoading(false);
+        if (isCacheFresh()) {
+          return;
+        }
+      }
+    }
+
+    const shouldShowSpinner = !silent && (!hadCache || force);
+    if (shouldShowSpinner) {
+      setLoading(true);
+    }
+
     try {
-      const res = await axios.get("/api/stacks");
-      setStacks(prev => mergeStackState(prev, res.data));
+      if (force || !stacksCachePromise) {
+        stacksCachePromise = axios.get("/api/stacks")
+          .then((res) => {
+            updateStacksCache(res.data);
+            return res.data;
+          })
+          .finally(() => {
+            stacksCachePromise = null;
+          });
+      }
+
+      const data = await stacksCachePromise;
+      setStacks(prev => mergeStackState(prev, data));
+      setError("");
     } catch (err) {
       console.error("❌ Fehler beim Abrufen der Stacks:", err);
-      setError("Fehler beim Laden der Stacks");
+      if (!hadCache && !silent) {
+        setError("Fehler beim Laden der Stacks");
+      }
     } finally {
-      setLoading(false);
+      if (shouldShowSpinner) {
+        setLoading(false);
+      }
     }
-  };
+  }, [mergeStackState]);
 
   useEffect(() => {
     fetchStacks();
-  }, []);
+  }, [fetchStacks]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+
+    const intervalId = setInterval(() => {
+      if (!document.hidden) {
+        fetchStacks({ force: true, silent: true });
+      }
+    }, STACKS_REFRESH_INTERVAL);
+
+    return () => clearInterval(intervalId);
+  }, [fetchStacks]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        fetchStacks({ force: true, silent: true });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchStacks]);
 
   useEffect(() => {
     setSelectedStackIds(prev => {
@@ -102,6 +241,10 @@ export default function Stacks() {
       });
       return filtered.length === prev.length ? prev : filtered;
     });
+  }, [stacks]);
+
+  useEffect(() => {
+    stacksByIdRef.current = new Map(stacks.map((stack) => [stack.Id, stack]));
   }, [stacks]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -350,6 +493,17 @@ export default function Stacks() {
           stack.Id === stackId ? { ...stack, redeploying: false } : stack
         )
       );
+
+      if (!err.response) {
+        const snapshot = stacksByIdRef.current.get(stackId);
+        const stackLabel = snapshot?.Name ? `${snapshot.Name} (ID: ${stackId})` : `Stack ${stackId}`;
+        const errorText = err.message || 'Unbekannter Fehler';
+        showToast({
+          variant: 'error',
+          title: 'Redeploy fehlgeschlagen',
+          description: `${stackLabel} – ${errorText}`
+        });
+      }
     }
   };
 
@@ -383,6 +537,13 @@ export default function Stacks() {
             : stack
         )
       );
+
+      const errorText = err.response?.data?.error || err.message || 'Unbekannter Fehler';
+      showToast({
+        variant: 'error',
+        title: 'Redeploy ALL fehlgeschlagen',
+        description: errorText
+      });
     }
   };
 
@@ -422,6 +583,13 @@ export default function Stacks() {
             : stack
         )
       );
+
+      const errorText = err.response?.data?.error || err.message || 'Unbekannter Fehler';
+      showToast({
+        variant: 'error',
+        title: 'Redeploy Auswahl fehlgeschlagen',
+        description: errorText
+      });
     }
   };
 
