@@ -26,7 +26,7 @@ Ziel:
 
 </details>
 
-<details>
+<details open>
   <summary>✅ v0.2 – Release</summary>
 
 ### Backend
