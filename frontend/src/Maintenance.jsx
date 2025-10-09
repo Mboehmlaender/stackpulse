@@ -160,6 +160,10 @@ export default function Maintenance() {
         </p>
       </div>
 
+      <div className="rounded-lg border border-amber-500/60 bg-amber-900/40 px-4 py-3 text-sm text-amber-100">
+        Dieses Wartungsfeature ist noch nicht getestet. Bitte nicht in Produktivumgebungen einsetzen.
+      </div>
+
       <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
