@@ -44,6 +44,8 @@ const REDEPLOY_TYPE_LABELS = {
   Einzeln: "Einzeln",
   Alle: "Alle",
   Auswahl: "Auswahl",
+  Wartung: "Wartung",
+  maintenance: "Wartung",
   single: "Einzeln",
   all: "Alle",
   selection: "Auswahl"

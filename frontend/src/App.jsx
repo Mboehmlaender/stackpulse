@@ -2,6 +2,7 @@ import React from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import Stacks from "./Stacks.jsx";
 import Logs from "./Logs.jsx";
+import Maintenance from "./Maintenance.jsx";
 import logo from "./assets/images/stackpulse.png";
 
 const navLinkBase =
@@ -24,6 +25,9 @@ export default function App() {
               <NavLink to="/" end className={getNavClass}>
                 Stacks
               </NavLink>
+              <NavLink to="/maintenance" className={getNavClass}>
+                Wartung
+              </NavLink>
               <NavLink to="/logs" className={getNavClass}>
                 Logs
               </NavLink>
@@ -34,6 +38,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-6 py-6">
         <Routes>
           <Route path="/" element={<Stacks />} />
+          <Route path="/maintenance" element={<Maintenance />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="*" element={<Stacks />} />
         </Routes>
