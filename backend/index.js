@@ -73,10 +73,82 @@ const broadcastRedeployStatus = ({ stackId, stackName, phase, message }) => {
 const REDEPLOY_TYPES = {
   SINGLE: 'Einzeln',
   ALL: 'Alle',
-  SELECTION: 'Auswahl'
+  SELECTION: 'Auswahl',
+  MAINTENANCE: 'Wartung'
 };
 
 const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+
+const fetchPortainerStacks = async () => {
+  const stacksRes = await axiosInstance.get('/api/stacks');
+  return stacksRes.data.filter((stack) => stack.EndpointId === ENDPOINT_ID);
+};
+
+const buildStackCollections = (stacks = []) => {
+  const collections = new Map();
+
+  stacks.forEach((stack) => {
+    const name = stack.Name || 'Unbenannt';
+    const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
+    const entry = collections.get(name);
+
+    if (!entry) {
+      collections.set(name, {
+        canonical: stack,
+        isSelf,
+        members: [stack]
+      });
+      return;
+    }
+
+    entry.members.push(stack);
+
+    if (!entry.isSelf && isSelf) {
+      entry.canonical = stack;
+      entry.isSelf = true;
+    }
+  });
+
+  const canonicalStacks = [];
+  const duplicates = [];
+
+  collections.forEach((entry, name) => {
+    canonicalStacks.push(entry.canonical);
+
+    if (entry.members.length > 1) {
+      const seenIds = new Set();
+      const duplicateEntries = entry.members.filter((member) => {
+        const id = String(member.Id);
+        if (id === String(entry.canonical.Id)) {
+          return false;
+        }
+        if (seenIds.has(id)) {
+          return false;
+        }
+        seenIds.add(id);
+        return true;
+      });
+
+      if (duplicateEntries.length > 0) {
+        duplicates.push({
+          name,
+          canonical: entry.canonical,
+          members: duplicateEntries
+        });
+      }
+    }
+  });
+
+  return { canonicalStacks, duplicates };
+};
+
+const loadStackCollections = async () => {
+  const filteredStacks = await fetchPortainerStacks();
+  return {
+    filteredStacks,
+    ...buildStackCollections(filteredStacks)
+  };
+};
 
 const isStackOutdated = async (stackId) => {
   try {
@@ -110,47 +182,27 @@ const filterOutdatedStacks = async (stacks = []) => {
 app.get('/api/stacks', async (req, res) => {
   console.log("ℹ️ [API] GET /api/stacks: Abruf gestartet");
   try {
-    const stacksRes = await axiosInstance.get('/api/stacks');
-    const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
+    const { canonicalStacks, duplicates } = await loadStackCollections();
+    const duplicateNames = duplicates.map((entry) => entry.name);
+    const duplicateNameSet = new Set(duplicateNames);
 
-    const stacksByName = new Map();
-    const duplicateNames = new Set();
-
-    filteredStacks.forEach(stack => {
-      const name = stack.Name;
-      const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
-      const existingEntry = stacksByName.get(name);
-
-      if (!existingEntry) {
-        stacksByName.set(name, { stack, isSelf });
-        return;
-      }
-
-      duplicateNames.add(name);
-
-      if (!existingEntry.isSelf && isSelf) {
-        stacksByName.set(name, { stack, isSelf });
-      }
-    });
-
-    const uniqueStacks = Array.from(stacksByName.values()).map(entry => entry.stack);
-
-    if (duplicateNames.size) {
-      console.warn(`⚠️ [API] GET /api/stacks: Doppelte Stack-Namen erkannt: ${Array.from(duplicateNames).join(', ')}`);
+    if (duplicateNames.length) {
+      console.warn(`⚠️ [API] GET /api/stacks: Doppelte Stack-Namen erkannt: ${duplicateNames.join(', ')}`);
     }
 
     const stacksWithStatus = await Promise.all(
-      uniqueStacks.map(async (stack) => {
+      canonicalStacks.map(async (stack) => {
         try {
           const statusRes = await axiosInstance.get(
             `/api/stacks/${stack.Id}/images_status?refresh=true`
           );
           const statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
-          return { 
-            ...stack, 
-            updateStatus: statusEmoji, 
+          return {
+            ...stack,
+            updateStatus: statusEmoji,
             redeploying: redeployingStacks[stack.Id] || false,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false
+            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            duplicateName: duplicateNameSet.has(stack.Name)
           };
         } catch (err) {
           console.error(`❌ Fehler beim Abrufen des Status für Stack ${stack.Id}:`, err.message);
@@ -158,7 +210,8 @@ app.get('/api/stacks', async (req, res) => {
             ...stack,
             updateStatus: '❌',
             redeploying: redeployingStacks[stack.Id] || false,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false
+            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            duplicateName: duplicateNameSet.has(stack.Name)
           };
         }
       })
@@ -170,6 +223,159 @@ app.get('/api/stacks', async (req, res) => {
   } catch (err) {
     console.error(`❌ Fehler beim Abrufen der Stacks:`, err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/maintenance/duplicates', async (req, res) => {
+  console.log("🧹 [Maintenance] GET /api/maintenance/duplicates: Abruf gestartet");
+  try {
+    const { duplicates } = await loadStackCollections();
+
+    const payload = duplicates
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => ({
+        name: entry.name,
+        canonical: {
+          Id: entry.canonical.Id,
+          Name: entry.canonical.Name,
+          EndpointId: entry.canonical.EndpointId,
+          Type: entry.canonical.Type,
+          Created: entry.canonical.Created
+        },
+        duplicates: entry.members.map((stack) => ({
+          Id: stack.Id,
+          Name: stack.Name,
+          EndpointId: stack.EndpointId,
+          Type: stack.Type,
+          Created: stack.Created
+        }))
+      }));
+
+    res.json({
+      total: payload.length,
+      items: payload
+    });
+  } catch (err) {
+    console.error(`❌ [Maintenance] Fehler beim Abrufen der Duplikate:`, err.message);
+    res.status(500).json({ error: 'Fehler beim Abrufen der doppelten Stacks' });
+  }
+});
+
+app.post('/api/maintenance/duplicates/cleanup', async (req, res) => {
+  const canonicalId = req.body?.canonicalId;
+  const duplicateIdsInput = Array.isArray(req.body?.duplicateIds) ? req.body.duplicateIds : [];
+  const duplicateIds = duplicateIdsInput
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0);
+
+  if (!canonicalId) {
+    return res.status(400).json({ error: 'canonicalId ist erforderlich' });
+  }
+
+  if (!duplicateIds.length) {
+    return res.status(400).json({ error: 'duplicateIds ist erforderlich' });
+  }
+
+  const canonicalIdStr = String(canonicalId);
+  console.log(`🧹 [Maintenance] Bereinigung angefordert für Stack ${canonicalIdStr}. Ziel-IDs: ${duplicateIds.join(', ')}`);
+
+  try {
+    const { duplicates } = await loadStackCollections();
+    const target = duplicates.find((entry) => String(entry.canonical.Id) === canonicalIdStr);
+
+    if (!target) {
+      return res.status(404).json({ error: 'Kein doppelter Stack für diese ID gefunden' });
+    }
+
+    const duplicatesToDelete = target.members.filter((stack) => duplicateIds.includes(String(stack.Id)));
+
+    if (!duplicatesToDelete.length) {
+      return res.status(400).json({ error: 'Keine passenden Duplikate gefunden' });
+    }
+
+    logRedeployEvent({
+      stackId: target.canonical.Id,
+      stackName: target.canonical.Name,
+      status: 'started',
+      message: `Bereinigung doppelter Stacks gestartet (${duplicatesToDelete.length} Einträge)`,
+      endpoint: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    const results = [];
+    const errors = [];
+
+    for (const stack of duplicatesToDelete) {
+      try {
+        await axiosInstance.delete(`/api/stacks/${stack.Id}`, {
+          params: { endpointId: stack.EndpointId }
+        });
+        console.log(`🧹 [Maintenance] Stack entfernt: ${stack.Name} (${stack.Id})`);
+        results.push({
+          id: stack.Id,
+          name: stack.Name,
+          endpointId: stack.EndpointId,
+          status: 'deleted'
+        });
+      } catch (err) {
+        const message = err.response?.data?.message || err.message;
+        console.error(`❌ [Maintenance] Fehler beim Entfernen von Stack ${stack.Id}:`, message);
+        errors.push({ id: stack.Id, message });
+        results.push({
+          id: stack.Id,
+          name: stack.Name,
+          endpointId: stack.EndpointId,
+          status: 'error',
+          message
+        });
+      }
+    }
+
+    if (errors.length) {
+      const failedIds = errors.map((entry) => entry.id).join(', ');
+      logRedeployEvent({
+        stackId: target.canonical.Id,
+        stackName: target.canonical.Name,
+        status: 'error',
+        message: `Bereinigung fehlgeschlagen für IDs: ${failedIds}`,
+        endpoint: target.canonical.EndpointId,
+        redeployType: REDEPLOY_TYPES.MAINTENANCE
+      });
+
+      return res.status(500).json({
+        success: false,
+        canonical: {
+          id: target.canonical.Id,
+          name: target.canonical.Name,
+          endpointId: target.canonical.EndpointId
+        },
+        results
+      });
+    }
+
+    logRedeployEvent({
+      stackId: target.canonical.Id,
+      stackName: target.canonical.Name,
+      status: 'success',
+      message: `Bereinigung abgeschlossen. Entfernte IDs: ${results.map((entry) => entry.id).join(', ')}`,
+      endpoint: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    res.json({
+      success: true,
+      canonical: {
+        id: target.canonical.Id,
+        name: target.canonical.Name,
+        endpointId: target.canonical.EndpointId
+      },
+      removed: results.length,
+      results
+    });
+  } catch (err) {
+    const message = err.response?.data?.message || err.message;
+    console.error(`❌ [Maintenance] Fehler bei der Bereinigung:`, message);
+    res.status(500).json({ error: message || 'Fehler bei der Bereinigung' });
   }
 });
 
@@ -491,6 +697,159 @@ app.put('/api/stacks/redeploy-all', async (req, res) => {
       redeployType: REDEPLOY_TYPES.ALL
     });
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/maintenance/duplicates', async (req, res) => {
+  console.log("🧹 [Maintenance] GET /api/maintenance/duplicates: Abruf gestartet");
+  try {
+    const { duplicates } = await loadStackCollections();
+
+    const payload = duplicates
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => ({
+        name: entry.name,
+        canonical: {
+          Id: entry.canonical.Id,
+          Name: entry.canonical.Name,
+          EndpointId: entry.canonical.EndpointId,
+          Type: entry.canonical.Type,
+          Created: entry.canonical.Created
+        },
+        duplicates: entry.members.map((stack) => ({
+          Id: stack.Id,
+          Name: stack.Name,
+          EndpointId: stack.EndpointId,
+          Type: stack.Type,
+          Created: stack.Created
+        }))
+      }));
+
+    res.json({
+      total: payload.length,
+      items: payload
+    });
+  } catch (err) {
+    console.error(`❌ [Maintenance] Fehler beim Abrufen der Duplikate:`, err.message);
+    res.status(500).json({ error: 'Fehler beim Abrufen der doppelten Stacks' });
+  }
+});
+
+app.post('/api/maintenance/duplicates/cleanup', async (req, res) => {
+  const canonicalId = req.body?.canonicalId;
+  const duplicateIdsInput = Array.isArray(req.body?.duplicateIds) ? req.body.duplicateIds : [];
+  const duplicateIds = duplicateIdsInput
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0);
+
+  if (!canonicalId) {
+    return res.status(400).json({ error: 'canonicalId ist erforderlich' });
+  }
+
+  if (!duplicateIds.length) {
+    return res.status(400).json({ error: 'duplicateIds ist erforderlich' });
+  }
+
+  const canonicalIdStr = String(canonicalId);
+  console.log(`🧹 [Maintenance] Bereinigung angefordert für Stack ${canonicalIdStr}. Ziel-IDs: ${duplicateIds.join(', ')}`);
+
+  try {
+    const { duplicates } = await loadStackCollections();
+    const target = duplicates.find((entry) => String(entry.canonical.Id) === canonicalIdStr);
+
+    if (!target) {
+      return res.status(404).json({ error: 'Kein doppelter Stack für diese ID gefunden' });
+    }
+
+    const duplicatesToDelete = target.members.filter((stack) => duplicateIds.includes(String(stack.Id)));
+
+    if (!duplicatesToDelete.length) {
+      return res.status(400).json({ error: 'Keine passenden Duplikate gefunden' });
+    }
+
+    logRedeployEvent({
+      stackId: target.canonical.Id,
+      stackName: target.canonical.Name,
+      status: 'started',
+      message: `Bereinigung doppelter Stacks gestartet (${duplicatesToDelete.length} Einträge)`,
+      endpoint: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    const results = [];
+    const errors = [];
+
+    for (const stack of duplicatesToDelete) {
+      try {
+        await axiosInstance.delete(`/api/stacks/${stack.Id}`, {
+          params: { endpointId: stack.EndpointId }
+        });
+        console.log(`🧹 [Maintenance] Stack entfernt: ${stack.Name} (${stack.Id})`);
+        results.push({
+          id: stack.Id,
+          name: stack.Name,
+          endpointId: stack.EndpointId,
+          status: 'deleted'
+        });
+      } catch (err) {
+        const message = err.response?.data?.message || err.message;
+        console.error(`❌ [Maintenance] Fehler beim Entfernen von Stack ${stack.Id}:`, message);
+        errors.push({ id: stack.Id, message });
+        results.push({
+          id: stack.Id,
+          name: stack.Name,
+          endpointId: stack.EndpointId,
+          status: 'error',
+          message
+        });
+      }
+    }
+
+    if (errors.length) {
+      const failedIds = errors.map((entry) => entry.id).join(', ');
+      logRedeployEvent({
+        stackId: target.canonical.Id,
+        stackName: target.canonical.Name,
+        status: 'error',
+        message: `Bereinigung fehlgeschlagen für IDs: ${failedIds}`,
+        endpoint: target.canonical.EndpointId,
+        redeployType: REDEPLOY_TYPES.MAINTENANCE
+      });
+
+      return res.status(500).json({
+        success: false,
+        canonical: {
+          id: target.canonical.Id,
+          name: target.canonical.Name,
+          endpointId: target.canonical.EndpointId
+        },
+        results
+      });
+    }
+
+    logRedeployEvent({
+      stackId: target.canonical.Id,
+      stackName: target.canonical.Name,
+      status: 'success',
+      message: `Bereinigung abgeschlossen. Entfernte IDs: ${results.map((entry) => entry.id).join(', ')}`,
+      endpoint: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    res.json({
+      success: true,
+      canonical: {
+        id: target.canonical.Id,
+        name: target.canonical.Name,
+        endpointId: target.canonical.EndpointId
+      },
+      removed: results.length,
+      results
+    });
+  } catch (err) {
+    const message = err.response?.data?.message || err.message;
+    console.error(`❌ [Maintenance] Fehler bei der Bereinigung:`, message);
+    res.status(500).json({ error: message || 'Fehler bei der Bereinigung' });
   }
 });
 
