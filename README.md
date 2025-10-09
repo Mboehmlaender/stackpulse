@@ -53,7 +53,7 @@ Ziel:
 - [ ] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen
 - [ ] Erweiterung der Logs  
 - [x] API für Filter & Suche (Stacks nach Name/Status abrufen)  
-- [x] API für Sortierung der Stacks  
+- [ ] API für Sortierung der Stacks  
 
 ### Frontend
 - [x] Filter: Stacks nach Name oder Status durchsuchen 
