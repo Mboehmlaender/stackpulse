@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import axios from "axios";
 import { io } from "socket.io-client";
 import { useToast } from "./components/ToastProvider.jsx";
+import { useMaintenance } from "./context/MaintenanceContext.jsx";
 
 const SELECTION_PROMPT_STORAGE_KEY = "stackSelectionPreference";
 
@@ -44,6 +45,12 @@ export default function Stacks() {
   const [page, setPage] = useState(1);
 
   const { showToast } = useToast();
+
+  const { maintenance, update } = useMaintenance();
+  const maintenanceActive = Boolean(maintenance?.active);
+  const maintenanceMessage = maintenance?.message;
+  const maintenanceLocked = maintenanceActive || Boolean(update?.running);
+  const maintenanceBanner = maintenanceLocked ? (maintenanceMessage || (update?.running ? "Portainer-Update läuft" : "Wartungsmodus aktiv")) : "";
 
   const stacksByIdRef = useRef(new Map());
 
@@ -158,6 +165,13 @@ export default function Stacks() {
   }, []);
 
   const fetchStacks = useCallback(async ({ force = false, silent = false } = {}) => {
+    if (maintenanceActive) {
+      if (!silent) {
+        setLoading(false);
+      }
+      return;
+    }
+
     const hadCache = Boolean(stacksCache.data);
 
     if (!force && hadCache) {
@@ -200,14 +214,14 @@ export default function Stacks() {
         setLoading(false);
       }
     }
-  }, [mergeStackState]);
+  }, [maintenanceActive, mergeStackState]);
 
   useEffect(() => {
     fetchStacks();
   }, [fetchStacks]);
 
   useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
+    if (typeof document === 'undefined' || maintenanceActive) return undefined;
 
     const intervalId = setInterval(() => {
       if (!document.hidden) {
@@ -216,10 +230,10 @@ export default function Stacks() {
     }, STACKS_REFRESH_INTERVAL);
 
     return () => clearInterval(intervalId);
-  }, [fetchStacks]);
+  }, [fetchStacks, maintenanceActive]);
 
   useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
+    if (typeof document === 'undefined' || maintenanceActive) return undefined;
 
     const handleVisibility = () => {
       if (!document.hidden) {
@@ -231,7 +245,7 @@ export default function Stacks() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchStacks]);
+  }, [fetchStacks, maintenanceActive]);
 
   useEffect(() => {
     setSelectedStackIds(prev => {
@@ -390,7 +404,7 @@ export default function Stacks() {
   const pageEnd = perPage === 'all' ? totalItems : Math.min(totalItems, page * perPageNumber);
 
   const toggleStackSelection = (stackId, disabled) => {
-    if (disabled) return;
+    if (maintenanceLocked || disabled) return;
     setSelectedStackIds(prev =>
       prev.includes(stackId)
         ? prev.filter(id => id !== stackId)
@@ -599,14 +613,23 @@ export default function Stacks() {
     ? `Redeploy Auswahl (${selectedStackIds.length})`
     : 'Redeploy All';
 
-  const bulkActionDisabled = hasSelection
+  const bulkActionDisabled = maintenanceLocked || (hasSelection
     ? selectionPromptVisible || selectedStackIds.length === 0 || selectedStackIds.every(id => {
         const targetStack = stacks.find(stack => stack.Id === id);
         return !targetStack || targetStack.redeploying || targetStack.updateStatus === '✅' || targetStack.redeployDisabled;
       })
-    : !hasOutdatedStacks || eligiblePageStacks.every(stack => stack.redeploying);
+    : !hasOutdatedStacks || eligiblePageStacks.every(stack => stack.redeploying));
 
   const handleBulkRedeploy = () => {
+    if (maintenanceLocked) {
+      showToast({
+        variant: 'warning',
+        title: 'Wartungsmodus aktiv',
+        description: 'Redeploy-Aktionen sind während des Wartungsmodus deaktiviert.'
+      });
+      return;
+    }
+
     if (hasSelection) {
       handleRedeploySelection();
     } else {
@@ -619,6 +642,11 @@ export default function Stacks() {
 
   return (
     <div className="mx-auto max-w-6xl p-6">
+      {maintenanceLocked && (
+        <div className="mb-6 rounded-lg border border-amber-500/60 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
+          {maintenanceBanner}
+        </div>
+      )}
       <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-6">
           <div>
@@ -775,7 +803,7 @@ export default function Stacks() {
           const isSelected = selectedStackIds.includes(stack.Id);
           const isCurrent = stack.updateStatus === '✅';
           const isSelfStack = Boolean(stack.redeployDisabled);
-          const isSelectable = !isRedeploying && !isCurrent && !isSelfStack;
+          const isSelectable = !isRedeploying && !isCurrent && !isSelfStack && !maintenanceLocked;
 
           return (
             <div
@@ -827,8 +855,8 @@ export default function Stacks() {
                   <>
                     <button
                       onClick={() => handleRedeploy(stack.Id)}
-                      disabled={isRedeploying}
-                      className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600"
+                      disabled={isRedeploying || maintenanceLocked}
+                      className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Redeploy
                     </button>

@@ -1,6 +1,50 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useToast } from "./components/ToastProvider.jsx";
+import { useMaintenance } from "./context/MaintenanceContext.jsx";
+
+const UPDATE_STATUS_LABELS = {
+  idle: "Bereit",
+  running: "Läuft",
+  success: "Erfolgreich",
+  error: "Fehlgeschlagen"
+};
+
+const UPDATE_STATUS_STYLES = {
+  idle: "bg-gray-700 text-gray-200",
+  running: "bg-sky-600 text-white",
+  success: "bg-green-600 text-white",
+  error: "bg-red-600 text-white"
+};
+
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
+
+const LOG_LEVEL_STYLES = {
+  info: "text-sky-300",
+  success: "text-green-300",
+  warning: "text-amber-300",
+  error: "text-red-300",
+  stdout: "text-gray-300",
+  stderr: "text-orange-300"
+};
+
+const formatLogTimestamp = (value) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("de-DE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+};
 
 const formatCreatedAt = (value) => {
   if (!value && value !== 0) return "-";
@@ -48,38 +92,123 @@ const resolveStackType = (type) => {
 
 export default function Maintenance() {
   const { showToast } = useToast();
+  const {
+    maintenance: maintenanceMeta,
+    update: updateState,
+    script: scriptConfig,
+    loading: maintenanceLoading,
+    error: maintenanceError,
+    triggerUpdate,
+    saveScript,
+    resetScript
+  } = useMaintenance();
+
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+
+  const [scriptDraft, setScriptDraft] = useState("");
+  const [scriptSaving, setScriptSaving] = useState(false);
+  const [updateActionLoading, setUpdateActionLoading] = useState(false);
+  const [updateActionError, setUpdateActionError] = useState("");
+
+  useEffect(() => {
+    if (!scriptConfig) return;
+    const nextValue = scriptConfig.custom ?? scriptConfig.default ?? scriptConfig.effective ?? "";
+    setScriptDraft(nextValue);
+  }, [scriptConfig]);
+
+  const scriptBaseline = useMemo(() => {
+    if (!scriptConfig) return "";
+    if (scriptConfig.source === "custom" && typeof scriptConfig.custom === "string") {
+      return scriptConfig.custom;
+    }
+    return scriptConfig.default ?? scriptConfig.effective ?? "";
+  }, [scriptConfig]);
+
+  const scriptIsDirty = scriptConfig ? scriptDraft !== scriptBaseline : false;
+  const scriptSourceLabel = scriptConfig?.source === "custom" ? "Benutzerdefiniert" : "Standard";
+
   const [duplicates, setDuplicates] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
+  const [duplicatesLoading, setDuplicatesLoading] = useState(true);
+  const [duplicatesError, setDuplicatesError] = useState("");
+  const [duplicatesRefreshing, setDuplicatesRefreshing] = useState(false);
   const [activeCleanupId, setActiveCleanupId] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const [duplicatesUpdatedAt, setDuplicatesUpdatedAt] = useState(null);
+
+  const [portainerStatus, setPortainerStatus] = useState(null);
+  const [portainerLoading, setPortainerLoading] = useState(true);
+  const [portainerError, setPortainerError] = useState("");
+  const [portainerRefreshing, setPortainerRefreshing] = useState(false);
+  const [portainerUpdatedAt, setPortainerUpdatedAt] = useState(null);
+
+  const fetchPortainerStatus = useCallback(async ({ silent = false } = {}) => {
+    if (silent) {
+      setPortainerRefreshing(true);
+    } else {
+      setPortainerLoading(true);
+    }
+    setPortainerError("");
+
+    try {
+      const response = await axios.get("/api/maintenance/portainer-status");
+      const payload = response.data ?? {};
+      setPortainerStatus(payload);
+      setPortainerUpdatedAt(new Date());
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Fehler beim Prüfen des Portainer-Status";
+      setPortainerError(message);
+    } finally {
+      if (silent) {
+        setPortainerRefreshing(false);
+      } else {
+        setPortainerLoading(false);
+      }
+    }
+  }, []);
 
   const fetchDuplicates = useCallback(async ({ silent = false } = {}) => {
-    if (silent) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
+    if (maintenanceActive || updateRunning) {
+      setDuplicates([]);
+      setDuplicatesError("Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert.");
+      setDuplicatesLoading(false);
+      setDuplicatesRefreshing(false);
+      return;
     }
-    setError("");
+
+    if (silent) {
+      setDuplicatesRefreshing(true);
+    } else {
+      setDuplicatesLoading(true);
+    }
+    setDuplicatesError("");
 
     try {
       const response = await axios.get("/api/maintenance/duplicates");
       const payload = response.data;
       const items = Array.isArray(payload) ? payload : payload?.items ?? [];
       setDuplicates(items);
-      setLastUpdated(new Date());
+      setDuplicatesUpdatedAt(new Date());
     } catch (err) {
-      console.error("❌ Fehler beim Laden der Wartungsdaten:", err);
-      setError("Fehler beim Laden der Wartungsdaten");
+      if (err.response?.status === 423) {
+        setDuplicates([]);
+        setDuplicatesError("Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert.");
+      } else {
+        const message = err.response?.data?.error || err.message || "Fehler beim Laden der Wartungsdaten";
+        setDuplicatesError(message);
+      }
     } finally {
       if (silent) {
-        setRefreshing(false);
+        setDuplicatesRefreshing(false);
       } else {
-        setLoading(false);
+        setDuplicatesLoading(false);
       }
     }
-  }, []);
+  }, [maintenanceActive, updateRunning]);
+
+  useEffect(() => {
+    fetchPortainerStatus();
+  }, [fetchPortainerStatus]);
 
   useEffect(() => {
     fetchDuplicates();
@@ -93,8 +222,90 @@ export default function Maintenance() {
     return { groups, duplicateCount };
   }, [duplicates]);
 
+  const handleScriptSave = useCallback(async () => {
+    if (!scriptConfig) return;
+    try {
+      setScriptSaving(true);
+      await saveScript(scriptDraft);
+      showToast({
+        variant: "success",
+        title: "Skript gespeichert",
+        description: "Das benutzerdefinierte Portainer-Update-Skript wurde aktualisiert."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Skript konnte nicht gespeichert werden";
+      showToast({ variant: "error", title: "Speichern fehlgeschlagen", description: message });
+    } finally {
+      setScriptSaving(false);
+    }
+  }, [saveScript, scriptDraft, scriptConfig, showToast]);
+
+  const handleScriptReset = useCallback(async () => {
+    try {
+      setScriptSaving(true);
+      await resetScript();
+      showToast({
+        variant: "info",
+        title: "Standardskript wiederhergestellt",
+        description: "Es wird wieder das Standard-Update-Skript verwendet."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Standardskript konnte nicht wiederhergestellt werden";
+      showToast({ variant: "error", title: "Zurücksetzen fehlgeschlagen", description: message });
+    } finally {
+      setScriptSaving(false);
+    }
+  }, [resetScript, showToast]);
+
+  const handleTriggerUpdate = useCallback(async () => {
+    if (maintenanceActive || updateRunning) {
+      showToast({
+        variant: "warning",
+        title: "Update nicht möglich",
+        description: "Während eines aktiven Wartungsmodus kann kein weiteres Update gestartet werden."
+      });
+      return;
+    }
+
+    const targetVersion = portainerStatus?.latestVersion ?? portainerStatus?.currentVersion ?? "unbekannt";
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Portainer-Update starten?\nZielversion: ${targetVersion}.\nWährend des Updates befindet sich StackPulse im Wartungsmodus.\nFortfahren?`
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    try {
+      setUpdateActionError("");
+      setUpdateActionLoading(true);
+      await triggerUpdate();
+      showToast({
+        variant: "info",
+        title: "Update gestartet",
+        description: "Das Portainer-Update wurde gestartet."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Portainer-Update konnte nicht gestartet werden";
+      setUpdateActionError(message);
+      showToast({ variant: "error", title: "Update fehlgeschlagen", description: message });
+    } finally {
+      setUpdateActionLoading(false);
+    }
+  }, [maintenanceActive, updateRunning, portainerStatus, triggerUpdate, showToast]);
+
   const handleCleanup = useCallback(async (entry) => {
     if (!entry) return;
+    if (maintenanceActive || updateRunning) {
+      showToast({
+        variant: "warning",
+        title: "Aktion nicht möglich",
+        description: "Während des Wartungsmodus sind Bereinigungen deaktiviert."
+      });
+      return;
+    }
+
     const canonicalId = entry.canonical?.Id;
     if (!canonicalId) return;
 
@@ -105,7 +316,7 @@ export default function Maintenance() {
 
     if (typeof window !== "undefined") {
       const confirmation = window.confirm(
-        `Bereinigung für \"${canonicalName}\" starten?\n` +
+        `Bereinigung für "${canonicalName}" starten?\n` +
         `Es werden ${duplicateIds.length} Duplikate entfernt: ${duplicateIds.join(", ")}`
       );
       if (!confirmation) {
@@ -138,7 +349,6 @@ export default function Maintenance() {
       await fetchDuplicates({ silent: true });
     } catch (err) {
       const message = err.response?.data?.error || err.message || "Bereinigung fehlgeschlagen";
-      console.error("❌ Fehler bei der Duplikat-Bereinigung:", err);
       showToast({
         variant: "error",
         title: "Bereinigung fehlgeschlagen",
@@ -147,16 +357,30 @@ export default function Maintenance() {
     } finally {
       setActiveCleanupId(null);
     }
-  }, [fetchDuplicates, showToast]);
+  }, [fetchDuplicates, maintenanceActive, showToast, updateRunning]);
 
-  const isEmpty = !loading && totals.groups === 0;
+  const isDuplicatesDisabled = maintenanceActive || updateRunning;
+  const updateStatusKey = updateState?.status ?? (updateRunning ? "running" : "idle");
+  const updateStatusLabel = UPDATE_STATUS_LABELS[updateStatusKey] ?? updateStatusKey;
+  const updateBadgeClass = UPDATE_STATUS_STYLES[updateStatusKey] ?? UPDATE_STATUS_STYLES.idle;
+  const updateStageLabel = updateState?.stage
+    ? UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage
+    : "–";
+  const updateLogs = updateState?.logs ?? [];
+  const updateTargetVersion = updateState?.targetVersion ?? "-";
+  const updateResultVersion = updateState?.resultVersion ?? "-";
+  const updateStartedAt = updateState?.startedAt ? formatCreatedAt(updateState.startedAt) : "-";
+  const updateFinishedAt = updateState?.finishedAt ? formatCreatedAt(updateState.finishedAt) : "-";
+  const updateStatusMessage = updateState?.message ?? (updateRunning ? "Update läuft…" : "");
+
+  const disableUpdateButton = updateRunning || scriptSaving || maintenanceLoading;
 
   return (
     <div className="space-y-6">
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold text-white">Wartung</h1>
         <p className="text-sm text-gray-400">
-          Werkzeuge für wiederkehrende Wartungsaufgaben. Entfernt derzeit doppelte Stack-Einträge.
+          Werkzeuge für wiederkehrende Wartungsaufgaben. Entfernt derzeit doppelte Stack-Einträge und verwaltet Portainer-Updates.
         </p>
       </div>
 
@@ -164,20 +388,317 @@ export default function Maintenance() {
         Dieses Wartungsfeature ist noch nicht getestet. Bitte nicht in Produktivumgebungen einsetzen.
       </div>
 
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-amber-500/60 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+            </span>
+            {updateRunning && (
+              <span className="text-xs text-amber-200">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {maintenanceError && (
+        <div className="rounded-lg border border-red-500/60 bg-red-900/30 px-4 py-3 text-sm text-red-100">
+          {maintenanceError}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Portainer Status</h2>
+            <p className="text-sm text-gray-400">
+              {portainerLoading
+                ? "Status wird geprüft…"
+                : portainerError
+                  ? portainerError
+                  : updateRunning
+                    ? "Portainer wird aktuell aktualisiert."
+                    : (portainerStatus?.updateAvailable === true
+                      ? "Es ist ein Update für Portainer verfügbar."
+                      : "Portainer ist auf dem aktuellen Stand.")}
+            </p>
+            {portainerUpdatedAt && !portainerLoading && (
+              <p className="mt-1 text-xs text-gray-500">
+                Stand: {portainerUpdatedAt.toLocaleString("de-DE", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit"
+                })}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => fetchPortainerStatus({ silent: false })}
+              disabled={portainerLoading || portainerRefreshing}
+              className="rounded-lg border border-purple-500 px-4 py-2 text-sm font-medium text-purple-200 transition hover:bg-purple-500/20 disabled:opacity-50"
+            >
+              Status aktualisieren
+            </button>
+          </div>
+        </div>
+
+        {!portainerLoading && !portainerError && portainerStatus && (
+          <div className="mt-5 space-y-4 text-sm text-gray-200">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400">Installierte Version</span>
+                <span className="font-medium">{portainerStatus.currentVersion ?? "Unbekannt"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400">Neueste Version</span>
+                <span className="font-medium">{portainerStatus.latestVersion ?? "Unbekannt"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400">Status</span>
+                <span
+                  className={`rounded-full px-3 py-0.5 text-xs font-semibold ${
+                    portainerStatus.updateAvailable === true
+                      ? UPDATE_STATUS_STYLES.error
+                      : portainerStatus.updateAvailable === false
+                        ? UPDATE_STATUS_STYLES.success
+                        : UPDATE_STATUS_STYLES.idle
+                  }`}
+                >
+                  {portainerStatus.updateAvailable === true
+                    ? "Update verfügbar"
+                    : portainerStatus.updateAvailable === false
+                      ? "Aktuell"
+                      : "Unbekannt"}
+                </span>
+              </div>
+              {portainerStatus.edition && (
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Edition</span>
+                  <span className="font-medium">{portainerStatus.edition}</span>
+                </div>
+              )}
+              {portainerStatus.build && (
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Build</span>
+                  <span className="font-medium">{portainerStatus.build}</span>
+                </div>
+              )}
+              {portainerStatus.errors?.latestVersion && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-900/40 px-3 py-2 text-xs text-amber-100">
+                  Neueste Version konnte nicht ermittelt werden: {portainerStatus.errors.latestVersion}
+                </div>
+              )}
+              {portainerStatus.errors?.container && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-900/40 px-3 py-2 text-xs text-amber-100">
+                  Container-Details konnten nicht ermittelt werden: {portainerStatus.errors.container}
+                </div>
+              )}
+            </div>
+
+            {portainerStatus.container && (
+              <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4 text-xs text-gray-200">
+                <h3 className="text-sm font-semibold text-white">Startparameter</h3>
+                <div className="mt-3 space-y-2">
+                  {(portainerStatus.container.name || portainerStatus.container.image) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-gray-400">Container</span>
+                      <div className="text-right">
+                        <span className="block font-medium text-white">{portainerStatus.container.name ?? "Unbekannt"}</span>
+                        {portainerStatus.container.image && (
+                          <span className="text-[11px] text-gray-400">{portainerStatus.container.image}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {portainerStatus.container.id && (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-gray-400">Container-ID</span>
+                      <code
+                        title={portainerStatus.container.id}
+                        className="rounded bg-gray-800/80 px-2 py-1 font-mono text-[11px] text-gray-100"
+                      >
+                        {portainerStatus.container.id.slice(0, 12)}
+                      </code>
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                    <span className="text-gray-400">Startkommando</span>
+                    <code className="rounded bg-gray-800/60 px-2 py-1 font-mono text-[11px] text-gray-100 sm:max-w-xs sm:text-right">
+                      {[...(portainerStatus.container.entrypoint || []), ...(portainerStatus.container.command || [])].join(" ") || "Unbekannt"}
+                    </code>
+                  </div>
+                  {Array.isArray(portainerStatus.container.args) && portainerStatus.container.args.length > 0 && (
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                      <span className="text-gray-400">Argumente</span>
+                      <code className="rounded bg-gray-800/60 px-2 py-1 font-mono text-[11px] text-gray-100 sm:max-w-xs sm:text-right">
+                        {portainerStatus.container.args.join(" ")}
+                      </code>
+                    </div>
+                  )}
+                  {Array.isArray(portainerStatus.container.env) && portainerStatus.container.env.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-gray-400">Umgebungsvariablen</span>
+                      <div className="grid gap-1">
+                        {portainerStatus.container.env.map((entry, index) => (
+                          <code
+                            key={`${entry || "env"}-${index}`}
+                            className="block rounded bg-gray-800/70 px-2 py-1 font-mono text-[11px] text-gray-100"
+                          >
+                            {entry}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {Array.isArray(portainerStatus.container.binds) && portainerStatus.container.binds.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-gray-400">Bind-Mounts</span>
+                      <div className="grid gap-1">
+                        {portainerStatus.container.binds.map((bind, index) => (
+                          <code
+                            key={`bind-${index}`}
+                            className="block rounded bg-gray-800/70 px-2 py-1 font-mono text-[11px] text-gray-100"
+                          >
+                            {bind}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+          <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white">Update-Skript</h3>
+              <span className="text-xs text-gray-400">Quelle: {scriptSourceLabel}</span>
+            </div>
+            <textarea
+              value={scriptDraft}
+              onChange={(event) => setScriptDraft(event.target.value)}
+              rows={10}
+              disabled={scriptSaving || updateRunning}
+              className="mt-3 w-full rounded-md border border-gray-700 bg-gray-950/80 px-3 py-2 font-mono text-xs text-gray-100 focus:border-purple-500 focus:outline-none"
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleScriptSave}
+                disabled={!scriptIsDirty || scriptSaving || updateRunning}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-500 disabled:opacity-50"
+              >
+                Speichern
+              </button>
+              <button
+                type="button"
+                onClick={handleScriptReset}
+                disabled={!scriptConfig || scriptConfig.source !== "custom" || scriptSaving || updateRunning}
+                className="rounded-lg border border-gray-600 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-700 disabled:opacity-50"
+              >
+                Standard wiederherstellen
+              </button>
+            </div>
+            {scriptConfig?.customUpdatedAt && (
+              <p className="mt-2 text-xs text-gray-500">
+                Zuletzt geändert: {formatCreatedAt(scriptConfig.customUpdatedAt)}
+              </p>
+            )}
+          </div>
+
+          <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white">Update-Status</h3>
+              <span className={`rounded-full px-3 py-0.5 text-xs font-semibold ${updateBadgeClass}`}>
+                {updateStatusLabel}
+              </span>
+            </div>
+            <div className="mt-3 grid gap-2 text-xs text-gray-300">
+              <div className="flex items-center justify-between">
+                <span>Phase</span>
+                <span className="font-medium text-gray-100">{updateStageLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Ziel-Version</span>
+                <span className="font-medium text-gray-100">{updateTargetVersion}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Installierte Version</span>
+                <span className="font-medium text-gray-100">{updateResultVersion}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Gestartet</span>
+                <span>{updateStartedAt}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Beendet</span>
+                <span>{updateFinishedAt}</span>
+              </div>
+              {updateStatusMessage && (
+                <div className="rounded-md border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-200">
+                  {updateStatusMessage}
+                </div>
+              )}
+              {updateState?.error && (
+                <div className="rounded-md border border-red-500/60 bg-red-900/40 px-3 py-2 text-xs text-red-200">
+                  {updateState.error}
+                </div>
+              )}
+              {updateActionError && (
+                <div className="rounded-md border border-red-500/60 bg-red-900/40 px-3 py-2 text-xs text-red-200">
+                  {updateActionError}
+                </div>
+              )}
+            </div>
+            <div className="mt-3 h-40 overflow-y-auto rounded-md border border-gray-700 bg-gray-950/70 p-3 font-mono text-[11px] leading-relaxed text-gray-300">
+              {updateLogs.length === 0 ? (
+                <p className="text-gray-500">Noch keine Protokolle vorhanden.</p>
+              ) : (
+                updateLogs.map((entry, index) => (
+                  <div key={`${entry.timestamp}-${index}`} className="mb-2 last:mb-0">
+                    <span className="text-gray-500">[{formatLogTimestamp(entry.timestamp)}]</span>{" "}
+                    <span className={LOG_LEVEL_STYLES[entry.level] ?? "text-gray-300"}>
+                      {entry.message}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleTriggerUpdate}
+              disabled={disableUpdateButton || updateActionLoading}
+              className="mt-3 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:opacity-50"
+            >
+              {updateActionLoading ? "Update wird gestartet…" : "Portainer aktualisieren"}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Doppelte Stacks</h2>
             <p className="text-sm text-gray-400">
-              {loading
-                ? "Analyse läuft…"
-                : totals.groups === 0
-                  ? "Keine Duplikate gefunden"
-                  : `${totals.groups} Stack-Namen mit insgesamt ${totals.duplicateCount} Duplikaten gefunden`}
+              {isDuplicatesDisabled
+                ? "Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert."
+                : duplicatesLoading
+                  ? "Analyse läuft…"
+                  : totals.groups === 0
+                    ? "Keine Duplikate gefunden"
+                    : `${totals.groups} Stack-Namen mit insgesamt ${totals.duplicateCount} Duplikaten gefunden`}
             </p>
-            {lastUpdated && (
+            {duplicatesUpdatedAt && !duplicatesLoading && !isDuplicatesDisabled && (
               <p className="mt-1 text-xs text-gray-500">
-                Stand: {lastUpdated.toLocaleString("de-DE", {
+                Stand: {duplicatesUpdatedAt.toLocaleString("de-DE", {
                   hour: "2-digit",
                   minute: "2-digit",
                   second: "2-digit"
@@ -189,7 +710,7 @@ export default function Maintenance() {
             <button
               type="button"
               onClick={() => fetchDuplicates({ silent: false })}
-              disabled={loading || refreshing || activeCleanupId !== null}
+              disabled={isDuplicatesDisabled || duplicatesLoading || duplicatesRefreshing || activeCleanupId !== null}
               className="rounded-lg border border-purple-500 px-4 py-2 text-sm font-medium text-purple-200 transition hover:bg-purple-500/20 disabled:opacity-50"
             >
               Aktualisieren
@@ -198,19 +719,21 @@ export default function Maintenance() {
         </div>
       </div>
 
-      {error && (
+      {duplicatesError && !isDuplicatesDisabled && (
         <div className="rounded-lg border border-red-500/60 bg-red-900/40 px-4 py-3 text-sm text-red-100">
-          {error}
+          {duplicatesError}
         </div>
       )}
 
-      {loading ? (
+      {duplicatesLoading ? (
         <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-8 text-center text-sm text-gray-400">
           Daten werden geladen…
         </div>
-      ) : isEmpty ? (
+      ) : totals.groups === 0 || isDuplicatesDisabled ? (
         <div className="rounded-xl border border-green-600/40 bg-green-900/30 p-8 text-center text-sm text-green-100">
-          Es wurden keine doppelten Stacks gefunden.
+          {isDuplicatesDisabled
+            ? "Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert."
+            : "Es wurden keine doppelten Stacks gefunden."}
         </div>
       ) : (
         <div className="space-y-5">
@@ -243,7 +766,7 @@ export default function Maintenance() {
                   <button
                     type="button"
                     onClick={() => handleCleanup(entry)}
-                    disabled={isProcessing || refreshing || loading}
+                    disabled={isDuplicatesDisabled || isProcessing || duplicatesRefreshing || duplicatesLoading}
                     className="self-start rounded-lg bg-red-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-600 disabled:opacity-50"
                   >
                     {isProcessing ? "Bereinigung läuft…" : `Bereinigen (${duplicatesForEntry.length})`}
