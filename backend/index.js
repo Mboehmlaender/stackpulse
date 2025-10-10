@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import https from 'https';
 import axios from 'axios';
 import http from 'http';
+import { spawn } from 'child_process';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,6 +18,8 @@ import {
   deleteLogsByFilters,
   exportLogsByFilters
 } from './db/redeployLogs.js';
+import { getSetting, setSetting, deleteSetting } from './db/settings.js';
+import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
 
 dotenv.config();
 
@@ -81,6 +84,529 @@ const REDEPLOY_TYPES = {
 };
 
 const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+const PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
+
+const DEFAULT_PORTAINER_UPDATE_SCRIPT = [
+  'docker stop portainer',
+  'docker rm portainer',
+  'docker pull portainer/portainer-ee:lts',
+  'docker run -d -p 8000:8000 -p 9443:9443 --name=portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock'
+].join('\n');
+
+let portainerUpdateState = {
+  running: false,
+  status: 'idle',
+  stage: 'idle',
+  startedAt: null,
+  finishedAt: null,
+  targetVersion: null,
+  resultVersion: null,
+  scriptSource: null,
+  message: null,
+  error: null,
+  logs: []
+};
+
+const addUpdateLog = (message, level = 'info') => {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message
+  };
+  portainerUpdateState = {
+    ...portainerUpdateState,
+    logs: [...(portainerUpdateState.logs || []).slice(-50), entry]
+  };
+  console.log(`🛠️ [PortainerUpdate:${level}] ${message}`);
+};
+
+const updatePortainerState = (partial = {}) => {
+  portainerUpdateState = {
+    ...portainerUpdateState,
+    ...partial
+  };
+  return portainerUpdateState;
+};
+
+const getPortainerUpdateStatus = () => ({
+  ...portainerUpdateState
+});
+
+const getCustomPortainerScript = () => {
+  const row = getSetting(PORTAINER_SCRIPT_SETTING_KEY);
+  if (!row) return null;
+  const value = typeof row.value === 'string' ? row.value.trim() : '';
+  if (!value) return null;
+  return {
+    script: row.value,
+    updatedAt: row.updated_at || null
+  };
+};
+
+const saveCustomPortainerScript = (script) => {
+  const normalized = String(script ?? '').replace(/\r?\n/g, '\n').trim();
+  if (!normalized) {
+    deleteSetting(PORTAINER_SCRIPT_SETTING_KEY);
+    return null;
+  }
+  setSetting(PORTAINER_SCRIPT_SETTING_KEY, normalized);
+  return normalized;
+};
+
+const getEffectivePortainerScript = () => {
+  const custom = getCustomPortainerScript();
+  if (custom) {
+    return {
+      script: custom.script,
+      source: 'custom',
+      updatedAt: custom.updatedAt
+    };
+  }
+  return {
+    script: DEFAULT_PORTAINER_UPDATE_SCRIPT,
+    source: 'default',
+    updatedAt: null
+  };
+};
+
+const detectPortainerContainer = async () => {
+  try {
+    const containersRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/json`, {
+      params: { all: true }
+    });
+    const containers = Array.isArray(containersRes.data) ? containersRes.data : [];
+
+    const normalizeName = (value) => (typeof value === 'string' ? value.replace(/^\//, '').toLowerCase() : '');
+    const isPortainerContainer = (container = {}) => {
+      const names = Array.isArray(container.Names)
+        ? container.Names.map(normalizeName)
+        : [];
+      const image = String(container.Image ?? '').toLowerCase();
+      const labels = container.Labels || {};
+
+      if (labels['io.portainer.container']) return true;
+      if (labels['io.portainer.role'] === 'instance') return true;
+      if (names.includes('portainer') || names.includes('portainer_ce')) return true;
+      if (image.includes('portainer/portainer')) return true;
+      if (image.includes('portainer-ce')) return true;
+      return false;
+    };
+
+    const matchedContainer = containers.find((entry) => isPortainerContainer(entry));
+    if (!matchedContainer) {
+      return { summary: null, error: 'Portainer-Container nicht gefunden' };
+    }
+
+    const inspectRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/${matchedContainer.Id}/json`);
+    const inspect = inspectRes.data ?? {};
+
+    const trimName = (value) => (typeof value === 'string' ? value.replace(/^\//, '') : value);
+    const toArray = (value) => {
+      if (!value) return [];
+      if (Array.isArray(value)) return value.map((item) => String(item));
+      return [String(value)];
+    };
+
+    const summary = {
+      id: inspect.Id ?? matchedContainer.Id ?? null,
+      name: trimName(inspect.Name) ?? (matchedContainer.Names?.[0] ? trimName(matchedContainer.Names[0]) : null),
+      image: inspect.Config?.Image ?? matchedContainer.Image ?? null,
+      created: inspect.Created ?? null,
+      entrypoint: toArray(inspect.Config?.Entrypoint),
+      command: toArray(inspect.Config?.Cmd),
+      args: toArray(inspect.Args),
+      env: Array.isArray(inspect.Config?.Env) ? inspect.Config.Env : [],
+      binds: Array.isArray(inspect.HostConfig?.Binds) ? inspect.HostConfig.Binds : [],
+      mounts: Array.isArray(inspect.Mounts)
+        ? inspect.Mounts.map((mount) => ({
+            type: mount.Type ?? null,
+            source: mount.Source ?? null,
+            destination: mount.Destination ?? null,
+            mode: mount.Mode ?? null,
+            rw: typeof mount.RW === 'boolean' ? mount.RW : null
+          }))
+        : [],
+      labels: inspect.Config?.Labels ?? matchedContainer.Labels ?? {},
+      ports: inspect.HostConfig?.PortBindings ?? null,
+      networks: inspect.NetworkSettings?.Networks ?? null,
+      restartPolicy: inspect.HostConfig?.RestartPolicy ?? null
+    };
+
+    return { summary, error: null };
+  } catch (err) {
+    const message = err.response?.data?.message || err.message;
+    return { summary: null, error: message };
+  }
+};
+
+const waitForPortainerAvailability = async ({ timeoutMs = 5 * 60 * 1000, intervalMs = 5000 } = {}) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await axiosInstance.get('/api/status');
+      return true;
+    } catch (err) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  return false;
+};
+
+const normalizeVersion = (value) => {
+  if (!value) return null;
+  return String(value).trim().replace(/^v/i, '');
+};
+
+const semverParts = (value) => {
+  const normalized = normalizeVersion(value);
+  if (!normalized) return null;
+  return normalized.split(/[.-]/).map((segment) => {
+    const numericPart = segment.replace(/[^0-9].*$/, '');
+    const parsed = Number.parseInt(numericPart, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  });
+};
+
+const compareSemver = (a, b) => {
+  const partsA = semverParts(a) || [];
+  const partsB = semverParts(b) || [];
+  const length = Math.max(partsA.length, partsB.length);
+  for (let index = 0; index < length; index += 1) {
+    const valueA = partsA[index] ?? 0;
+    const valueB = partsB[index] ?? 0;
+    if (valueA > valueB) return 1;
+    if (valueA < valueB) return -1;
+  }
+  return 0;
+};
+
+const fetchPortainerStatusSummary = async () => {
+  const statusRes = await axiosInstance.get('/api/status');
+  const statusData = statusRes.data ?? {};
+
+  const currentVersion = statusData.Version
+    ?? statusData.ServerVersion
+    ?? statusData.Server?.Version
+    ?? statusData.ServerInfo?.Version
+    ?? statusData.ServerVersionNumber
+    ?? null;
+  const edition = statusData.Edition ?? statusData.Server?.Edition ?? null;
+  const build = statusData.BuildNumber ?? statusData.Server?.Build ?? null;
+
+  const errors = {};
+  let latestVersion = null;
+
+  const { summary: containerSummary, error: containerError } = await detectPortainerContainer();
+  if (containerError) {
+    errors.container = containerError;
+  }
+
+  try {
+    const githubRes = await axios.get('https://api.github.com/repos/portainer/portainer/releases/latest', {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'StackPulse-Maintenance'
+      },
+      timeout: 5000
+    });
+    latestVersion = githubRes.data?.tag_name ?? githubRes.data?.tagName ?? null;
+  } catch (err) {
+    const message = err.response?.data?.message || err.message;
+    console.warn(`⚠️ [Maintenance] Konnte Portainer-Latest-Version nicht ermitteln: ${message}`);
+    errors.latestVersion = message;
+  }
+
+  if (!currentVersion) {
+    errors.currentVersion = 'Portainer-Version konnte nicht ermittelt werden';
+  }
+
+  const normalizedCurrent = normalizeVersion(currentVersion);
+  const normalizedLatest = normalizeVersion(latestVersion);
+  const portainerFlag = typeof statusData.UpdateAvailable === 'boolean'
+    ? statusData.UpdateAvailable
+    : null;
+
+  let updateAvailable = null;
+  if (normalizedCurrent && normalizedLatest) {
+    updateAvailable = compareSemver(normalizedCurrent, normalizedLatest) < 0;
+  } else if (portainerFlag !== null) {
+    updateAvailable = portainerFlag;
+  }
+
+  const responsePayload = {
+    currentVersion,
+    latestVersion,
+    normalized: {
+      current: normalizedCurrent,
+      latest: normalizedLatest
+    },
+    updateAvailable,
+    portainerFlag,
+    edition: edition ?? null,
+    build: build ?? null,
+    fetchedAt: new Date().toISOString(),
+    container: containerSummary
+  };
+
+  if (Object.keys(errors).length) {
+    responsePayload.errors = errors;
+  }
+
+  return responsePayload;
+};
+
+const maintenanceGuard = (req, res, next) => {
+  if (!isMaintenanceModeActive()) {
+    return next();
+  }
+
+  return res.status(423).json({
+    error: 'Wartungsmodus aktiv',
+    maintenance: getMaintenanceState(),
+    update: getPortainerUpdateStatus()
+  });
+};
+
+const logScriptOutput = (data, level) => {
+  if (!data) return;
+  const text = data.toString();
+  text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => addUpdateLog(line, level));
+};
+
+const executePortainerUpdateScript = async (script) => {
+  const normalized = String(script ?? '').replace(/\r?\n/g, '\n').trim();
+  if (!normalized) {
+    addUpdateLog('Kein Update-Skript definiert. Vorgang wird übersprungen.', 'warning');
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', ['-lc', `set -e\n${normalized}`], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    child.stdout.on('data', (chunk) => logScriptOutput(chunk, 'stdout'));
+    child.stderr.on('data', (chunk) => logScriptOutput(chunk, 'stderr'));
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Update-Skript beendet mit Exit-Code ${code}`));
+      }
+    });
+  });
+};
+
+let currentPortainerUpdatePromise = null;
+
+const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) => {
+  let maintenanceActivated = false;
+
+  try {
+    addUpdateLog(`Portainer-Update gestartet (Quelle: ${scriptSource})`, 'info');
+    updatePortainerState({
+      status: 'running',
+      stage: 'activating-maintenance',
+      message: 'Wartungsmodus wird aktiviert'
+    });
+
+    const maintenanceDetails = {
+      type: 'portainer-update',
+      targetVersion: targetVersion ?? null,
+      scriptSource
+    };
+
+    const maintenanceState = activateMaintenanceMode({
+      message: 'Portainer Update läuft',
+      extra: maintenanceDetails
+    });
+    maintenanceActivated = true;
+
+    logRedeployEvent({
+      stackId: 'portainer',
+      stackName: 'Portainer',
+      status: 'started',
+      message: `Portainer Update gestartet (Ziel: ${targetVersion ?? 'unbekannt'})`,
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    logRedeployEvent({
+      stackId: 'maintenance',
+      stackName: 'StackPulse Wartung',
+      status: 'started',
+      message: 'Wartungsmodus aktiviert (Portainer Update)',
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    updatePortainerState({
+      stage: 'executing-script',
+      message: 'Update-Skript wird ausgeführt'
+    });
+    await executePortainerUpdateScript(script);
+
+    addUpdateLog('Update-Skript erfolgreich abgeschlossen', 'info');
+    updatePortainerState({
+      stage: 'waiting',
+      message: 'Warte auf Portainer-Verfügbarkeit'
+    });
+
+    const available = await waitForPortainerAvailability({ timeoutMs: 5 * 60 * 1000, intervalMs: 5000 });
+    if (!available) {
+      throw new Error('Portainer blieb nach dem Update unerreichbar');
+    }
+
+    addUpdateLog('Portainer antwortet wieder. Ermittle Version…', 'info');
+    const statusAfter = await fetchPortainerStatusSummary().catch(() => null);
+    const finalVersion = statusAfter?.currentVersion ?? null;
+
+    logRedeployEvent({
+      stackId: 'portainer',
+      stackName: 'Portainer',
+      status: 'success',
+      message: `Portainer Update abgeschlossen (Version: ${finalVersion ?? 'unbekannt'})`,
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    updatePortainerState({
+      running: false,
+      status: 'success',
+      stage: 'completed',
+      finishedAt: new Date().toISOString(),
+      message: 'Portainer Update abgeschlossen',
+      error: null,
+      resultVersion: finalVersion
+    });
+
+    addUpdateLog('Portainer Update erfolgreich abgeschlossen', 'success');
+
+    if (maintenanceActivated || maintenanceState?.active) {
+      deactivateMaintenanceMode({ message: 'Portainer Update abgeschlossen' });
+      maintenanceActivated = false;
+      logRedeployEvent({
+        stackId: 'maintenance',
+        stackName: 'StackPulse Wartung',
+        status: 'success',
+        message: 'Wartungsmodus deaktiviert',
+        endpoint: ENDPOINT_ID,
+        redeployType: REDEPLOY_TYPES.MAINTENANCE
+      });
+    }
+  } catch (err) {
+    const message = err?.message || 'Portainer Update fehlgeschlagen';
+    logRedeployEvent({
+      stackId: 'portainer',
+      stackName: 'Portainer',
+      status: 'error',
+      message,
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE
+    });
+
+    updatePortainerState({
+      running: false,
+      status: 'error',
+      stage: 'failed',
+      finishedAt: new Date().toISOString(),
+      message,
+      error: message
+    });
+
+    addUpdateLog(message, 'error');
+
+    if (maintenanceActivated || isMaintenanceModeActive()) {
+      deactivateMaintenanceMode({ message: 'Portainer Update fehlgeschlagen' });
+      logRedeployEvent({
+        stackId: 'maintenance',
+        stackName: 'StackPulse Wartung',
+        status: 'error',
+        message: 'Wartungsmodus deaktiviert (Fehler)',
+        endpoint: ENDPOINT_ID,
+        redeployType: REDEPLOY_TYPES.MAINTENANCE
+      });
+    }
+  } finally {
+    currentPortainerUpdatePromise = null;
+  }
+};
+
+const fetchPortainerStacks = async () => {
+  const stacksRes = await axiosInstance.get('/api/stacks');
+  return stacksRes.data.filter((stack) => stack.EndpointId === ENDPOINT_ID);
+};
+
+const buildStackCollections = (stacks = []) => {
+  const collections = new Map();
+
+  stacks.forEach((stack) => {
+    const name = stack.Name || 'Unbenannt';
+    const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
+    const entry = collections.get(name);
+
+    if (!entry) {
+      collections.set(name, {
+        canonical: stack,
+        isSelf,
+        members: [stack]
+      });
+      return;
+    }
+
+    entry.members.push(stack);
+
+    if (!entry.isSelf && isSelf) {
+      entry.canonical = stack;
+      entry.isSelf = true;
+    }
+  });
+
+  const canonicalStacks = [];
+  const duplicates = [];
+
+  collections.forEach((entry, name) => {
+    canonicalStacks.push(entry.canonical);
+
+    if (entry.members.length > 1) {
+      const seenIds = new Set();
+      const duplicateEntries = entry.members.filter((member) => {
+        const id = String(member.Id);
+        if (id === String(entry.canonical.Id)) {
+          return false;
+        }
+        if (seenIds.has(id)) {
+          return false;
+        }
+        seenIds.add(id);
+        return true;
+      });
+
+      if (duplicateEntries.length > 0) {
+        duplicates.push({
+          name,
+          canonical: entry.canonical,
+          members: duplicateEntries
+        });
+      }
+    }
+  });
+
+  return { canonicalStacks, duplicates };
+};
+
+const loadStackCollections = async () => {
+  const filteredStacks = await fetchPortainerStacks();
+  return {
+    filteredStacks,
+    ...buildStackCollections(filteredStacks)
+  };
+};
 
 const PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
 
@@ -1224,97 +1750,29 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
     });
 
     if (!eligibleStacks.length) {
-      logRedeployEvent({
-        stackId: '---',
-        stackName: '---',
-        status: 'success',
-        message: 'Redeploy ALL übersprungen: keine veralteten Stacks',
-        endpoint: ENDPOINT_ID,
-        redeployType: REDEPLOY_TYPES.ALL
-      });
-      return res.json({ success: true, message: 'Keine veralteten Stacks für Redeploy ALL' });
+      console.log('ℹ️ Keine veralteten Stacks für Redeploy ALL vorhanden');
+      return res.json({ success: true, message: 'Keine veralteten Stacks gefunden' });
     }
 
     for (const stack of eligibleStacks) {
       try {
-        broadcastRedeployStatus({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          phase: 'started'
-        });
-        logRedeployEvent({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          status: 'started',
-          message: 'Redeploy ALL gestartet',
-          endpoint: stack.EndpointId,
-          redeployType: REDEPLOY_TYPES.ALL
-        });
-
-        if (stack.Type === 1) {
-          console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id})`);
-          await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
-        } else if (stack.Type === 2) {
-          console.log(`🔄 [Redeploy] Compose Stack "${stack.Name}" (${stack.Id})`);
-          const fileRes = await axiosInstance.get(`/api/stacks/${stack.Id}/file`);
-          const stackFileContent = fileRes.data?.StackFileContent;
-          if (stackFileContent) {
-            await axiosInstance.put(`/api/stacks/${stack.Id}`,
-              { StackFileContent: stackFileContent, Prune: false, PullImage: true },
-              { params: { endpointId: stack.EndpointId } }
-            );
-          }
-        }
-
-        broadcastRedeployStatus({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          phase: 'success'
-        });
-        logRedeployEvent({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          status: 'success',
-          message: 'Redeploy ALL abgeschlossen',
-          endpoint: stack.EndpointId,
-          redeployType: REDEPLOY_TYPES.ALL
-        });
-        console.log(`✅ Redeploy abgeschlossen: ${stack.Name}`);
+        await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
+        console.log(`✅ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) erfolgreich`);
       } catch (err) {
-        const errorMessage = err.response?.data?.message || err.message;
-        broadcastRedeployStatus({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          phase: 'error',
-          message: errorMessage
-        });
-        logRedeployEvent({
-          stackId: stack.Id,
-          stackName: stack.Name,
-          status: 'error',
-          message: errorMessage,
-          endpoint: stack.EndpointId,
-          redeployType: REDEPLOY_TYPES.ALL
-        });
-        console.error(`❌ Fehler beim Redeploy von Stack ${stack.Name}:`, errorMessage);
+        console.error(`❌ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) fehlgeschlagen:`, err.message);
       }
     }
 
-    res.json({ success: true, message: 'Redeploy ALL gestartet' });
-  } catch (err) {
-    console.error(`❌ Fehler beim Redeploy ALL:`, err.message);
     logRedeployEvent({
       stackId: '---',
       stackName: '---',
-      status: 'error',
-      message: err.message,
+      status: 'success',
+      message: 'Redeploy ALL abgeschlossen',
       endpoint: ENDPOINT_ID,
       redeployType: REDEPLOY_TYPES.ALL
     });
-    res.status(500).json({ error: err.message });
-  }
-});
 
+<<<<<<< HEAD
 app.get('/api/maintenance/portainer-status', async (req, res) => {
   console.log("🧭 [Maintenance] GET /api/maintenance/portainer-status: Prüfung gestartet");
   try {
@@ -1665,21 +2123,64 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
     }
 
     res.json({ success: true, message: 'Redeploy Auswahl gestartet' });
+=======
+    res.json({ success: true, message: 'Redeploy ALL abgeschlossen' });
+>>>>>>> feature/v03-notifications
   } catch (err) {
-    const errorMessage = err.response?.data?.message || err.message;
-    console.error(`❌ Fehler beim Redeploy Auswahl:`, errorMessage);
+    const message = err.response?.data?.message || err.message;
     logRedeployEvent({
       stackId: '---',
       stackName: '---',
       status: 'error',
-      message: errorMessage,
+      message,
       endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      redeployType: REDEPLOY_TYPES.ALL
     });
-    res.status(500).json({ error: errorMessage });
+    console.error('❌ Fehler bei Redeploy ALL:', message);
+    res.status(500).json({ error: message });
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Backend läuft auf Port ${PORT}`);
+// Redeploy selection
+app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => {
+  const { stackIds } = req.body || {};
+  console.log(`🚀 PUT /api/stacks/redeploy-selection: Redeploy Auswahl gestartet (${Array.isArray(stackIds) ? stackIds.length : 0} Stacks)`);
+
+  if (!Array.isArray(stackIds) || stackIds.length === 0) {
+    return res.status(400).json({ error: 'stackIds muss eine nicht leere Array sein' });
+  }
+
+  try {
+    for (const id of stackIds) {
+      await axiosInstance.put(`/api/stacks/${id}/git/redeploy?endpointId=${ENDPOINT_ID}`);
+    }
+
+    logRedeployEvent({
+      stackId: stackIds.join(','),
+      stackName: `Auswahl (${stackIds.length})`,
+      status: 'success',
+      message: 'Redeploy Auswahl abgeschlossen',
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.SELECTION
+    });
+
+    res.json({ success: true, message: 'Redeploy Auswahl abgeschlossen' });
+  } catch (err) {
+    const message = err.response?.data?.message || err.message;
+    logRedeployEvent({
+      stackId: stackIds.join(','),
+      stackName: `Auswahl (${stackIds.length})`,
+      status: 'error',
+      message,
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.SELECTION
+    });
+    console.error('❌ Fehler bei Redeploy Auswahl:', message);
+    res.status(500).json({ error: message });
+  }
 });
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server läuft auf Port ${PORT}`);
+});
+

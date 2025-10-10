@@ -54,6 +54,14 @@ export default function Stacks() {
 
   const stacksByIdRef = useRef(new Map());
 
+  useEffect(() => {
+    if (maintenanceLocked) {
+      setLoading(false);
+      setStacks([]);
+      setSelectedStackIds([]);
+    }
+  }, [maintenanceLocked]);
+
   const mergeStackState = useCallback((previousStacks, incomingStacks) => {
     const prevMap = new Map(previousStacks.map((stack) => [stack.Id, stack]));
     const sortedIncoming = [...incomingStacks].sort((a, b) => a.Name.localeCompare(b.Name));
