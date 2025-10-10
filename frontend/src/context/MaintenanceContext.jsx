@@ -7,6 +7,7 @@ const INITIAL_STATE = {
   maintenance: null,
   update: null,
   script: null,
+  ssh: null,
   loading: true,
   error: "",
   lastUpdated: null
@@ -33,6 +34,7 @@ export default function MaintenanceProvider({ children }) {
         maintenance: data.maintenance ?? null,
         update: data.update ?? null,
         script: data.script ?? null,
+        ssh: data.ssh ?? null,
         loading: false,
         error: "",
         lastUpdated: new Date()
@@ -102,10 +104,26 @@ export default function MaintenanceProvider({ children }) {
     await fetchConfig();
   }, [fetchConfig]);
 
+  const saveSshConfig = useCallback(async (config) => {
+    await axios.put("/api/maintenance/ssh-config", config);
+    await fetchConfig();
+  }, [fetchConfig]);
+
+  const deleteSshConfig = useCallback(async () => {
+    await axios.delete("/api/maintenance/ssh-config");
+    await fetchConfig();
+  }, [fetchConfig]);
+
+  const testSshConnection = useCallback(async (config) => {
+    const response = await axios.post("/api/maintenance/test-ssh", config ?? {});
+    return response.data;
+  }, []);
+
   const value = useMemo(() => ({
     maintenance: state.maintenance,
     update: state.update,
     script: state.script,
+    ssh: state.ssh,
     loading: state.loading,
     error: state.error,
     lastUpdated: state.lastUpdated,
@@ -113,8 +131,11 @@ export default function MaintenanceProvider({ children }) {
     refreshUpdateStatus,
     triggerUpdate,
     saveScript,
-    resetScript
-  }), [state, fetchConfig, refreshUpdateStatus, triggerUpdate, saveScript, resetScript]);
+    resetScript,
+    saveSshConfig,
+    deleteSshConfig,
+    testSshConnection
+  }), [state, fetchConfig, refreshUpdateStatus, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection]);
 
   return (
     <MaintenanceContext.Provider value={value}>

@@ -90,17 +90,29 @@ const resolveStackType = (type) => {
   return type ?? "-";
 };
 
+const createEmptySshDraft = () => ({
+  host: '',
+  port: '22',
+  username: '',
+  privateKey: '',
+  extraSshArgs: ''
+});
+
 export default function Maintenance() {
   const { showToast } = useToast();
   const {
     maintenance: maintenanceMeta,
     update: updateState,
     script: scriptConfig,
+    ssh: sshConfig,
     loading: maintenanceLoading,
     error: maintenanceError,
     triggerUpdate,
     saveScript,
-    resetScript
+    resetScript,
+    saveSshConfig,
+    deleteSshConfig,
+    testSshConnection
   } = useMaintenance();
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
@@ -112,11 +124,39 @@ export default function Maintenance() {
   const [updateActionLoading, setUpdateActionLoading] = useState(false);
   const [updateActionError, setUpdateActionError] = useState("");
 
+  const [sshDraft, setSshDraft] = useState(() => createEmptySshDraft());
+  const [sshKeyStored, setSshKeyStored] = useState(false);
+  const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [sshSaving, setSshSaving] = useState(false);
+  const [sshTesting, setSshTesting] = useState(false);
+  const [sshDeleting, setSshDeleting] = useState(false);
+  const [sshTestResult, setSshTestResult] = useState(null);
+
   useEffect(() => {
     if (!scriptConfig) return;
     const nextValue = scriptConfig.custom ?? scriptConfig.default ?? scriptConfig.effective ?? "";
     setScriptDraft(nextValue);
   }, [scriptConfig]);
+
+  useEffect(() => {
+    if (!sshConfig) {
+      setSshDraft(createEmptySshDraft());
+      setSshKeyStored(false);
+      setShowPrivateKey(false);
+      setSshTestResult(null);
+      return;
+    }
+    setSshDraft({
+      host: sshConfig.host ?? '',
+      port: String(sshConfig.port ?? '22'),
+      username: sshConfig.username ?? '',
+      privateKey: '',
+      extraSshArgs: Array.isArray(sshConfig.extraSshArgs) ? sshConfig.extraSshArgs.join('\n') : ''
+    });
+    setSshKeyStored(Boolean(sshConfig.privateKeyStored));
+    setShowPrivateKey(false);
+    setSshTestResult(null);
+  }, [sshConfig]);
 
   const scriptBaseline = useMemo(() => {
     if (!scriptConfig) return "";
@@ -222,6 +262,35 @@ export default function Maintenance() {
     return { groups, duplicateCount };
   }, [duplicates]);
 
+  const handleSshDraftChange = useCallback((field, value) => {
+    setSshDraft((prev) => ({ ...prev, [field]: value }));
+    if (field === 'privateKey') {
+      setSshKeyStored(false);
+    }
+  }, []);
+
+  const normalizedSshDraft = useMemo(() => {
+    const normalized = {
+      host: sshDraft.host.trim(),
+      port: Number.parseInt(sshDraft.port, 10) || 22,
+      username: sshDraft.username.trim(),
+      extraSshArgs: sshDraft.extraSshArgs
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    };
+
+    const rawKey = (sshDraft.privateKey ?? '');
+    const sanitizedKey = rawKey.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    if (sanitizedKey) {
+      normalized.privateKey = sanitizedKey;
+    } else if (!sshKeyStored) {
+      normalized.privateKey = '';
+    }
+
+    return normalized;
+  }, [sshDraft, sshKeyStored]);
+
   const handleScriptSave = useCallback(async () => {
     if (!scriptConfig) return;
     try {
@@ -256,6 +325,65 @@ export default function Maintenance() {
       setScriptSaving(false);
     }
   }, [resetScript, showToast]);
+
+  const handleSshSaveConfig = useCallback(async () => {
+    try {
+      setSshSaving(true);
+      await saveSshConfig(normalizedSshDraft);
+      setSshTestResult(null);
+      setShowPrivateKey(false);
+      showToast({
+        variant: "success",
+        title: "SSH-Konfiguration gespeichert",
+        description: "Verbindungseinstellungen wurden aktualisiert."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "SSH-Konfiguration konnte nicht gespeichert werden";
+      showToast({ variant: "error", title: "Speichern fehlgeschlagen", description: message });
+    } finally {
+      setSshSaving(false);
+    }
+  }, [normalizedSshDraft, saveSshConfig, showToast]);
+
+  const handleSshTestConnection = useCallback(async () => {
+    try {
+      setSshTesting(true);
+      const result = await testSshConnection(normalizedSshDraft);
+      setSshTestResult({ success: true, timestamp: new Date(), details: result?.result });
+      showToast({
+        variant: "success",
+        title: "SSH-Verbindung erfolgreich",
+        description: "Verbindung zum Portainer-Host wurde hergestellt."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "SSH-Verbindung fehlgeschlagen";
+      setSshTestResult({ success: false, timestamp: new Date(), error: message });
+      showToast({ variant: "error", title: "SSH-Test fehlgeschlagen", description: message });
+    } finally {
+      setSshTesting(false);
+    }
+  }, [normalizedSshDraft, testSshConnection, showToast]);
+
+  const handleSshDeleteConfig = useCallback(async () => {
+    try {
+      setSshDeleting(true);
+      await deleteSshConfig();
+      setSshDraft(createEmptySshDraft());
+      setSshKeyStored(false);
+      setShowPrivateKey(false);
+      setSshTestResult(null);
+      showToast({
+        variant: "info",
+        title: "SSH-Konfiguration gelöscht",
+        description: "Die Verbindungseinstellungen wurden zurückgesetzt."
+      });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "SSH-Konfiguration konnte nicht gelöscht werden";
+      showToast({ variant: "error", title: "Löschen fehlgeschlagen", description: message });
+    } finally {
+      setSshDeleting(false);
+    }
+  }, [deleteSshConfig, showToast]);
 
   const handleTriggerUpdate = useCallback(async () => {
     if (maintenanceActive || updateRunning) {
@@ -575,7 +703,120 @@ export default function Maintenance() {
           </div>
         )}
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="mt-6 grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
+          <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white">SSH-Verbindung</h3>
+            </div>
+            <div className="mt-3 grid gap-3 text-sm text-gray-200">
+              <label className="grid gap-1">
+                <span className="text-xs uppercase tracking-wide text-gray-400">Host</span>
+                <input
+                  type="text"
+                  value={sshDraft.host}
+                  onChange={(event) => handleSshDraftChange('host', event.target.value)}
+                  disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                  className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 focus:border-purple-500 focus:outline-none"
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1">
+                  <span className="text-xs uppercase tracking-wide text-gray-400">Port</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={sshDraft.port}
+                    onChange={(event) => handleSshDraftChange('port', event.target.value)}
+                    disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                    className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 focus:border-purple-500 focus:outline-none"
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-xs uppercase tracking-wide text-gray-400">Benutzer</span>
+                  <input
+                    type="text"
+                    value={sshDraft.username}
+                    onChange={(event) => handleSshDraftChange('username', event.target.value)}
+                    disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                    className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 focus:border-purple-500 focus:outline-none"
+                  />
+                </label>
+              </div>
+              <div className="grid gap-1">
+                <div className="flex items-center justify-between text-xs uppercase tracking-wide text-gray-400">
+                  <label htmlFor="maintenance-ssh-private-key" className="cursor-pointer">Privater SSH-Key</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrivateKey((prev) => !prev)}
+                    disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                    className="text-[11px] font-medium text-purple-300 transition hover:text-purple-200 disabled:opacity-50"
+                  >
+                    {showPrivateKey ? 'Verbergen' : 'Anzeigen'}
+                  </button>
+                </div>
+                <textarea
+                  id="maintenance-ssh-private-key"
+                  rows={6}
+                  value={sshDraft.privateKey}
+                  onChange={(event) => handleSshDraftChange('privateKey', event.target.value)}
+                  disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                  className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 font-mono text-xs text-gray-100 focus:border-purple-500 focus:outline-none"
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={showPrivateKey ? undefined : { WebkitTextSecurity: 'disc', MozTextSecurity: 'disc' }}
+                />
+                {sshKeyStored && !sshDraft.privateKey && (
+                  <span className="text-[11px] text-gray-400">
+                    Ein privater Schlüssel ist gespeichert. Neuer Inhalt ersetzt ihn oder lösche die Konfiguration unten.
+                  </span>
+                )}
+              </div>
+              <label className="grid gap-1">
+                <span className="text-xs uppercase tracking-wide text-gray-400">Weitere SSH-Argumente</span>
+                <textarea
+                  rows={3}
+                  value={sshDraft.extraSshArgs}
+                  onChange={(event) => handleSshDraftChange('extraSshArgs', event.target.value)}
+                  disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                  className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 font-mono text-[11px] text-gray-100 focus:border-purple-500 focus:outline-none"
+                  placeholder="je Zeile ein Argument (optional)"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleSshSaveConfig}
+                disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-500 disabled:opacity-50"
+              >
+                {sshSaving ? 'Speichern…' : 'SSH-Konfiguration speichern'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSshTestConnection}
+                disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                className="rounded-lg border border-gray-600 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-700 disabled:opacity-50"
+              >
+                {sshTesting ? 'Test läuft…' : 'Verbindung testen'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSshDeleteConfig}
+                disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                className="rounded-lg border border-red-600 px-4 py-2 text-sm font-medium text-red-200 transition hover:bg-red-900/40 disabled:opacity-50"
+              >
+                {sshDeleting ? 'Löschen…' : 'SSH-Einstellungen löschen'}
+              </button>
+            </div>
+            {sshTestResult && (
+              <p className={`mt-3 text-xs ${sshTestResult.success ? 'text-green-300' : 'text-red-300'}`}>
+                {sshTestResult.success ? 'SSH-Verbindung erfolgreich.' : `SSH-Verbindung fehlgeschlagen: ${sshTestResult.error}`}
+              </p>
+            )}
+          </div>
+
           <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">Update-Skript</h3>
