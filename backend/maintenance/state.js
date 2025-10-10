@@ -53,16 +53,6 @@ export function activateMaintenanceMode({ message = null, extra = null } = {}) {
   });
 }
 
-<<<<<<< HEAD
-export function updateMaintenanceState(partial = {}) {
-  return persistState({
-    ...maintenanceState,
-    ...partial
-  });
-}
-
-=======
->>>>>>> feature/v03-notifications
 export function deactivateMaintenanceMode({ message = null } = {}) {
   return persistState({
     active: false,

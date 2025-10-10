@@ -44,6 +44,7 @@ export default function App() {
                   )}
                 </span>
               </NavLink>
+
               <NavLink to="/logs" className={getNavClass}>
                 Logs
               </NavLink>
