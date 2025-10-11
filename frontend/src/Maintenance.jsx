@@ -32,7 +32,8 @@ const LOG_LEVEL_STYLES = {
   warning: "text-amber-300",
   error: "text-red-300",
   stdout: "text-gray-300",
-  stderr: "text-orange-300"
+  stderr: "text-orange-300",
+  debug: "text-slate-400"
 };
 
 const formatLogTimestamp = (value) => {
@@ -95,6 +96,7 @@ const createEmptySshDraft = () => ({
   port: '22',
   username: '',
   privateKey: '',
+  privateKeyPassphrase: '',
   extraSshArgs: ''
 });
 
@@ -126,7 +128,9 @@ export default function Maintenance() {
 
   const [sshDraft, setSshDraft] = useState(() => createEmptySshDraft());
   const [sshKeyStored, setSshKeyStored] = useState(false);
+  const [sshPassphraseStored, setSshPassphraseStored] = useState(false);
   const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [showPassphrase, setShowPassphrase] = useState(false);
   const [sshSaving, setSshSaving] = useState(false);
   const [sshTesting, setSshTesting] = useState(false);
   const [sshDeleting, setSshDeleting] = useState(false);
@@ -142,7 +146,9 @@ export default function Maintenance() {
     if (!sshConfig) {
       setSshDraft(createEmptySshDraft());
       setSshKeyStored(false);
+      setSshPassphraseStored(false);
       setShowPrivateKey(false);
+      setShowPassphrase(false);
       setSshTestResult(null);
       return;
     }
@@ -151,10 +157,13 @@ export default function Maintenance() {
       port: String(sshConfig.port ?? '22'),
       username: sshConfig.username ?? '',
       privateKey: '',
+      privateKeyPassphrase: '',
       extraSshArgs: Array.isArray(sshConfig.extraSshArgs) ? sshConfig.extraSshArgs.join('\n') : ''
     });
     setSshKeyStored(Boolean(sshConfig.privateKeyStored));
+    setSshPassphraseStored(Boolean(sshConfig.privateKeyPassphraseStored));
     setShowPrivateKey(false);
+    setShowPassphrase(false);
     setSshTestResult(null);
   }, [sshConfig]);
 
@@ -267,6 +276,9 @@ export default function Maintenance() {
     if (field === 'privateKey') {
       setSshKeyStored(false);
     }
+    if (field === 'privateKeyPassphrase') {
+      setSshPassphraseStored(false);
+    }
   }, []);
 
   const normalizedSshDraft = useMemo(() => {
@@ -288,8 +300,15 @@ export default function Maintenance() {
       normalized.privateKey = '';
     }
 
+    const rawPassphrase = sshDraft.privateKeyPassphrase ?? '';
+    if (rawPassphrase) {
+      normalized.privateKeyPassphrase = rawPassphrase;
+    } else if (!sshPassphraseStored) {
+      normalized.privateKeyPassphrase = '';
+    }
+
     return normalized;
-  }, [sshDraft, sshKeyStored]);
+  }, [sshDraft, sshKeyStored, sshPassphraseStored]);
 
   const handleScriptSave = useCallback(async () => {
     if (!scriptConfig) return;
@@ -332,6 +351,7 @@ export default function Maintenance() {
       await saveSshConfig(normalizedSshDraft);
       setSshTestResult(null);
       setShowPrivateKey(false);
+      setShowPassphrase(false);
       showToast({
         variant: "success",
         title: "SSH-Konfiguration gespeichert",
@@ -370,7 +390,9 @@ export default function Maintenance() {
       await deleteSshConfig();
       setSshDraft(createEmptySshDraft());
       setSshKeyStored(false);
+      setSshPassphraseStored(false);
       setShowPrivateKey(false);
+      setShowPassphrase(false);
       setSshTestResult(null);
       showToast({
         variant: "info",
@@ -769,6 +791,35 @@ export default function Maintenance() {
                 {sshKeyStored && !sshDraft.privateKey && (
                   <span className="text-[11px] text-gray-400">
                     Ein privater Schlüssel ist gespeichert. Neuer Inhalt ersetzt ihn oder lösche die Konfiguration unten.
+                  </span>
+                )}
+              </div>
+              <div className="grid gap-1">
+                <div className="flex items-center justify-between text-xs uppercase tracking-wide text-gray-400">
+                  <label htmlFor="maintenance-ssh-passphrase" className="cursor-pointer">Passphrase</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassphrase((prev) => !prev)}
+                    disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                    className="text-[11px] font-medium text-purple-300 transition hover:text-purple-200 disabled:opacity-50"
+                  >
+                    {showPassphrase ? 'Verbergen' : 'Anzeigen'}
+                  </button>
+                </div>
+                <input
+                  id="maintenance-ssh-passphrase"
+                  type={showPassphrase ? 'text' : 'password'}
+                  value={sshDraft.privateKeyPassphrase}
+                  onChange={(event) => handleSshDraftChange('privateKeyPassphrase', event.target.value)}
+                  disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
+                  className="w-full rounded-md border border-gray-700 bg-gray-950/70 px-3 py-2 text-sm text-gray-100 focus:border-purple-500 focus:outline-none"
+                  placeholder="optional"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {sshPassphraseStored && !sshDraft.privateKeyPassphrase && (
+                  <span className="text-[11px] text-gray-400">
+                    Eine Passphrase ist gespeichert. Neuer Wert ersetzt sie oder lösche die Konfiguration unten.
                   </span>
                 )}
               </div>

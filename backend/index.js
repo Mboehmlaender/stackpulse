@@ -91,7 +91,7 @@ const DEFAULT_PORTAINER_UPDATE_SCRIPT = [
   'docker stop portainer',
   'docker rm portainer',
   'docker pull portainer/portainer-ee:lts',
-  'docker run -d -p 8000:8000 -p 9443:9443 --name=portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock'
+  'docker run -d -p 8000:8000 -p 9443:9443 --name=portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ee:lts'
 ].join('\n');
 
 let portainerUpdateState = {
@@ -136,17 +136,19 @@ const getPortainerUpdateStatus = () => ({
 const getCustomPortainerScript = () => {
   const row = getSetting(PORTAINER_SCRIPT_SETTING_KEY);
   if (!row) return null;
-  const value = typeof row.value === 'string' ? row.value.trim() : '';
-  if (!value) return null;
+  const raw = typeof row.value === 'string' ? row.value : '';
+  if (!raw.trim()) return null;
   return {
-    script: row.value,
+    script: normalizeScriptText(raw),
     updatedAt: row.updated_at || null
   };
 };
 
+const normalizeScriptText = (script) => String(script ?? '').replace(/\r\n/g, '\n');
+
 const saveCustomPortainerScript = (script) => {
-  const normalized = String(script ?? '').replace(/\r?\n/g, '\n').trim();
-  if (!normalized) {
+  const normalized = normalizeScriptText(script);
+  if (!normalized.trim()) {
     deleteSetting(PORTAINER_SCRIPT_SETTING_KEY);
     return null;
   }
@@ -209,7 +211,8 @@ const DEFAULT_PORTAINER_SSH_CONFIG = {
   port: 22,
   username: '',
   extraSshArgs: [],
-  privateKey: ''
+  privateKey: '',
+  privateKeyPassphrase: ''
 };
 
 const normalizeString = (value, fallback = '') => {
@@ -220,6 +223,23 @@ const normalizeString = (value, fallback = '') => {
 const normalizePort = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.port) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? fallback : parsed;
+};
+
+const tokenizeSshArgLine = (line) => {
+  if (!line) return [];
+  const tokens = [];
+  const regex = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = regex.exec(line)) !== null) {
+    if (match[1] !== undefined) {
+      tokens.push(match[1]);
+    } else if (match[2] !== undefined) {
+      tokens.push(match[2]);
+    } else if (match[3] !== undefined) {
+      tokens.push(match[3]);
+    }
+  }
+  return tokens;
 };
 
 const normalizeExtraArgs = (value, fallback = []) => {
@@ -242,6 +262,12 @@ const normalizePrivateKey = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.priv
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 };
 
+const normalizePrivateKeyPassphrase = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.privateKeyPassphrase) => {
+  if (value === undefined) return fallback;
+  if (value === null) return '';
+  return String(value);
+};
+
 const getPortainerSshConfig = () => {
   const stored = getSetting(PORTAINER_SSH_CONFIG_KEY);
   if (!stored) {
@@ -255,7 +281,8 @@ const getPortainerSshConfig = () => {
       port: normalizePort(parsed.port),
       username: normalizeString(parsed.username),
       extraSshArgs: normalizeExtraArgs(parsed.extraSshArgs),
-      privateKey: decryptedKey
+      privateKey: decryptedKey,
+      privateKeyPassphrase: parsed.privateKeyPassphraseEncrypted ? decryptSensitive(parsed.privateKeyPassphraseEncrypted) : ''
     };
   } catch (err) {
     console.warn('⚠️ [Maintenance] Konnte Portainer SSH Konfiguration nicht parsen:', err.message);
@@ -269,7 +296,8 @@ const persistPortainerSshConfig = (config) => {
     port: config.port,
     username: config.username,
     extraSshArgs: config.extraSshArgs,
-    privateKeyEncrypted: config.privateKey ? encryptSensitive(config.privateKey) : null
+    privateKeyEncrypted: config.privateKey ? encryptSensitive(config.privateKey) : null,
+    privateKeyPassphraseEncrypted: config.privateKeyPassphrase ? encryptSensitive(config.privateKeyPassphrase) : null
   };
   setSetting(PORTAINER_SSH_CONFIG_KEY, JSON.stringify(payload));
 };
@@ -279,7 +307,8 @@ const mergeSshConfig = (base, overrides = {}) => ({
   port: normalizePort(overrides.port, base.port),
   username: normalizeString(overrides.username, base.username),
   extraSshArgs: normalizeExtraArgs(overrides.extraSshArgs, base.extraSshArgs),
-  privateKey: normalizePrivateKey(overrides.privateKey, base.privateKey)
+  privateKey: normalizePrivateKey(overrides.privateKey, base.privateKey),
+  privateKeyPassphrase: normalizePrivateKeyPassphrase(overrides.privateKeyPassphrase, base.privateKeyPassphrase)
 });
 
 const savePortainerSshConfig = (payload = {}) => {
@@ -313,6 +342,29 @@ const createTempPrivateKeyFile = (privateKey) => {
   };
 };
 
+const createTempAskPassScript = (passphrase) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stackpulse-askpass-'));
+  const scriptPath = path.join(tmpDir, 'askpass.sh');
+  const scriptContent = "#!/bin/sh\nprintf '%s\\n' \"$STACKPULSE_SSH_PASS\"\n";
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o700 });
+  return {
+    env: {
+      SSH_ASKPASS: scriptPath,
+      SSH_ASKPASS_REQUIRE: 'force',
+      DISPLAY: process.env.DISPLAY || ':9999',
+      STACKPULSE_SSH_PASS: passphrase
+    },
+    cleanup: () => {
+      try {
+        fs.unlinkSync(scriptPath);
+      } catch (err) { }
+      try {
+        fs.rmdirSync(tmpDir);
+      } catch (err) { }
+    }
+  };
+};
+
 const buildSshCommandArgs = (config) => {
   const sshConfig = mergeSshConfig(DEFAULT_PORTAINER_SSH_CONFIG, config);
   if (!sshConfig.host) {
@@ -324,23 +376,52 @@ const buildSshCommandArgs = (config) => {
 
   const args = [
     '-p', String(sshConfig.port),
-    '-o', 'BatchMode=yes',
     '-o', 'StrictHostKeyChecking=no'
   ];
 
-  let cleanup = () => {};
+  const cleanupTasks = [];
+  const registerCleanup = (fn) => {
+    if (typeof fn === 'function') {
+      cleanupTasks.push(fn);
+    }
+  };
+
+  if (!sshConfig.privateKeyPassphrase) {
+    args.push('-o', 'BatchMode=yes');
+  }
+
   if (sshConfig.privateKey) {
     const { filePath, cleanup: dispose } = createTempPrivateKeyFile(sshConfig.privateKey);
-    cleanup = dispose;
+    registerCleanup(dispose);
     args.push('-i', filePath);
   }
 
   if (sshConfig.extraSshArgs.length) {
-    args.push(...sshConfig.extraSshArgs);
+    const expanded = sshConfig.extraSshArgs.flatMap((entry) => tokenizeSshArgLine(entry));
+    if (expanded.length) {
+      args.push(...expanded);
+    }
+  }
+
+  let envOverrides = {};
+  if (sshConfig.privateKeyPassphrase) {
+    const { env, cleanup: dispose } = createTempAskPassScript(sshConfig.privateKeyPassphrase);
+    envOverrides = { ...envOverrides, ...env };
+    registerCleanup(dispose);
   }
 
   args.push(`${sshConfig.username}@${sshConfig.host}`);
-  return { args, sshConfig, cleanup };
+
+  const cleanup = () => {
+    while (cleanupTasks.length) {
+      const task = cleanupTasks.pop();
+      try {
+        task();
+      } catch (err) { }
+    }
+  };
+
+  return { args, sshConfig, cleanup, env: envOverrides };
 };
 
 const ensureSshConfigReady = () => getPortainerSshConfig();
@@ -354,12 +435,13 @@ const testSshConnection = async (configOverride = null) => {
     throw new Error('SSH-Konfiguration ist unvollständig (Host/Benutzer erforderlich).');
   }
 
-  const { args, cleanup } = buildSshCommandArgs(baseConfig);
+  const { args, env: envOverrides, cleanup } = buildSshCommandArgs(baseConfig);
   const sshArgs = [...args, 'echo', '__PORTAINER_SSH_TEST__'];
 
   try {
     return await new Promise((resolve, reject) => {
-      const child = spawn('ssh', sshArgs, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const childEnv = { ...process.env, ...envOverrides };
+      const child = spawn('ssh', sshArgs, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       let errorOutput = '';
       child.stdout.on('data', (chunk) => { output += chunk.toString(); });
@@ -580,18 +662,17 @@ const maintenanceGuard = (req, res, next) => {
 const logScriptOutput = (data, level) => {
   if (!data) return;
   const text = data.toString();
-  text.split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => addUpdateLog(line, level));
+  text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).forEach((line) => addUpdateLog(line, level));
 };
 
 const executePortainerUpdateScript = async (script) => {
-  const normalized = String(script ?? '').replace(/\r?\n/g, '\n').trim();
-  if (!normalized) {
+  const normalized = normalizeScriptText(script);
+  if (!normalized.trim()) {
     addUpdateLog('Kein Update-Skript definiert. Vorgang wird übersprungen.', 'warning');
     return;
   }
+
+  const scriptWithUnixNewlines = normalized.endsWith('\n') ? normalized : `${normalized}\n`;
 
   const sshConfig = getPortainerSshConfig();
   const useSsh = Boolean(sshConfig.host && sshConfig.username);
@@ -599,7 +680,7 @@ const executePortainerUpdateScript = async (script) => {
   if (!useSsh) {
     addUpdateLog('Führe Update-Skript lokal auf dem StackPulse-Host aus.', 'info');
     return new Promise((resolve, reject) => {
-      const child = spawn('bash', ['-lc', `set -e\n${normalized}`], {
+      const child = spawn('bash', ['-lc', `set -e\n${scriptWithUnixNewlines}`], {
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe']
       });
@@ -617,14 +698,15 @@ const executePortainerUpdateScript = async (script) => {
     });
   }
 
-  const { args, cleanup } = buildSshCommandArgs(sshConfig);
+  const { args, env: envOverrides, cleanup } = buildSshCommandArgs(sshConfig);
   const sshArgs = [...args, 'bash', '-s'];
 
   addUpdateLog(`Verbinde zu ${sshConfig.username}@${sshConfig.host} für Update-Skript`, 'info');
 
   const sshPromise = new Promise((resolve, reject) => {
+    const childEnv = { ...process.env, ...envOverrides };
     const child = spawn('ssh', sshArgs, {
-      env: process.env,
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -640,8 +722,7 @@ const executePortainerUpdateScript = async (script) => {
     });
 
     child.stdin.write(`set -e
-${normalized}
-`);
+${scriptWithUnixNewlines}`);
     child.stdin.end();
   });
 
@@ -964,7 +1045,8 @@ app.get('/api/maintenance/config', (req, res) => {
       port: ssh.port,
       username: ssh.username,
       extraSshArgs: ssh.extraSshArgs,
-      privateKeyStored: Boolean(ssh.privateKey)
+      privateKeyStored: Boolean(ssh.privateKey),
+      privateKeyPassphraseStored: Boolean(ssh.privateKeyPassphrase)
     }
   });
 });
@@ -979,7 +1061,8 @@ app.put('/api/maintenance/ssh-config', (req, res) => {
         port: config.port,
         username: config.username,
         extraSshArgs: config.extraSshArgs,
-        privateKeyStored: Boolean(config.privateKey)
+        privateKeyStored: Boolean(config.privateKey),
+        privateKeyPassphraseStored: Boolean(config.privateKeyPassphrase)
       }
     });
   } catch (err) {
@@ -997,7 +1080,8 @@ app.delete('/api/maintenance/ssh-config', (req, res) => {
       port: config.port,
       username: config.username,
       extraSshArgs: config.extraSshArgs,
-      privateKeyStored: false
+      privateKeyStored: false,
+      privateKeyPassphraseStored: false
     }
   });
 });
