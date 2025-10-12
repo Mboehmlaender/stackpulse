@@ -23,7 +23,7 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-6 py-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex flex-col items-end gap-1">
-              <span className="text-xs text-gray-500">v0.3 WIP</span>
+              <span className="text-xs text-gray-500">v0.3</span>
               {maintenanceActive && (
                 <span className="flex items-center gap-1 text-xs text-amber-300">
                   <span className="h-2 w-2 animate-pulse rounded-full bg-amber-400" />
