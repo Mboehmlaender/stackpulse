@@ -20,6 +20,14 @@ const STACKS_REFRESH_INTERVAL = 30 * 1000;
 let stacksCache = { data: null, timestamp: 0 };
 let stacksCachePromise = null;
 
+const REDEPLOY_PHASES = {
+  QUEUED: 'queued',
+  STARTED: 'started',
+  SUCCESS: 'success',
+  ERROR: 'error',
+  INFO: 'info'
+};
+
 const isCacheFresh = () => Boolean(stacksCache.data) && (Date.now() - stacksCache.timestamp < STACKS_CACHE_DURATION);
 const updateStacksCache = (data) => {
   stacksCache = { data, timestamp: Date.now() };
@@ -78,9 +86,20 @@ export default function Stacks() {
         });
       }
 
+      let effectivePhase = stack.redeployPhase ?? previous?.redeployPhase ?? null;
+      if (!effectivePhase && (stack.redeploying || previous?.redeploying)) {
+        effectivePhase = REDEPLOY_PHASES.STARTED;
+      }
+
+      const isQueued = effectivePhase === REDEPLOY_PHASES.QUEUED;
+      const isRunning = effectivePhase === REDEPLOY_PHASES.STARTED;
+      const isBusy = isQueued || isRunning;
+
       return {
         ...stack,
-        redeploying: previous?.redeploying || stack.redeploying || false,
+        redeployPhase: effectivePhase,
+        redeployQueued: isQueued,
+        redeploying: isBusy,
         redeployDisabled: stack.redeployDisabled ?? previous?.redeployDisabled ?? false,
         duplicateName: stack.duplicateName ?? previous?.duplicateName ?? false
       };
@@ -98,33 +117,45 @@ export default function Stacks() {
       const { stackId } = payload;
       if (!stackId) return;
 
-      const hasBooleanStatus = typeof payload.status === 'boolean';
-      const isRedeploying = typeof payload.isRedeploying === 'boolean'
-        ? payload.isRedeploying
-        : (hasBooleanStatus ? payload.status : undefined);
-      const resolvedPhase = payload.phase ?? (hasBooleanStatus
-        ? (payload.status ? 'started' : 'success')
-        : undefined);
+      const resolvedPhaseRaw = payload.redeployPhase ?? payload.phase;
+      let resolvedPhase = resolvedPhaseRaw;
+      if (!resolvedPhase) {
+        if (payload.isRedeploying === true) {
+          resolvedPhase = REDEPLOY_PHASES.STARTED;
+        } else if (payload.isRedeploying === false) {
+          resolvedPhase = REDEPLOY_PHASES.SUCCESS;
+        }
+      } else if (resolvedPhaseRaw === 'started' || resolvedPhaseRaw === 'running') {
+        resolvedPhase = REDEPLOY_PHASES.STARTED;
+      } else if (resolvedPhaseRaw === 'queued') {
+        resolvedPhase = REDEPLOY_PHASES.QUEUED;
+      } else if (resolvedPhaseRaw === 'success') {
+        resolvedPhase = REDEPLOY_PHASES.SUCCESS;
+      } else if (resolvedPhaseRaw === 'error') {
+        resolvedPhase = REDEPLOY_PHASES.ERROR;
+      } else if (resolvedPhaseRaw === 'info') {
+        resolvedPhase = REDEPLOY_PHASES.INFO;
+      }
 
       const stackSnapshot = stacksByIdRef.current.get(stackId);
       const stackName = payload.stackName ?? stackSnapshot?.Name;
       const stackLabel = stackName ? `${stackName} (ID: ${stackId})` : `Stack ${stackId}`;
 
-      console.log(`🔄 Stack ${stackId} Redeploy Update: ${resolvedPhase ?? (isRedeploying ? 'running' : 'finished')}`);
+      console.log(`🔄 Stack ${stackId} Redeploy Update: ${resolvedPhase ?? 'unbekannt'}`);
 
-      if (resolvedPhase === 'started') {
+      if (resolvedPhase === REDEPLOY_PHASES.STARTED) {
         showToast({
           variant: 'info',
           title: 'Redeploy gestartet',
           description: stackLabel
         });
-      } else if (resolvedPhase === 'success') {
+      } else if (resolvedPhase === REDEPLOY_PHASES.SUCCESS) {
         showToast({
           variant: 'success',
           title: 'Redeploy abgeschlossen',
           description: stackLabel
         });
-      } else if (resolvedPhase === 'error') {
+      } else if (resolvedPhase === REDEPLOY_PHASES.ERROR) {
         const detail = payload.message ? ` – ${payload.message}` : '';
         showToast({
           variant: 'error',
@@ -137,26 +168,45 @@ export default function Stacks() {
         prev.map(stack => {
           if (stack.Id !== stackId) return stack;
 
-          if (resolvedPhase === 'started' || isRedeploying === true) {
-            return { ...stack, redeploying: true };
+          const nextPhase = resolvedPhase ?? stack.redeployPhase ?? null;
+          const isQueued = nextPhase === REDEPLOY_PHASES.QUEUED;
+          const isRunning = nextPhase === REDEPLOY_PHASES.STARTED;
+          const isSuccess = nextPhase === REDEPLOY_PHASES.SUCCESS;
+          const isError = nextPhase === REDEPLOY_PHASES.ERROR;
+          const isBusy = isQueued || isRunning;
+
+          const updated = {
+            ...stack,
+            redeployPhase: nextPhase,
+            redeployQueued: isQueued,
+            redeploying: isBusy
+          };
+
+          if (isSuccess) {
+            updated.updateStatus = '✅';
+            updated.redeploying = false;
+            updated.redeployQueued = false;
           }
 
-          if (resolvedPhase === 'success') {
-            return { ...stack, redeploying: false, updateStatus: '✅' };
+          if (isError) {
+            updated.redeploying = false;
+            updated.redeployQueued = false;
           }
 
-          if (resolvedPhase === 'error' || isRedeploying === false) {
-            return { ...stack, redeploying: false };
+          if (!isBusy && !isSuccess && !isError && resolvedPhase === undefined) {
+            updated.redeploying = false;
+            updated.redeployQueued = false;
+            updated.redeployPhase = stack.redeployPhase ?? null;
           }
 
-          return stack;
+          return updated;
         })
       );
 
       const shouldRefresh =
-        resolvedPhase === 'success' ||
-        resolvedPhase === 'error' ||
-        (hasBooleanStatus && payload.status === false);
+        resolvedPhase === REDEPLOY_PHASES.SUCCESS ||
+        resolvedPhase === REDEPLOY_PHASES.ERROR ||
+        (payload.isRedeploying === false && !resolvedPhase);
 
       if (shouldRefresh) {
         try {
@@ -259,7 +309,12 @@ export default function Stacks() {
     setSelectedStackIds(prev => {
       const filtered = prev.filter(id => {
         const match = stacks.find(stack => stack.Id === id);
-        return match && match.updateStatus !== '✅' && !match.redeployDisabled;
+        if (!match) return false;
+        if (match.updateStatus === '✅') return false;
+        if (match.redeployDisabled) return false;
+        const phase = match.redeployPhase;
+        if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return false;
+        return true;
       });
       return filtered.length === prev.length ? prev : filtered;
     });
@@ -286,7 +341,13 @@ export default function Stacks() {
   }, [stacks, statusFilter, normalizedSearch]);
 
   const eligibleFilteredStacks = useMemo(
-    () => filteredStacks.filter((stack) => stack.updateStatus !== '✅' && !stack.redeployDisabled),
+    () => filteredStacks.filter((stack) => {
+      if (stack.updateStatus === '✅') return false;
+      if (stack.redeployDisabled) return false;
+      const phase = stack.redeployPhase;
+      if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return false;
+      return true;
+    }),
     [filteredStacks]
   );
 
@@ -312,7 +373,13 @@ export default function Stacks() {
   const visiblePageStackIds = useMemo(() => new Set(paginatedStacks.map((stack) => stack.Id)), [paginatedStacks]);
 
   const eligiblePageStacks = useMemo(
-    () => paginatedStacks.filter((stack) => stack.updateStatus !== '✅' && !stack.redeployDisabled),
+    () => paginatedStacks.filter((stack) => {
+      if (stack.updateStatus === '✅') return false;
+      if (stack.redeployDisabled) return false;
+      const phase = stack.redeployPhase;
+      if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return false;
+      return true;
+    }),
     [paginatedStacks]
   );
 
@@ -498,10 +565,21 @@ export default function Stacks() {
   };
 
   const handleRedeploy = async (stackId) => {
+    const snapshot = stacksByIdRef.current.get(stackId);
+    const phase = snapshot?.redeployPhase;
+    if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return;
+
     setSelectedStackIds((prev) => prev.filter((id) => id !== stackId));
     setStacks((prev) =>
       prev.map((stack) =>
-        stack.Id === stackId ? { ...stack, redeploying: true } : stack
+        stack.Id === stackId
+          ? {
+              ...stack,
+              redeployPhase: REDEPLOY_PHASES.STARTED,
+              redeploying: true,
+              redeployQueued: false
+            }
+          : stack
       )
     );
 
@@ -512,13 +590,20 @@ export default function Stacks() {
       console.error("❌ Fehler beim Redeploy:", err);
       setStacks((prev) =>
         prev.map((stack) =>
-          stack.Id === stackId ? { ...stack, redeploying: false } : stack
+          stack.Id === stackId
+            ? {
+                ...stack,
+                redeployPhase: null,
+                redeploying: false,
+                redeployQueued: false
+              }
+            : stack
         )
       );
 
       if (!err.response) {
-        const snapshot = stacksByIdRef.current.get(stackId);
-        const stackLabel = snapshot?.Name ? `${snapshot.Name} (ID: ${stackId})` : `Stack ${stackId}`;
+        const current = stacksByIdRef.current.get(stackId);
+        const stackLabel = current?.Name ? `${current.Name} (ID: ${stackId})` : `Stack ${stackId}`;
         const errorText = err.message || 'Unbekannter Fehler';
         showToast({
           variant: 'error',
@@ -537,7 +622,12 @@ export default function Stacks() {
     setStacks(prev =>
       prev.map(stack =>
         targetIds.has(stack.Id)
-          ? { ...stack, redeploying: true }
+          ? {
+              ...stack,
+              redeployPhase: REDEPLOY_PHASES.QUEUED,
+              redeploying: true,
+              redeployQueued: true
+            }
           : stack
       )
     );
@@ -555,7 +645,12 @@ export default function Stacks() {
       setStacks(prev =>
         prev.map(stack =>
           targetIds.has(stack.Id)
-            ? { ...stack, redeploying: false }
+            ? {
+                ...stack,
+                redeployPhase: null,
+                redeploying: false,
+                redeployQueued: false
+              }
             : stack
         )
       );
@@ -574,7 +669,12 @@ export default function Stacks() {
 
     const eligibleIds = selectedStackIds.filter((id) => {
       const stack = stacks.find((entry) => entry.Id === id);
-      return stack && stack.updateStatus !== '✅' && !stack.redeployDisabled;
+      if (!stack) return false;
+      if (stack.updateStatus === '✅') return false;
+      if (stack.redeployDisabled) return false;
+      const phase = stack.redeployPhase;
+      if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return false;
+      return true;
     });
 
     if (!eligibleIds.length) {
@@ -587,7 +687,12 @@ export default function Stacks() {
     setStacks(prev =>
       prev.map(stack =>
         eligibleSet.has(stack.Id)
-          ? { ...stack, redeploying: true }
+          ? {
+              ...stack,
+              redeployPhase: REDEPLOY_PHASES.QUEUED,
+              redeploying: true,
+              redeployQueued: true
+            }
           : stack
       )
     );
@@ -601,7 +706,12 @@ export default function Stacks() {
       setStacks(prev =>
         prev.map(stack =>
           eligibleSet.has(stack.Id)
-            ? { ...stack, redeploying: false }
+            ? {
+                ...stack,
+                redeployPhase: null,
+                redeploying: false,
+                redeployQueued: false
+              }
             : stack
         )
       );
@@ -624,9 +734,13 @@ export default function Stacks() {
   const bulkActionDisabled = maintenanceLocked || (hasSelection
     ? selectionPromptVisible || selectedStackIds.length === 0 || selectedStackIds.every(id => {
         const targetStack = stacks.find(stack => stack.Id === id);
-        return !targetStack || targetStack.redeploying || targetStack.updateStatus === '✅' || targetStack.redeployDisabled;
+        if (!targetStack) return true;
+        if (targetStack.updateStatus === '✅') return true;
+        if (targetStack.redeployDisabled) return true;
+        const phase = targetStack.redeployPhase;
+        return phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED;
       })
-    : !hasOutdatedStacks || eligiblePageStacks.every(stack => stack.redeploying));
+    : !hasOutdatedStacks);
 
   const handleBulkRedeploy = () => {
     if (maintenanceLocked) {
@@ -807,19 +921,22 @@ export default function Stacks() {
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         {paginatedStacks.map(stack => {
-          const isRedeploying = stack.redeploying;
+          const phase = stack.redeployPhase;
+          const isQueued = phase === REDEPLOY_PHASES.QUEUED;
+          const isRunning = phase === REDEPLOY_PHASES.STARTED;
+          const isBusy = isQueued || isRunning;
           const isSelected = selectedStackIds.includes(stack.Id);
           const isCurrent = stack.updateStatus === '✅';
           const isSelfStack = Boolean(stack.redeployDisabled);
-          const isSelectable = !isRedeploying && !isCurrent && !isSelfStack && !maintenanceLocked;
+          const isSelectable = !isBusy && !isCurrent && !isSelfStack && !maintenanceLocked;
 
           return (
             <div
               key={stack.Id}
               className={`flex justify-between items-center p-5 rounded-xl shadow-lg transition border
                 ${isSelected ? 'border-purple-500 ring-1 ring-purple-500/40' : 'border-transparent'}
-                ${isRedeploying ? 'bg-gray-700 cursor-wait' : 'bg-gray-800 hover:bg-gray-700'}
-                ${!isSelectable && !isRedeploying ? 'opacity-75' : ''}`}
+                ${isBusy ? 'bg-gray-700 cursor-wait' : 'bg-gray-800 hover:bg-gray-700'}
+                ${!isSelectable && !isBusy ? 'opacity-75' : ''}`}
             >
               <div className="flex items-center space-x-4">
                 <input
@@ -844,10 +961,15 @@ export default function Stacks() {
               </div>
 
               <div className="flex flex-col items-end gap-1 text-sm">
-                {isRedeploying ? (
+                {isRunning ? (
                   <>
                     <span className="text-xs uppercase tracking-wide text-orange-300">Redeploy</span>
                     <span className="text-orange-200">läuft…</span>
+                  </>
+                ) : isQueued ? (
+                  <>
+                    <span className="text-xs uppercase tracking-wide text-orange-300">Redeploy</span>
+                    <span className="text-orange-200">in Warteliste…</span>
                   </>
                 ) : isSelfStack ? (
                   <>
@@ -860,15 +982,13 @@ export default function Stacks() {
                     <span className="text-green-300">Aktuell</span>
                   </>
                 ) : (
-                  <>
-                    <button
-                      onClick={() => handleRedeploy(stack.Id)}
-                      disabled={isRedeploying || maintenanceLocked}
-                      className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Redeploy
-                    </button>
-                  </>
+                  <button
+                    onClick={() => handleRedeploy(stack.Id)}
+                    disabled={isBusy || maintenanceLocked}
+                    className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Redeploy
+                  </button>
                 )}
               </div>
             </div>

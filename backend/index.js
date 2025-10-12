@@ -45,7 +45,23 @@ const axiosInstance = axios.create({
   baseURL: process.env.PORTAINER_URL,
 });
 
-const redeployingStacks = {};
+const REDEPLOY_PHASES = {
+  QUEUED: 'queued',
+  STARTED: 'started',
+  SUCCESS: 'success',
+  ERROR: 'error',
+  INFO: 'info'
+};
+
+const redeployingStacks = new Map();
+
+const isActiveRedeployPhase = (phase) => phase === REDEPLOY_PHASES.QUEUED || phase === REDEPLOY_PHASES.STARTED;
+
+const resolveRedeployPhase = (phase, message) => {
+  if (phase) return phase;
+  if (message) return REDEPLOY_PHASES.INFO;
+  return REDEPLOY_PHASES.SUCCESS;
+};
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -57,23 +73,35 @@ io.on("connection", (socket) => {
 });
 
 const broadcastRedeployStatus = ({ stackId, stackName, phase, message }) => {
-  const normalizedPhase = phase || (message ? 'info' : undefined);
-  const isRedeploying = normalizedPhase === 'started';
-  redeployingStacks[stackId] = Boolean(isRedeploying);
+  if (!stackId) return;
+
+  const resolvedPhase = resolveRedeployPhase(phase, message);
+  const isRedeploying = isActiveRedeployPhase(resolvedPhase);
+
+  if (isRedeploying) {
+    redeployingStacks.set(String(stackId), {
+      phase: resolvedPhase,
+      stackName: stackName || null,
+      message: message || null,
+      updatedAt: Date.now()
+    });
+  } else if (resolvedPhase === REDEPLOY_PHASES.SUCCESS || resolvedPhase === REDEPLOY_PHASES.ERROR || resolvedPhase === 'idle') {
+    redeployingStacks.delete(String(stackId));
+  }
 
   const payload = {
     stackId,
     stackName,
-    phase: normalizedPhase,
+    phase: resolvedPhase,
     message,
-    isRedeploying
+    isRedeploying,
+    redeployPhase: resolvedPhase
   };
 
   io.emit("redeployStatus", payload);
 
   const label = stackName ? `${stackName} (${stackId})` : `Stack ${stackId}`;
-  const phaseLabel = normalizedPhase ?? (isRedeploying ? 'started' : 'success');
-  console.log(`🔄 [RedeployStatus] ${label} -> ${phaseLabel}${message ? `: ${message}` : ""}`);
+  console.log(`🔄 [RedeployStatus] ${label} -> ${resolvedPhase}${message ? `: ${message}` : ""}`);
 };
 
 const REDEPLOY_TYPES = {
@@ -962,6 +990,162 @@ const filterOutdatedStacks = async (stacks = []) => {
   };
 };
 
+const getRedeployMessages = (type) => {
+  switch (type) {
+    case REDEPLOY_TYPES.ALL:
+      return { started: 'Redeploy ALL gestartet', success: 'Redeploy ALL abgeschlossen' };
+    case REDEPLOY_TYPES.SELECTION:
+      return { started: 'Redeploy Auswahl gestartet', success: 'Redeploy Auswahl abgeschlossen' };
+    case REDEPLOY_TYPES.MAINTENANCE:
+      return { started: 'Redeploy (Wartung) gestartet', success: 'Redeploy (Wartung) abgeschlossen' };
+    default:
+      return { started: 'Redeploy gestartet', success: 'Redeploy erfolgreich abgeschlossen' };
+  }
+};
+
+const shouldFallbackToStackFile = (message) => {
+  if (!message) return false;
+  const normalized = String(message).toLowerCase();
+  return normalized.includes('not created from git') || normalized.includes('no git configuration');
+};
+
+const redeployStackById = async (stackId, redeployType) => {
+  let stack;
+  const messages = getRedeployMessages(redeployType);
+
+  try {
+    const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
+    stack = stackRes.data;
+
+    if (stack.EndpointId !== ENDPOINT_ID) {
+      throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
+    }
+
+    const targetId = stack.Id || stackId;
+    const targetName = stack.Name || `Stack ${stackId}`;
+
+    broadcastRedeployStatus({
+      stackId: targetId,
+      stackName: targetName,
+      phase: REDEPLOY_PHASES.STARTED
+    });
+
+    logRedeployEvent({
+      stackId: targetId,
+      stackName: targetName,
+      status: 'started',
+      message: messages.started,
+      endpoint: stack.EndpointId,
+      redeployType
+    });
+
+    const redeployViaStackFile = async () => {
+      const fileRes = await axiosInstance.get(`/api/stacks/${stack.Id}/file`);
+      const stackFileContent = fileRes.data?.StackFileContent;
+      if (!stackFileContent) {
+        throw new Error('Stack file konnte nicht geladen werden');
+      }
+
+      if (stack.Type === 2) {
+        const services = fileRes.data?.Config?.services || {};
+        for (const serviceName in services) {
+          const imageName = services[serviceName].image;
+          if (!imageName) continue;
+          try {
+            console.log(`🖼️ Pulling image "${imageName}" für Service "${serviceName}"`);
+            await axiosInstance.post(
+              `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
+            );
+          } catch (err) {
+            console.error(`❌ Fehler beim Pulling von Image "${imageName}":`, err.message);
+          }
+        }
+      }
+
+      const updatePayload = {
+        StackFileContent: stackFileContent,
+        Prune: false,
+        PullImage: true,
+        Env: stack.Env || []
+      };
+
+      const swarmId = stack.SwarmId || stack.SwarmID || fileRes.data?.SwarmID;
+      if (swarmId) {
+        updatePayload.SwarmID = swarmId;
+      }
+
+      await axiosInstance.put(
+        `/api/stacks/${stack.Id}`,
+        updatePayload,
+        { params: { endpointId: stack.EndpointId } }
+      );
+    };
+
+    const isGitStack = Boolean(stack.GitConfig?.RepositoryURL);
+    let gitRedeploySucceeded = false;
+
+    if (isGitStack) {
+      try {
+        console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id}) wird redeployed`);
+        await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
+        gitRedeploySucceeded = true;
+      } catch (err) {
+        const gitErrorMessage = err.response?.data?.message || err.message;
+        if (shouldFallbackToStackFile(gitErrorMessage)) {
+          console.warn(`⚠️ Git Redeploy nicht möglich für Stack "${stack.Name}" (${stack.Id}): ${gitErrorMessage}. Fallback auf Stack-Datei.`);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!gitRedeploySucceeded) {
+      console.log(`🔄 [Redeploy] Stack "${stack.Name}" (${stack.Id}) wird über Stack-Datei redeployed`);
+      await redeployViaStackFile();
+    }
+
+    broadcastRedeployStatus({
+      stackId: targetId,
+      stackName: targetName,
+      phase: REDEPLOY_PHASES.SUCCESS
+    });
+
+    logRedeployEvent({
+      stackId: targetId,
+      stackName: targetName,
+      status: 'success',
+      message: messages.success,
+      endpoint: stack.EndpointId,
+      redeployType
+    });
+
+    return stack;
+  } catch (err) {
+    const errorMessage = err.response?.data?.message || err.message;
+    const fallbackId = stack?.Id || stackId;
+    const fallbackName = stack?.Name || `Stack ${stackId}`;
+
+    broadcastRedeployStatus({
+      stackId: fallbackId,
+      stackName: fallbackName,
+      phase: REDEPLOY_PHASES.ERROR,
+      message: errorMessage
+    });
+
+    logRedeployEvent({
+      stackId: fallbackId,
+      stackName: fallbackName,
+      status: 'error',
+      message: errorMessage,
+      endpoint: stack?.EndpointId || ENDPOINT_ID,
+      redeployType
+    });
+
+    console.error(`❌ Fehler beim Redeploy von Stack ${fallbackName}:`, errorMessage);
+    throw new Error(errorMessage);
+  }
+};
+
 // --- API Endpoints ---
 
 // Stacks abrufen
@@ -983,19 +1167,27 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
             `/api/stacks/${stack.Id}/images_status?refresh=true`
           );
           const statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
+          const redeployMeta = redeployingStacks.get(String(stack.Id));
+          const redeployPhase = redeployMeta?.phase || null;
           return {
             ...stack,
             updateStatus: statusEmoji,
-            redeploying: redeployingStacks[stack.Id] || false,
+            redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
+            redeployPhase,
+            redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
         } catch (err) {
           console.error(`❌ Fehler beim Abrufen des Status für Stack ${stack.Id}:`, err.message);
+          const redeployMeta = redeployingStacks.get(String(stack.Id));
+          const redeployPhase = redeployMeta?.phase || null;
           return {
             ...stack,
             updateStatus: '❌',
-            redeploying: redeployingStacks[stack.Id] || false,
+            redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
+            redeployPhase,
+            redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
@@ -1484,94 +1676,16 @@ app.get('/api/logs/export', (req, res) => {
 });
 
 // Einzel-Redeploy
-app.put('/api/stacks/:id/redeploy', maintenanceGuard, async (req, res) => {
+app.put('/api/stacks/:id/redeploy', async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
-  let stack;
   try {
-    const stackRes = await axiosInstance.get(`/api/stacks/${id}`);
-    stack = stackRes.data;
-
-    if (stack.EndpointId !== ENDPOINT_ID) {
-      throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
-    }
-
-    broadcastRedeployStatus({
-      stackId: stack.Id || id,
-      stackName: stack.Name,
-      phase: 'started'
-    });
-
-    logRedeployEvent({
-      stackId: stack.Id || id,
-      stackName: stack.Name,
-      status: 'started',
-      message: 'Redeploy gestartet',
-      endpoint: stack.EndpointId,
-      redeployType: REDEPLOY_TYPES.SINGLE
-    });
-
-    if (stack.Type === 1) {
-      console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${id}) wird redeployed`);
-      await axiosInstance.put(`/api/stacks/${id}/git/redeploy?endpointId=${stack.EndpointId}`);
-    } else if (stack.Type === 2) {
-      console.log(`🔄 [Redeploy] Compose Stack "${stack.Name}" (${id}) wird redeployed`);
-      const fileRes = await axiosInstance.get(`/api/stacks/${id}/file`);
-      const stackFileContent = fileRes.data?.StackFileContent;
-      if (!stackFileContent) throw new Error("Stack file konnte nicht geladen werden");
-
-      const services = fileRes.data?.Config?.services || {};
-      for (const serviceName in services) {
-        const imageName = services[serviceName].image;
-        if (!imageName) continue;
-        try {
-          console.log(`🖼️ Pulling image "${imageName}" für Service "${serviceName}"`);
-          await axiosInstance.post(
-            `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
-          );
-        } catch (err) {
-          console.error(`❌ Fehler beim Pulling von Image "${imageName}":`, err.message);
-        }
-      }
-
-      await axiosInstance.put(`/api/stacks/${id}`,
-        { StackFileContent: stackFileContent, Prune: false, PullImage: true },
-        { params: { endpointId: stack.EndpointId } }
-      );
-    }
-
-    broadcastRedeployStatus({
-      stackId: stack.Id || id,
-      stackName: stack.Name,
-      phase: 'success'
-    });
-    logRedeployEvent({
-      stackId: stack.Id || id,
-      stackName: stack.Name,
-      status: 'success',
-      message: 'Redeploy erfolgreich abgeschlossen',
-      endpoint: stack.EndpointId,
-      redeployType: REDEPLOY_TYPES.SINGLE
-    });
+    await redeployStackById(id, REDEPLOY_TYPES.SINGLE);
     console.log(`✅ PUT /api/stacks/${id}/redeploy: Redeploy erfolgreich abgeschlossen`);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
-    const errorMessage = err.response?.data?.message || err.message;
-    broadcastRedeployStatus({
-      stackId: stack?.Id || id,
-      stackName: stack?.Name,
-      phase: 'error',
-      message: errorMessage
-    });
-    logRedeployEvent({
-      stackId: stack?.Id || id,
-      stackName: stack?.Name || `Stack ${id}`,
-      status: 'error',
-      message: errorMessage,
-      endpoint: stack?.EndpointId || ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.SINGLE
-    });
+    const errorMessage = err.message || 'Unbekannter Fehler beim Redeploy';
     console.error(`❌ Fehler beim Redeploy von Stack ${id}:`, errorMessage);
     res.status(500).json({ error: errorMessage });
   }
@@ -1612,9 +1726,17 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       return res.json({ success: true, message: 'Keine veralteten Stacks gefunden' });
     }
 
+    eligibleStacks.forEach((stack) => {
+      broadcastRedeployStatus({
+        stackId: stack.Id,
+        stackName: stack.Name,
+        phase: REDEPLOY_PHASES.QUEUED
+      });
+    });
+
     for (const stack of eligibleStacks) {
       try {
-        await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
+        await redeployStackById(stack.Id, REDEPLOY_TYPES.ALL);
         console.log(`✅ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) erfolgreich`);
       } catch (err) {
         console.error(`❌ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) fehlgeschlagen:`, err.message);
@@ -1649,15 +1771,75 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
 // Redeploy selection
 app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => {
   const { stackIds } = req.body || {};
-  console.log(`🚀 PUT /api/stacks/redeploy-selection: Redeploy Auswahl gestartet (${Array.isArray(stackIds) ? stackIds.length : 0} Stacks)`);
+  const totalCount = Array.isArray(stackIds) ? stackIds.length : 0;
+  console.log(`🚀 PUT /api/stacks/redeploy-selection: Redeploy Auswahl gestartet (${totalCount} Stacks)`);
 
   if (!Array.isArray(stackIds) || stackIds.length === 0) {
     return res.status(400).json({ error: 'stackIds muss eine nicht leere Array sein' });
   }
 
   try {
-    for (const id of stackIds) {
-      await axiosInstance.put(`/api/stacks/${id}/git/redeploy?endpointId=${ENDPOINT_ID}`);
+    const normalizedIds = stackIds.map((id) => String(id));
+    const { filteredStacks } = await loadStackCollections();
+    const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
+
+    const missingIds = normalizedIds.filter((id) => !stacksById.has(id));
+    if (missingIds.length) {
+      return res.status(400).json({ error: `Ungültige Stack-IDs: ${missingIds.join(', ')}` });
+    }
+
+    const selectedStacks = normalizedIds.map((id) => stacksById.get(id)).filter(Boolean);
+    if (!selectedStacks.length) {
+      return res.status(400).json({ error: 'Keine gültigen Stacks für Redeploy Auswahl gefunden' });
+    }
+
+    const { eligibleStacks, skippedStacks } = await filterOutdatedStacks(selectedStacks);
+
+    if (skippedStacks.length) {
+      skippedStacks.forEach((stack) => {
+        console.log(`⏭️ Redeploy Auswahl übersprungen (aktuell): ${stack.Name} (${stack.Id})`);
+      });
+    }
+
+    const summaryList = eligibleStacks.map((stack) => `${stack.Name} (${stack.Id})`);
+    const summaryText = summaryList.length ? summaryList.join(', ') : 'keine Stacks';
+
+    logRedeployEvent({
+      stackId: stackIds.join(','),
+      stackName: `Auswahl (${stackIds.length})`,
+      status: 'started',
+      message: `Redeploy Auswahl gestartet für: ${summaryText}`,
+      endpoint: ENDPOINT_ID,
+      redeployType: REDEPLOY_TYPES.SELECTION
+    });
+
+    if (!eligibleStacks.length) {
+      logRedeployEvent({
+        stackId: stackIds.join(','),
+        stackName: `Auswahl (${stackIds.length})`,
+        status: 'success',
+        message: 'Redeploy Auswahl übersprungen: keine veralteten Stacks',
+        endpoint: ENDPOINT_ID,
+        redeployType: REDEPLOY_TYPES.SELECTION
+      });
+      return res.json({ success: true, message: 'Keine veralteten Stacks in der Auswahl' });
+    }
+
+    eligibleStacks.forEach((stack) => {
+      broadcastRedeployStatus({
+        stackId: stack.Id,
+        stackName: stack.Name,
+        phase: REDEPLOY_PHASES.QUEUED
+      });
+    });
+
+    for (const stack of eligibleStacks) {
+      try {
+        await redeployStackById(stack.Id, REDEPLOY_TYPES.SELECTION);
+        console.log(`✅ Redeploy Auswahl -> Stack ${stack.Name} (${stack.Id}) erfolgreich`);
+      } catch (err) {
+        console.error(`❌ Redeploy Auswahl -> Stack ${stack.Name} (${stack.Id}) fehlgeschlagen:`, err.message);
+      }
     }
 
     logRedeployEvent({
@@ -1673,8 +1855,8 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
   } catch (err) {
     const message = err.response?.data?.message || err.message;
     logRedeployEvent({
-      stackId: stackIds.join(','),
-      stackName: `Auswahl (${stackIds.length})`,
+      stackId: Array.isArray(stackIds) ? stackIds.join(',') : String(stackIds ?? ''),
+      stackName: `Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
       status: 'error',
       message,
       endpoint: ENDPOINT_ID,
