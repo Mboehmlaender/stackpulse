@@ -2,6 +2,12 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 
+const REDEPLOY_STATE = {
+  IDLE: "idle",
+  QUEUED: "queued",
+  RUNNING: "running"
+};
+
 export default function Stacks() {
   const [stacks, setStacks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,9 +20,15 @@ export default function Stacks() {
 
     return sortedIncoming.map((stack) => {
       const previous = prevMap.get(stack.Id);
+      const redeployState = stack.redeployState
+        ?? previous?.redeployState
+        ?? (previous?.redeploying ? REDEPLOY_STATE.RUNNING : REDEPLOY_STATE.IDLE);
+
       return {
         ...stack,
-        redeploying: previous?.redeploying || stack.redeploying || false,
+        redeployState,
+        redeploying: redeployState === REDEPLOY_STATE.RUNNING,
+        redeployQueued: redeployState === REDEPLOY_STATE.QUEUED,
         redeployDisabled: stack.redeployDisabled ?? previous?.redeployDisabled ?? false
       };
     });
@@ -30,21 +42,26 @@ export default function Stacks() {
     console.log("🔌 Socket connected");
 
     socket.on("redeployStatus", async ({ stackId, status }) => {
-      console.log(`🔄 Stack ${stackId} Redeploy Status: ${status ? "running" : "finished"}`);
+      const nextState = status || REDEPLOY_STATE.IDLE;
+      console.log(`🔄 Stack ${stackId} Redeploy Status: ${nextState}`);
 
       setStacks(prev =>
         prev.map(stack => {
           if (stack.Id !== stackId) return stack;
-          return {
+          const updated = {
             ...stack,
-            redeploying: status,
-            updateStatus: status ? stack.updateStatus : '✅'
+            redeployState: nextState,
+            redeploying: nextState === REDEPLOY_STATE.RUNNING,
+            redeployQueued: nextState === REDEPLOY_STATE.QUEUED
           };
+          if (nextState === REDEPLOY_STATE.IDLE) {
+            updated.updateStatus = "✅";
+          }
+          return updated;
         })
       );
 
-      if (!status) {
-        // Status nach Redeploy neu vom Server holen
+      if (nextState === REDEPLOY_STATE.IDLE) {
         try {
           const res = await axios.get("/api/stacks");
           setStacks(prev => mergeStackState(prev, res.data));
@@ -78,7 +95,10 @@ export default function Stacks() {
     setSelectedStackIds(prev => {
       const filtered = prev.filter(id => {
         const match = stacks.find(stack => stack.Id === id);
-        return match && match.updateStatus !== '✅' && !match.redeployDisabled;
+        return match
+          && match.updateStatus !== "✅"
+          && !match.redeployDisabled
+          && (match.redeployState ?? REDEPLOY_STATE.IDLE) === REDEPLOY_STATE.IDLE;
       });
       return filtered.length === prev.length ? prev : filtered;
     });
@@ -95,12 +115,19 @@ export default function Stacks() {
 
   const handleRedeploy = async (stackId) => {
     const targetStack = stacks.find((stack) => stack.Id === stackId);
-    if (targetStack?.redeployDisabled) return;
+    if (!targetStack || targetStack.redeployDisabled || targetStack.redeployState !== REDEPLOY_STATE.IDLE) return;
 
     setSelectedStackIds((prev) => prev.filter((id) => id !== stackId));
     setStacks((prev) =>
       prev.map((stack) =>
-        stack.Id === stackId ? { ...stack, redeploying: true } : stack
+        stack.Id === stackId
+          ? {
+              ...stack,
+              redeployState: REDEPLOY_STATE.RUNNING,
+              redeploying: true,
+              redeployQueued: false
+            }
+          : stack
       )
     );
 
@@ -111,14 +138,25 @@ export default function Stacks() {
       console.error("❌ Fehler beim Redeploy:", err);
       setStacks((prev) =>
         prev.map((stack) =>
-          stack.Id === stackId ? { ...stack, redeploying: false } : stack
+          stack.Id === stackId
+            ? {
+                ...stack,
+                redeployState: REDEPLOY_STATE.IDLE,
+                redeploying: false,
+                redeployQueued: false
+              }
+            : stack
         )
       );
     }
   };
 
   const handleRedeployAll = async () => {
-    const outdatedStacks = stacks.filter((stack) => stack.updateStatus !== '✅' && !stack.redeployDisabled);
+    const outdatedStacks = stacks.filter((stack) =>
+      stack.updateStatus !== "✅"
+      && !stack.redeployDisabled
+      && (stack.redeployState ?? REDEPLOY_STATE.IDLE) === REDEPLOY_STATE.IDLE
+    );
     if (!outdatedStacks.length) return;
 
     const outdatedIds = new Set(outdatedStacks.map((stack) => stack.Id));
@@ -126,7 +164,12 @@ export default function Stacks() {
     setStacks(prev =>
       prev.map(stack =>
         outdatedIds.has(stack.Id)
-          ? { ...stack, redeploying: true }
+          ? {
+              ...stack,
+              redeployState: REDEPLOY_STATE.QUEUED,
+              redeploying: false,
+              redeployQueued: true
+            }
           : stack
       )
     );
@@ -140,7 +183,12 @@ export default function Stacks() {
       setStacks(prev =>
         prev.map(stack =>
           outdatedIds.has(stack.Id)
-            ? { ...stack, redeploying: false }
+            ? {
+                ...stack,
+                redeployState: REDEPLOY_STATE.IDLE,
+                redeploying: false,
+                redeployQueued: false
+              }
             : stack
         )
       );
@@ -152,7 +200,10 @@ export default function Stacks() {
 
     const eligibleIds = selectedStackIds.filter((id) => {
       const stack = stacks.find((entry) => entry.Id === id);
-      return stack && stack.updateStatus !== '✅' && !stack.redeployDisabled;
+      return stack
+        && stack.updateStatus !== "✅"
+        && !stack.redeployDisabled
+        && (stack.redeployState ?? REDEPLOY_STATE.IDLE) === REDEPLOY_STATE.IDLE;
     });
 
     if (!eligibleIds.length) {
@@ -165,7 +216,12 @@ export default function Stacks() {
     setStacks(prev =>
       prev.map(stack =>
         eligibleSet.has(stack.Id)
-          ? { ...stack, redeploying: true }
+          ? {
+              ...stack,
+              redeployState: REDEPLOY_STATE.QUEUED,
+              redeploying: false,
+              redeployQueued: true
+            }
           : stack
       )
     );
@@ -179,7 +235,12 @@ export default function Stacks() {
       setStacks(prev =>
         prev.map(stack =>
           eligibleSet.has(stack.Id)
-            ? { ...stack, redeploying: false }
+            ? {
+                ...stack,
+                redeployState: REDEPLOY_STATE.IDLE,
+                redeploying: false,
+                redeployQueued: false
+              }
             : stack
         )
       );
@@ -187,17 +248,24 @@ export default function Stacks() {
   };
 
   const hasSelection = selectedStackIds.length > 0;
-  const hasOutdatedStacks = stacks.some((stack) => stack.updateStatus !== '✅' && !stack.redeployDisabled);
+  const hasRedeployableStacks = stacks.some((stack) =>
+    stack.updateStatus !== "✅"
+    && !stack.redeployDisabled
+    && (stack.redeployState ?? REDEPLOY_STATE.IDLE) === REDEPLOY_STATE.IDLE
+  );
   const bulkButtonLabel = hasSelection
     ? `Redeploy Auswahl (${selectedStackIds.length})`
-    : 'Redeploy All';
+    : "Redeploy All";
 
   const bulkActionDisabled = hasSelection
     ? selectedStackIds.length === 0 || selectedStackIds.every(id => {
         const targetStack = stacks.find(stack => stack.Id === id);
-        return !targetStack || targetStack.redeploying || targetStack.updateStatus === '✅' || targetStack.redeployDisabled;
+        return !targetStack
+          || targetStack.updateStatus === "✅"
+          || targetStack.redeployDisabled
+          || (targetStack.redeployState ?? REDEPLOY_STATE.IDLE) !== REDEPLOY_STATE.IDLE;
       })
-    : !hasOutdatedStacks || stacks.every(stack => stack.updateStatus !== '✅' || stack.redeploying || stack.redeployDisabled);
+    : !hasRedeployableStacks;
 
   const handleBulkRedeploy = () => {
     if (hasSelection) {
@@ -224,19 +292,22 @@ export default function Stacks() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {stacks.map(stack => {
-          const isRedeploying = stack.redeploying;
+          const redeployState = stack.redeployState ?? REDEPLOY_STATE.IDLE;
+          const isRunning = redeployState === REDEPLOY_STATE.RUNNING;
+          const isQueued = redeployState === REDEPLOY_STATE.QUEUED;
+          const isBusy = isRunning || isQueued;
           const isSelected = selectedStackIds.includes(stack.Id);
-          const isCurrent = stack.updateStatus === '✅';
+          const isCurrent = stack.updateStatus === "✅";
           const isSelfStack = Boolean(stack.redeployDisabled);
-          const isSelectable = !isRedeploying && !isCurrent && !isSelfStack;
+          const isSelectable = !isBusy && !isCurrent && !isSelfStack;
 
           return (
             <div
               key={stack.Id}
               className={`flex justify-between items-center p-5 rounded-xl shadow-lg transition border
                 ${isSelected ? 'border-purple-500 ring-1 ring-purple-500/40' : 'border-transparent'}
-                ${isRedeploying ? 'bg-gray-700 cursor-wait' : 'bg-gray-800 hover:bg-gray-700'}
-                ${!isSelectable && !isRedeploying ? 'opacity-75' : ''}`}
+                ${isBusy ? 'bg-gray-700 cursor-wait' : 'bg-gray-800 hover:bg-gray-700'}
+                ${!isSelectable && !isBusy ? 'opacity-75' : ''}`}
             >
               <div className="flex items-center space-x-4">
                 <input
@@ -247,8 +318,8 @@ export default function Stacks() {
                   disabled={!isSelectable}
                 />
                 <div className={`w-12 h-12 flex items-center justify-center rounded-full
-                  ${stack.updateStatus === '✅' ? 'bg-green-500' :
-                    stack.updateStatus === '⚠️' ? 'bg-yellow-500' :
+                  ${stack.updateStatus === "✅" ? 'bg-green-500' :
+                    stack.updateStatus === "⚠️" ? 'bg-yellow-500' :
                     'bg-red-500'}`}
                 />
                 <div>
@@ -258,10 +329,15 @@ export default function Stacks() {
               </div>
 
               <div className="flex flex-col items-end gap-1 text-sm">
-                {isRedeploying ? (
+                {isRunning ? (
                   <>
                     <span className="text-xs uppercase tracking-wide text-orange-300">Redeploy</span>
                     <span className="text-orange-200">läuft…</span>
+                  </>
+                ) : isQueued ? (
+                  <>
+                    <span className="text-xs uppercase tracking-wide text-orange-300">Redeploy</span>
+                    <span className="text-orange-200">in Warteliste…</span>
                   </>
                 ) : isSelfStack ? (
                   <>
@@ -279,7 +355,7 @@ export default function Stacks() {
                     <span className="text-amber-300">Veraltet</span>
                     <button
                       onClick={() => handleRedeploy(stack.Id)}
-                      disabled={isRedeploying}
+                      disabled={isBusy}
                       className="px-5 py-2 rounded-lg font-medium transition bg-blue-500 hover:bg-blue-600"
                     >
                       Redeploy
