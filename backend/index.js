@@ -238,9 +238,8 @@ const DEFAULT_PORTAINER_SSH_CONFIG = {
   host: '',
   port: 22,
   username: '',
-  extraSshArgs: [],
-  privateKey: '',
-  privateKeyPassphrase: ''
+  password: '',
+  extraSshArgs: []
 };
 
 const normalizeString = (value, fallback = '') => {
@@ -283,14 +282,7 @@ const normalizeExtraArgs = (value, fallback = []) => {
   return Array.isArray(fallback) ? [...fallback] : [];
 };
 
-const normalizePrivateKey = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.privateKey) => {
-  if (value === undefined) return fallback;
-  if (value === null) return '';
-  if (typeof value !== 'string') return String(value);
-  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-};
-
-const normalizePrivateKeyPassphrase = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.privateKeyPassphrase) => {
+const normalizePassword = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.password) => {
   if (value === undefined) return fallback;
   if (value === null) return '';
   return String(value);
@@ -303,14 +295,14 @@ const getPortainerSshConfig = () => {
   }
   try {
     const parsed = stored.value ? JSON.parse(stored.value) : {};
-    const decryptedKey = parsed.privateKeyEncrypted ? decryptSensitive(parsed.privateKeyEncrypted) : '';
+    const decryptedPassword = parsed.passwordEncrypted ? decryptSensitive(parsed.passwordEncrypted) : null;
+    const fallbackPassword = parsed.password !== undefined ? parsed.password : null;
     return {
       host: normalizeString(parsed.host),
       port: normalizePort(parsed.port),
       username: normalizeString(parsed.username),
-      extraSshArgs: normalizeExtraArgs(parsed.extraSshArgs),
-      privateKey: decryptedKey,
-      privateKeyPassphrase: parsed.privateKeyPassphraseEncrypted ? decryptSensitive(parsed.privateKeyPassphraseEncrypted) : ''
+      password: normalizePassword(decryptedPassword ?? fallbackPassword),
+      extraSshArgs: normalizeExtraArgs(parsed.extraSshArgs)
     };
   } catch (err) {
     console.warn('⚠️ [Maintenance] Konnte Portainer SSH Konfiguration nicht parsen:', err.message);
@@ -324,8 +316,7 @@ const persistPortainerSshConfig = (config) => {
     port: config.port,
     username: config.username,
     extraSshArgs: config.extraSshArgs,
-    privateKeyEncrypted: config.privateKey ? encryptSensitive(config.privateKey) : null,
-    privateKeyPassphraseEncrypted: config.privateKeyPassphrase ? encryptSensitive(config.privateKeyPassphrase) : null
+    passwordEncrypted: config.password ? encryptSensitive(config.password) : null
   };
   setSetting(PORTAINER_SSH_CONFIG_KEY, JSON.stringify(payload));
 };
@@ -334,9 +325,8 @@ const mergeSshConfig = (base, overrides = {}) => ({
   host: normalizeString(overrides.host, base.host),
   port: normalizePort(overrides.port, base.port),
   username: normalizeString(overrides.username, base.username),
-  extraSshArgs: normalizeExtraArgs(overrides.extraSshArgs, base.extraSshArgs),
-  privateKey: normalizePrivateKey(overrides.privateKey, base.privateKey),
-  privateKeyPassphrase: normalizePrivateKeyPassphrase(overrides.privateKeyPassphrase, base.privateKeyPassphrase)
+  password: normalizePassword(overrides.password, base.password),
+  extraSshArgs: normalizeExtraArgs(overrides.extraSshArgs, base.extraSshArgs)
 });
 
 const savePortainerSshConfig = (payload = {}) => {
@@ -351,36 +341,17 @@ const deletePortainerSshConfig = () => {
   return { ...DEFAULT_PORTAINER_SSH_CONFIG };
 };
 
-const createTempPrivateKeyFile = (privateKey) => {
-  const normalized = normalizePrivateKey(privateKey, '');
-  const content = normalized.endsWith('\n') ? normalized : `${normalized}\n`;
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stackpulse-ssh-'));
-  const filePath = path.join(tmpDir, 'id_rsa');
-  fs.writeFileSync(filePath, content, { mode: 0o600 });
-  return {
-    filePath,
-    cleanup: () => {
-      try {
-        fs.unlinkSync(filePath);
-      } catch (err) { }
-      try {
-        fs.rmdirSync(tmpDir);
-      } catch (err) { }
-    }
-  };
-};
-
-const createTempAskPassScript = (passphrase) => {
+const createTempAskPassScript = (secret) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stackpulse-askpass-'));
   const scriptPath = path.join(tmpDir, 'askpass.sh');
-  const scriptContent = "#!/bin/sh\nprintf '%s\\n' \"$STACKPULSE_SSH_PASS\"\n";
+  const scriptContent = "#!/bin/sh\nprintf '%s\n' \"$STACKPULSE_SSH_PASS\"\n";
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o700 });
   return {
     env: {
       SSH_ASKPASS: scriptPath,
       SSH_ASKPASS_REQUIRE: 'force',
       DISPLAY: process.env.DISPLAY || ':9999',
-      STACKPULSE_SSH_PASS: passphrase
+      STACKPULSE_SSH_PASS: secret
     },
     cleanup: () => {
       try {
@@ -404,7 +375,10 @@ const buildSshCommandArgs = (config) => {
 
   const args = [
     '-p', String(sshConfig.port),
-    '-o', 'StrictHostKeyChecking=no'
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'PreferredAuthentications=password',
+    '-o', 'PubkeyAuthentication=no',
+    '-o', 'NumberOfPasswordPrompts=1'
   ];
 
   const cleanupTasks = [];
@@ -414,14 +388,14 @@ const buildSshCommandArgs = (config) => {
     }
   };
 
-  if (!sshConfig.privateKeyPassphrase) {
-    args.push('-o', 'BatchMode=yes');
-  }
-
-  if (sshConfig.privateKey) {
-    const { filePath, cleanup: dispose } = createTempPrivateKeyFile(sshConfig.privateKey);
+  let envOverrides = {};
+  if (sshConfig.password) {
+    const { env, cleanup: dispose } = createTempAskPassScript(sshConfig.password);
+    envOverrides = { ...envOverrides, ...env };
     registerCleanup(dispose);
-    args.push('-i', filePath);
+    args.push('-o', 'BatchMode=no');
+  } else {
+    args.push('-o', 'BatchMode=yes');
   }
 
   if (sshConfig.extraSshArgs.length) {
@@ -429,13 +403,6 @@ const buildSshCommandArgs = (config) => {
     if (expanded.length) {
       args.push(...expanded);
     }
-  }
-
-  let envOverrides = {};
-  if (sshConfig.privateKeyPassphrase) {
-    const { env, cleanup: dispose } = createTempAskPassScript(sshConfig.privateKeyPassphrase);
-    envOverrides = { ...envOverrides, ...env };
-    registerCleanup(dispose);
   }
 
   args.push(`${sshConfig.username}@${sshConfig.host}`);
@@ -1237,8 +1204,7 @@ app.get('/api/maintenance/config', (req, res) => {
       port: ssh.port,
       username: ssh.username,
       extraSshArgs: ssh.extraSshArgs,
-      privateKeyStored: Boolean(ssh.privateKey),
-      privateKeyPassphraseStored: Boolean(ssh.privateKeyPassphrase)
+      passwordStored: Boolean(ssh.password)
     }
   });
 });
@@ -1253,8 +1219,7 @@ app.put('/api/maintenance/ssh-config', (req, res) => {
         port: config.port,
         username: config.username,
         extraSshArgs: config.extraSshArgs,
-        privateKeyStored: Boolean(config.privateKey),
-        privateKeyPassphraseStored: Boolean(config.privateKeyPassphrase)
+        passwordStored: Boolean(config.password)
       }
     });
   } catch (err) {
@@ -1272,8 +1237,7 @@ app.delete('/api/maintenance/ssh-config', (req, res) => {
       port: config.port,
       username: config.username,
       extraSshArgs: config.extraSshArgs,
-      privateKeyStored: false,
-      privateKeyPassphraseStored: false
+      passwordStored: false
     }
   });
 });
