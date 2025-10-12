@@ -22,6 +22,8 @@ RUN npm run build
 # ===============================
 FROM node:20-alpine AS runtime
 
+RUN apk add --no-cache openssh-client
+
 # Arbeitsverzeichnis
 WORKDIR /app/backend
 
