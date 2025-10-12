@@ -17,7 +17,7 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-6 py-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex flex-col items-end gap-1">
-              <span className="text-xs text-gray-500">v0.2</span>
+              <span className="text-xs text-gray-500">v0.2.1</span>
               <img src={logo} alt="StackPulse" className="h-10 w-auto" />
             </div>
             <nav className="flex gap-2 items-end">
