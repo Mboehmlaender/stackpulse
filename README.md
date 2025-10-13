@@ -74,7 +74,7 @@ Ziel:
 
 </details>
 
-<details>
+<details open>
   <summary>🔮 v0.4 – Geplant</summary>
 
 ### Backend
