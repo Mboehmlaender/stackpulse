@@ -512,10 +512,6 @@ export default function Maintenance() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-amber-500/60 bg-amber-900/40 px-4 py-3 text-sm text-amber-100">
-        Dieses Wartungsfeature ist noch nicht getestet. Bitte nicht in Produktivumgebungen einsetzen.
-      </div>
-
       {(maintenanceActive || updateRunning) && (
         <div className="rounded-lg border border-amber-500/60 bg-amber-900/30 px-4 py-3 text-sm text-amber-100">
           <div className="flex flex-col gap-1">
@@ -627,7 +623,7 @@ export default function Maintenance() {
               )}
             </div>
 
-            {portainerStatus.container && (
+            {/* {portainerStatus.container && (
               <div className="rounded-md border border-gray-700 bg-gray-900/40 p-4 text-xs text-gray-200">
                 <h3 className="text-sm font-semibold text-white">Startparameter</h3>
                 <div className="mt-3 space-y-2">
@@ -699,7 +695,7 @@ export default function Maintenance() {
                   )}
                 </div>
               </div>
-            )}
+            )} */}
           </div>
         )}
 
@@ -904,7 +900,7 @@ export default function Maintenance() {
                 updateLogs.map((entry, index) => (
                   <div key={`${entry.timestamp}-${index}`} className="mb-2 last:mb-0">
                     <span className="text-gray-500">[{formatLogTimestamp(entry.timestamp)}]</span>{" "}
-                    <span className={LOG_LEVEL_STYLES[entry.level] ?? "text-gray-300"}>
+                    <span className={(LOG_LEVEL_STYLES[entry.level] ?? "text-gray-300") + " whitespace-normal break-words"} style={{ overflowWrap: "anywhere", wordBreak: "normal" }}>
                       {entry.message}
                     </span>
                   </div>
@@ -922,10 +918,10 @@ export default function Maintenance() {
           </div>
         </div>
       </div>
-
       <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
+            
             <h2 className="text-lg font-semibold text-white">Doppelte Stacks</h2>
             <p className="text-sm text-gray-400">
               {isDuplicatesDisabled
@@ -958,7 +954,9 @@ export default function Maintenance() {
           </div>
         </div>
       </div>
-
+      <div className="rounded-lg border border-amber-500/60 bg-amber-900/40 px-4 py-3 text-sm text-amber-100">
+        Das Entfernen von deppelten Stacks ist noch nicht getestet. Bitte nicht in Produktivumgebungen einsetzen.
+      </div>
       {duplicatesError && !isDuplicatesDisabled && (
         <div className="rounded-lg border border-red-500/60 bg-red-900/40 px-4 py-3 text-sm text-red-100">
           {duplicatesError}
