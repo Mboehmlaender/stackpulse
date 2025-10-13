@@ -47,7 +47,7 @@ Ziel:
 </details>
 
 <details open>
-  <summary>🟢 v0.3 – Abgeschlossen</summary>
+  <summary>✅ v0.3 – Abgeschlossen</summary>
 
 ### Backend
 - [x] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen  
