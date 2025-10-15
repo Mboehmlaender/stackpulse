@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "axios": "1.7.5",
+    "socket.io-client": "4.8.1",
     "@heroicons/react": "2.0.18",
     "@material-tailwind/react": "2.1.4",
     "apexcharts": "3.44.0",
