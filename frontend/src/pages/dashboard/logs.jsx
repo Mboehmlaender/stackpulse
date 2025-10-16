@@ -575,7 +575,7 @@ export function Logs() {
         </CardHeader>
         <CardBody>
           <div className="flex flex-wrap mb-2">
-            <span className=" rounded-full bg-blue-500/20 px-2 py-0.5 text-xs text-blue-300">
+            <span className=" rounded-full bg-blue-gray-500/80 px-2 py-0.5 text-xs text-white">
               {activeFilterCount} aktiv
             </span>
           </div>
@@ -608,7 +608,7 @@ export function Logs() {
                     multiple
                     value={selectedStacks}
                     onChange={handleMultiSelectChange(setSelectedStacks)}
-                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full min-h-[8rem] rounded-md border border-gray-500 px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   >
                     {stackSelectOptions.map(({ value, label }) => (
                       <option
@@ -633,7 +633,7 @@ export function Logs() {
                           {selectedStacks.map((stackId) => (
                             <span
                               key={stackId}
-                              className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200"
+                              className="rounded-full bg-purple-500/80 px-2 py-0.5 text-white"
                             >
                               {stackLabelMap.get(stackId) ?? `Stack ${stackId}`}
                             </span>
@@ -650,7 +650,7 @@ export function Logs() {
                     multiple
                     value={selectedStatuses}
                     onChange={handleMultiSelectChange(setSelectedStatuses)}
-                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full min-h-[8rem] rounded-md border border-gray-500 px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   >
                     {statusSelectOptions.map(({ value, label }) => (
                       <option
@@ -675,7 +675,7 @@ export function Logs() {
                           {selectedStatuses.map((status) => (
                             <span
                               key={status}
-                              className="rounded-full bg-amber-500/20 px-2 py-0.5 text-amber-200"
+                              className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white"
                             >
                               {status}
                             </span>
@@ -692,7 +692,7 @@ export function Logs() {
                     multiple
                     value={selectedEndpoints}
                     onChange={handleMultiSelectChange(setSelectedEndpoints)}
-                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full min-h-[8rem] rounded-md border border-gray-500 px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   >
                     {endpointSelectOptions.map(({ value, label }) => (
                       <option
@@ -717,7 +717,7 @@ export function Logs() {
                           {selectedEndpoints.map((endpoint) => (
                             <span
                               key={endpoint}
-                              className="rounded-full bg-blue-500/20 px-2 py-0.5 text-blue-200"
+                              className="rounded-full bg-blue-500/80 px-2 py-0.5 text-white"
                             >
                               {endpoint}
                             </span>
@@ -734,7 +734,7 @@ export function Logs() {
                     multiple
                     value={selectedRedeployTypes}
                     onChange={handleMultiSelectChange(setSelectedRedeployTypes)}
-                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full min-h-[8rem] rounded-md border border-gray-500 px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   >
                     {redeployTypeSelectOptions.map(({ value, label }) => (
                       <option
@@ -758,7 +758,7 @@ export function Logs() {
                           {selectedRedeployTypes.map((type) => (
                             <span
                               key={type}
-                              className="rounded-full bg-teal-500/20 px-2 py-0.5 text-teal-200"
+                              className="rounded-full bg-teal-500/80 px-2 py-0.5 text-white"
                             >
                               {REDEPLOY_TYPE_LABELS[type] ?? type}
                             </span>
@@ -779,7 +779,7 @@ export function Logs() {
                       setPage(1);
                     }}
                     placeholder="Textsuche in Log-Nachrichten..."
-                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full rounded-md border border-gray-500 bg-white px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
 
@@ -792,7 +792,7 @@ export function Logs() {
                       setFromDate(event.target.value);
                       setPage(1);
                     }}
-                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full rounded-md border border border-gray-500 bg-white px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
 
@@ -805,7 +805,7 @@ export function Logs() {
                       setToDate(event.target.value);
                       setPage(1);
                     }}
-                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full rounded-md border border-gray-500 bg-white px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
               </div>
