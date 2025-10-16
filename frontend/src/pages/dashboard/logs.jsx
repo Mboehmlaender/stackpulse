@@ -9,6 +9,9 @@ import {
   Chip,
   Tooltip,
   Progress,
+  Collapse,
+  Button,
+  ButtonGroup
 } from "@material-tailwind/react";
 import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
 import { authorsTableData, projectsTableData } from "@/data";
@@ -407,10 +410,6 @@ export function Logs() {
     setFiltersOpen((prev) => !prev);
   };
 
-  const handleRefresh = () => {
-    setRefreshSignal((prev) => prev + 1);
-  };
-
   const handlePerPageChange = (event) => {
     const value = event.target.value;
     if (!VALID_PER_PAGE_VALUES.has(value)) return;
@@ -558,10 +557,265 @@ export function Logs() {
     } finally {
       setActionLoading(false);
     }
-  };
 
+
+  };
+  const [open, setOpen] = React.useState(false);
+  const toggleOpen = () => setOpen((cur) => !cur);
   return (
+
+
+
     <div className="mt-12 mb-8 flex flex-col gap-12">
+      <Card>
+        <CardHeader variant="gradient" color="gray" className="p-6 pt-2 pb-2">
+          <Typography variant="h6" color="white">
+            <button onClick={toggleOpen}>Filter und Optionen</button>
+          </Typography>
+        </CardHeader>
+        <CardBody>
+          <div className="flex flex-wrap mb-2">
+            <span className=" rounded-full bg-blue-500/20 px-2 py-0.5 text-xs text-blue-300">
+              {activeFilterCount} aktiv
+            </span>
+          </div>
+          <Collapse open={open}>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => handleExport('txt')}
+                disabled={actionLoading || loading}
+                className="w-full md:flex-1">
+                Export TXT</Button>
+              <Button
+                onClick={() => handleExport('sql')}
+                disabled={actionLoading || loading}
+                className="w-full md:flex-1">
+                Export SQL</Button>
+              <Button
+                color="red"
+                onClick={handleDeleteFiltered}
+                disabled={actionLoading || loading || logs.length === 0}
+                className="w-full md:flex-1">
+                Angezeigte löschen</Button>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-5">
+
+              <div className="grid gap-4 md:flex-1 lg:grid-cols-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-blue-gray-600">Stack</label>
+                  <select
+                    multiple
+                    value={selectedStacks}
+                    onChange={handleMultiSelectChange(setSelectedStacks)}
+                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    {stackSelectOptions.map(({ value, label }) => (
+                      <option
+                        key={value}
+                        value={value}
+                        onMouseDown={(event) => handleOptionMouseDown(event, selectedStacks, setSelectedStacks)}
+                        className={`bg-white text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                      >
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                    <div className="flex flex-wrap gap-2">
+                      {selectedStacks.length === 0 ? (
+                        <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                          Alle Stacks
+                        </span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedStacks.map((stackId) => (
+                            <span
+                              key={stackId}
+                              className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200"
+                            >
+                              {stackLabelMap.get(stackId) ?? `Stack ${stackId}`}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-blue-gray-600">Status</label>
+                  <select
+                    multiple
+                    value={selectedStatuses}
+                    onChange={handleMultiSelectChange(setSelectedStatuses)}
+                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    {statusSelectOptions.map(({ value, label }) => (
+                      <option
+                        key={value}
+                        value={value}
+                        onMouseDown={(event) => handleOptionMouseDown(event, selectedStatuses, setSelectedStatuses)}
+                        className={`bg-white text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                      >
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                    <div className="flex flex-wrap gap-2">
+
+                      {selectedStatuses.length === 0 ? (
+                        <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                          Alle Status
+                        </span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedStatuses.map((status) => (
+                            <span
+                              key={status}
+                              className="rounded-full bg-amber-500/20 px-2 py-0.5 text-amber-200"
+                            >
+                              {status}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-blue-gray-600">Endpoint</label>
+                  <select
+                    multiple
+                    value={selectedEndpoints}
+                    onChange={handleMultiSelectChange(setSelectedEndpoints)}
+                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    {endpointSelectOptions.map(({ value, label }) => (
+                      <option
+                        key={value}
+                        value={value}
+                        onMouseDown={(event) => handleOptionMouseDown(event, selectedEndpoints, setSelectedEndpoints)}
+                        className={`bg-white text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                      >
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                    <div className="flex flex-wrap gap-2">
+
+                      {selectedEndpoints.length === 0 ? (
+                        <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                          Alle Endpoints
+                        </span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedEndpoints.map((endpoint) => (
+                            <span
+                              key={endpoint}
+                              className="rounded-full bg-blue-500/20 px-2 py-0.5 text-blue-200"
+                            >
+                              {endpoint}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-blue-gray-600">Redeploy-Typ</label>
+                  <select
+                    multiple
+                    value={selectedRedeployTypes}
+                    onChange={handleMultiSelectChange(setSelectedRedeployTypes)}
+                    className="w-full min-h-[8rem] rounded-md border px-3 py-2 text-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    {redeployTypeSelectOptions.map(({ value, label }) => (
+                      <option
+                        key={value}
+                        value={value}
+                        onMouseDown={(event) => handleOptionMouseDown(event, selectedRedeployTypes, setSelectedRedeployTypes)}
+                        className={`bg-white text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                      >
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                    <div className="flex flex-wrap gap-2">
+                      {selectedRedeployTypes.length === 0 ? (
+                        <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                          Alle Typen
+                        </span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedRedeployTypes.map((type) => (
+                            <span
+                              key={type}
+                              className="rounded-full bg-teal-500/20 px-2 py-0.5 text-teal-200"
+                            >
+                              {REDEPLOY_TYPE_LABELS[type] ?? type}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2 lg:col-span-4">
+                  <label className="mb-2 block text-sm font-medium text-gray-300">Nachricht (Freitext)</label>
+                  <input
+                    type="text"
+                    value={messageQuery}
+                    onChange={(event) => {
+                      setMessageQuery(event.target.value);
+                      setPage(1);
+                    }}
+                    placeholder="Textsuche in Log-Nachrichten..."
+                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-300">Von</label>
+                  <input
+                    type="datetime-local"
+                    value={fromDate}
+                    onChange={(event) => {
+                      setFromDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-300">Bis</label>
+                  <input
+                    type="datetime-local"
+                    value={toDate}
+                    onChange={(event) => {
+                      setToDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full rounded-md border border-gray-700 bg-gray-900/70 px-3 py-2 text-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+
+            </div>
+          </Collapse>
+        </CardBody>
+      </Card>
+
+
       <Card>
         <CardHeader variant="gradient" color="gray" className="mb-8 p-6">
           <Typography variant="h6" color="white">
