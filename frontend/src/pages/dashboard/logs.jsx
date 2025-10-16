@@ -345,19 +345,19 @@ export function Logs() {
     if (typeof window === "undefined") return;
 
     try {
-    window.localStorage.setItem(
-      FILTER_STORAGE_KEY,
-      JSON.stringify({
-        filters: currentFilters,
-        pagination: {
-          perPage,
-          page
-        }
-      })
-    );
-  } catch (storageError) {
-    console.error("⚠️ Konnte Filter nicht speichern:", storageError);
-  }
+      window.localStorage.setItem(
+        FILTER_STORAGE_KEY,
+        JSON.stringify({
+          filters: currentFilters,
+          pagination: {
+            perPage,
+            page
+          }
+        })
+      );
+    } catch (storageError) {
+      console.error("⚠️ Konnte Filter nicht speichern:", storageError);
+    }
   }, [filtersReady, currentFilters, perPage, page]);
 
   const handleMultiSelectChange = (setter) => (event) => {
@@ -565,7 +565,7 @@ export function Logs() {
       <Card>
         <CardHeader variant="gradient" color="gray" className="mb-8 p-6">
           <Typography variant="h6" color="white">
-            Authors Table
+            Logs
           </Typography>
         </CardHeader>
         <CardBody className="overflow-x-scroll px-0 pt-0 pb-2">
@@ -588,70 +588,121 @@ export function Logs() {
               </tr>
             </thead>
             <tbody>
-              {logs.map(
-                (log) => {
-                  const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
-                  const stackDisplayName = log.stackName || "Unbekannt";
-                  const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
-                  const redeployTypeLabel = log.redeployType
-                    ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
-                    : '---';                 
-                  const className = `py-3 px-5 ${
-                    key === authorsTableData.length - 1
-                      ? ""
-                      : "border-b border-blue-gray-50"
-                  }`;
-
-                  return (
-                    <tr key={log.id}>
-                      <td className={className}>
-                            <Typography
-                              variant="small"
-                              color="blue-gray"
-                              className="font-semibold"
-                            >
-                              {formatTimestamp(log.timestamp)}
-                            </Typography>
-                      </td>
-                      <td className={className}>
-                        <Typography className="text-xs font-semibold text-blue-gray-600">
-                          {job[0]}
-                        </Typography>
-                        <Typography className="text-xs font-normal text-blue-gray-500">
-                          {job[1]}
-                        </Typography>
-                      </td>
-                      <td className={className}>
-                        <Chip
-                          variant="gradient"
-                          color={online ? "green" : "blue-gray"}
-                          value={online ? "online" : "offline"}
-                          className="py-0.5 px-2 text-[11px] font-medium w-fit"
-                        />
-                      </td>
-                      <td className={className}>
-                        <Typography className="text-xs font-semibold text-blue-gray-600">
-                          {date}
-                        </Typography>
-                      </td>
-                      <td className={className}>
+              {logs.map((log) => {
+                const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
+                const className = "py-3 px-5";
+                const stackDisplayName = log.stackName || "Unbekannt";
+                const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
+                const redeployTypeLabel = log.redeployType
+                  ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
+                  : '---';
+                return (
+                  <tr key={log.id}>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                        className="mb-1 block text-xs font-medium text-blue-gray-600">
+                        {formatTimestamp(log.timestamp)}
+                      </Typography>
+                    </td>
+                    <td className={className}>
+                      <div className="flex flex-col">
+                        <span className="font-medium">{stackDisplayName}</span>
                         <Typography
-                          as="a"
-                          href="#"
-                          className="text-xs font-semibold text-blue-gray-600"
+                          variant="small"
                         >
-                          Edit
+                          {showStackId && (
+                            <span className="text-xs text-gray-400">ID: {log.stackId}</span>
+                          )}
                         </Typography>
-                      </td>
-                    </tr>
-                  );
-                }
+                      </div>
+                    </td>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                      >
+                        {redeployTypeLabel}
+                      </Typography>
+                    </td>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                        className={`font-semibold ${statusClass}`}
+                      >
+                        {log.status}
+                      </Typography>
+                    </td>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                      >
+                        {log.message || "-"}
+                      </Typography>
+                    </td>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                      >
+                        {log.endpoint ?? "-"}
+                      </Typography>
+                    </td>
+                    <td className={className}>
+                      <Typography
+                        variant="small"
+                      >
+                        <button
+                          onClick={() => handleDeleteLog(log.id)}
+                          disabled={actionLoading}
+                          className="rounded-md border border-red-600 px-3 py-1 text-xs text-red-300 transition hover:bg-red-600/20 disabled:opacity-60">
+                          Löschen
+                        </button>
+                      </Typography>
+                    </td>
+                  </tr>
+                );
+              }
               )}
             </tbody>
           </table>
         </CardBody>
       </Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span>
+          {totalLogs === 0
+            ? "Keine Einträge"
+            : perPage === 'all'
+              ? `Zeige alle ${totalLogs} Einträge`
+              : `Zeige ${rangeStart.toLocaleString()} – ${rangeEnd.toLocaleString()} von ${totalLogs.toLocaleString()} Einträgen`}
+        </span>
+        {perPage !== 'all' && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handlePageChange(page - 1)}
+              disabled={page <= 1 || actionLoading}
+              className="rounded-md border border-slate-300 p-2.5 text-center text-sm transition-all shadow-sm hover:shadow-lg text-slate-600 hover:text-white hover:bg-slate-800 hover:border-slate-800 focus:text-white focus:bg-slate-800 focus:border-slate-800 active:border-slate-800 active:text-white active:bg-slate-800 disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none">
+
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-4 h-4">
+                <path d="M11.03 3.97a.75.75 0 0 1 0 1.06l-6.22 6.22H21a.75.75 0 0 1 0 1.5H4.81l6.22 6.22a.75.75 0 1 1-1.06 1.06l-7.5-7.5a.75.75 0 0 1 0-1.06l7.5-7.5a.75.75 0 0 1 1.06 0Z" />
+              </svg>
+            </button>
+
+            <p className="text-slate-600">
+              Seite <strong className="text-slate-800">{page}</strong> /&nbsp;<strong className="text-slate-800">{totalPages}</strong>
+            </p>
+            <button
+              onClick={() => handlePageChange(page + 1)}
+              disabled={page >= totalPages || actionLoading}
+              className="rounded-md border border-slate-300 p-2.5 text-center text-sm transition-all shadow-sm hover:shadow-lg text-slate-600 hover:text-white hover:bg-slate-800 hover:border-slate-800 focus:text-white focus:bg-slate-800 focus:border-slate-800 active:border-slate-800 active:text-white active:bg-slate-800 disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none" type="button">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-4 h-4">
+                <path d="M12.97 3.97a.75.75 0 0 1 1.06 0l7.5 7.5a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 1 1-1.06-1.06l6.22-6.22H3a.75.75 0 0 1 0-1.5h16.19l-6.22-6.22a.75.75 0 0 1 0-1.06Z" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
+
+
   );
 }
 
