@@ -1183,6 +1183,25 @@ app.get('/api/maintenance/portainer-status', async (req, res) => {
   }
 });
 
+app.post('/api/maintenance/mode', (req, res) => {
+  try {
+    const { active, message } = req.body ?? {};
+    const normalizedMessage = typeof message === 'string' && message.trim() ? message.trim() : null;
+    const nextState = active
+      ? activateMaintenanceMode({ message: normalizedMessage })
+      : deactivateMaintenanceMode({ message: normalizedMessage });
+
+    res.json({
+      success: true,
+      maintenance: nextState
+    });
+  } catch (err) {
+    const errorMessage = err.response?.data?.error || err.message || 'Fehler beim Aktualisieren des Wartungsmodus';
+    console.error('❌ [Maintenance] Fehler beim Ändern des Wartungsmodus:', errorMessage);
+    res.status(500).json({ error: errorMessage });
+  }
+});
+
 app.get('/api/maintenance/config', (req, res) => {
   const custom = getCustomPortainerScript();
   const effective = getEffectivePortainerScript();

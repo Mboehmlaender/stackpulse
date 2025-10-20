@@ -15,16 +15,22 @@ import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import { ThemeProvider } from "@material-tailwind/react";
 import { MaterialTailwindControllerProvider } from "@/context";
-import "../dist/css/tailwind.css";
+import "./tailwind.css";
+import ToastProvider from "@/components/ToastProvider.jsx";
+import MaintenanceProvider from "@/context/MaintenanceContext.jsx";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
-      <ThemeProvider>
-        <MaterialTailwindControllerProvider>
-          <App />
-        </MaterialTailwindControllerProvider>
-      </ThemeProvider>
-    </BrowserRouter>
-  </React.StrictMode>
+      <MaintenanceProvider>
+        <ToastProvider>
+        <ThemeProvider>
+          <MaterialTailwindControllerProvider>
+            <App />
+          </MaterialTailwindControllerProvider>
+        </ThemeProvider>
+      </ToastProvider>
+    </MaintenanceProvider>
+  </BrowserRouter>
+  </React.StrictMode >
 );
