@@ -14,8 +14,61 @@ import {
   ButtonGroup,
   Select,
   Option,
-  Input
+  Input,
+  useSelect
 } from "@material-tailwind/react";
+
+const StickyOption = React.forwardRef(({ value, onValueSelect, onClick, onKeyDown, ...props }, ref) => {
+  const { setOpen } = useSelect();
+
+  const reopen = useCallback(() => {
+    const schedule = (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function")
+      ? window.requestAnimationFrame
+      : (callback) => setTimeout(callback, 0);
+
+    schedule(() => {
+      setOpen(true);
+    });
+  }, [setOpen]);
+
+  const commitSelection = useCallback(() => {
+    if (typeof onValueSelect === "function") {
+      onValueSelect(value);
+    }
+  }, [onValueSelect, value]);
+
+  const handleClick = useCallback((event) => {
+    if (typeof onClick === "function") {
+      onClick(event);
+    }
+
+    commitSelection();
+    reopen();
+  }, [onClick, commitSelection, reopen]);
+
+  const handleKeyDown = useCallback((event) => {
+    if (typeof onKeyDown === "function") {
+      onKeyDown(event);
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      commitSelection();
+      reopen();
+    }
+  }, [onKeyDown, commitSelection, reopen]);
+
+  return (
+    <Option
+      {...props}
+      value={value}
+      ref={ref}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+    />
+  );
+});
+
+StickyOption.displayName = "StickyOption";
 
 const STATUS_COLORS = {
   success: "text-green-400",
@@ -104,6 +157,8 @@ export function Logs() {
 
   const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
   const [page, setPage] = useState(1);
+
+  const noop = useCallback(() => { }, []);
 
   const updateFilterOptions = useCallback((payload) => {
     const logsPayload = Array.isArray(payload) ? payload : payload?.items ?? [];
@@ -364,8 +419,34 @@ export function Logs() {
     }
   }, [filtersReady, currentFilters, perPage, page]);
 
-  const handleMultiSelectChange = (setter) => (event) => {
-    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
+  const handleMultiSelectChange = (setter) => (valueOrEvent) => {
+    if (typeof valueOrEvent === "string") {
+      const value = valueOrEvent;
+      if (value === "") {
+        return;
+      }
+
+      setter((prev) => {
+        if (value === ALL_OPTION_VALUE) {
+          return [];
+        }
+
+        if (prev.includes(value)) {
+          return prev.filter((entry) => entry !== value);
+        }
+
+        return [...prev, value];
+      });
+      setPage(1);
+      return;
+    }
+
+    const selectedOptions = valueOrEvent?.target?.selectedOptions;
+    if (!selectedOptions) {
+      return;
+    }
+
+    const values = Array.from(selectedOptions).map((option) => option.value);
     if (values.includes(ALL_OPTION_VALUE)) {
       setter([]);
     } else {
@@ -374,24 +455,8 @@ export function Logs() {
     setPage(1);
   };
 
-  const handleOptionMouseDown = (event, currentValues, setter) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const { value } = event.target;
-    if (value === ALL_OPTION_VALUE) {
-      if (currentValues.length) {
-        setter([]);
-        setPage(1);
-      }
-      return;
-    }
-
-    const nextValues = currentValues.includes(value)
-      ? currentValues.filter((entry) => entry !== value)
-      : [...currentValues, value];
-
-    setter(nextValues);
+  const removeFilterValue = (setter, value) => {
+    setter((prev) => prev.filter((entry) => entry !== value));
     setPage(1);
   };
 
@@ -614,161 +679,174 @@ export function Logs() {
                 <div className="grid gap-4 flex-1">
                   <Select
                     multiple
-                    value={selectedStacks}
-                    onChange={handleMultiSelectChange(setSelectedStacks)}
+                    onChange={noop}
                     className="text-gray-500"
                     variant="static"
+                    dismiss={{ itemPress: false }}
                     label="Stacks"
                   >
                     {stackSelectOptions.map(({ value, label }) => (
-                      <option
+                      <StickyOption
                         key={value}
                         value={value}
-                        onMouseDown={(event) => handleOptionMouseDown(event, selectedStacks, setSelectedStacks)}
+                        onValueSelect={handleMultiSelectChange(setSelectedStacks)}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
-                      </option>
+                      </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
                     {selectedStacks.length === 0 ? (
-                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300 ">
                         Alle Stacks
                       </span>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
+                      <span>
                         {selectedStacks.map((stackId) => (
-                          <span
+                          <button
                             key={stackId}
-                            className="rounded-full bg-purple-500/80 px-2 py-0.5 text-white"
+                            type="button"
+                            onClick={() => removeFilterValue(setSelectedStacks, stackId)}
+                            className="rounded-full bg-purple-500/80 px-2 py-0.5 text-white transition hover:bg-purple-500/90 focus:outline-none focus:ring-2 focus:ring-purple-300 cursor-pointer"
+                            title="Filter entfernen"
                           >
                             {stackLabelMap.get(stackId) ?? `Stack ${stackId}`}
-                          </span>
+                          </button>
                         ))}
-                      </div>
+                      </span>
                     )}
                   </div>
                 </div>
                 <div className="grid gap-4 flex-1">
                   <Select
                     multiple
-                    value={selectedStatuses}
-                    onChange={handleMultiSelectChange(setSelectedStatuses)}
+                    onChange={noop}
                     className="text-gray-500"
                     variant="static"
+                    dismiss={{ itemPress: false }}
                     label="Status"
                   >
                     {statusSelectOptions.map(({ value, label }) => (
-                      <option
+                      <StickyOption
                         key={value}
                         value={value}
-                        onMouseDown={(event) => handleOptionMouseDown(event, selectedStatuses, setSelectedStatuses)}
+                        onValueSelect={handleMultiSelectChange(setSelectedStatuses)}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
-                      </option>
+                      </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
                     {selectedStatuses.length === 0 ? (
                       <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
                         Alle Status
                       </span>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
+                      <span>
                         {selectedStatuses.map((status) => (
-                          <span
+                          <button
                             key={status}
-                            className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white"
+                            type="button"
+                            onClick={() => removeFilterValue(setSelectedStatuses, status)}
+                            className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white transition hover:bg-brown-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            title="Filter entfernen"
                           >
                             {status}
-                          </span>
+                          </button>
                         ))}
-                      </div>
+                      </span>
                     )}
                   </div>
                 </div>
                 <div className="grid gap-4 flex-1">
                   <Select
                     multiple
-                    value={selectedRedeployTypes}
-                    onChange={handleMultiSelectChange(setSelectedRedeployTypes)}
+                    onChange={noop}
                     className="text-gray-500"
                     variant="static"
+                    dismiss={{ itemPress: false }}
                     label="Redeploy-Typ"
                   >
                     {redeployTypeSelectOptions.map(({ value, label }) => (
-                      <option
+                      <StickyOption
                         key={value}
                         value={value}
-                        onMouseDown={(event) => handleOptionMouseDown(event, selectedRedeployTypes, setSelectedRedeployTypes)}
+                        onValueSelect={handleMultiSelectChange(setSelectedRedeployTypes)}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
-                      </option>
+                      </StickyOption>
+
                     ))}
                   </Select>
-                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
                     {selectedRedeployTypes.length === 0 ? (
                       <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
                         Alle Typen
                       </span>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
+                      <span>
                         {selectedRedeployTypes.map((type) => (
-                          <span
+                          <button
                             key={type}
-                            className="rounded-full bg-teal-500/80 px-2 py-0.5 text-white"
+                            type="button"
+                            onClick={() => removeFilterValue(setSelectedRedeployTypes, type)}
+                            className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white transition hover:bg-brown-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            title="Filter entfernen"
                           >
                             {REDEPLOY_TYPE_LABELS[type] ?? type}
-                          </span>
+                          </button>
                         ))}
-                      </div>
+                      </span>
                     )}
                   </div>
                 </div>
                 <div className="grid gap-4 flex-1">
                   <Select
                     multiple
-                    value={selectedEndpoints}
-                    onChange={handleMultiSelectChange(setSelectedRedeployTypes)}
+                    onChange={noop}
                     className="text-gray-500"
                     variant="static"
+                    dismiss={{ itemPress: false }}
                     label="Endpoints"
                   >
                     {endpointSelectOptions.map(({ value, label }) => (
-                      <option
+                      <StickyOption
                         key={value}
                         value={value}
-                        onMouseDown={(event) => handleOptionMouseDown(event, selectedEndpoints, setSelectedEndpoints)}
+                        onValueSelect={handleMultiSelectChange(setSelectedEndpoints)}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
-                      </option>
+                      </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
                     {selectedEndpoints.length === 0 ? (
                       <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
                         Alle Endpoints
                       </span>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
+                      <span>
                         {selectedEndpoints.map((endpoint) => (
-                          <span
+                          <button
                             key={endpoint}
-                            className="rounded-full bg-blue-500/80 px-2 py-0.5 text-white"
+                            type="button"
+                            onClick={() => removeFilterValue(setSelectedEndpoints, endpoint)}
+                            className="rounded-full bg-teal-500/80 px-2 py-0.5 text-white transition hover:bg-teal-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            title="Filter entfernen"
                           >
-                            {endpoint}
-                          </span>
+                            Endpoint {endpoint}
+                          </button>
                         ))}
-                      </div>
+                      </span>
                     )}
                   </div>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2 mt-10">
+              <div className="flex flex-wrap gap-2 mt-5">
                 <div className="grid gap-4 flex-1">
                   <Input
                     value={messageQuery}
@@ -781,18 +859,75 @@ export function Logs() {
                     placeholder="Suche" />
                 </div>
               </div>
+              <div className="flex flex-col md:flex-row flex-wrap gap-4 mt-8">
+                <div className="flex-1">
+                  <Input
+                    type="datetime-local"
+                    variant="static"
+                    label="Von"
+                    value={fromDate}
+                    onChange={(event) => {
+                      setFromDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full"
+                  />
+                </div>
+                <div className="flex-1">
+                  <Input
+                    type="datetime-local"
+                    variant="static"
+                    label="Bis"
+                    value={toDate}
+                    onChange={(event) => {
+                      setToDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full"
+                  />
+                </div>
+                <div className="flex-1">
+                  <Button
+                    onClick={handleResetFilters}
+                    disabled={actionLoading || loading}
+                    className="w-full"
+                  >
+                    Zurücksetzen
+                  </Button>
+                </div>
+              </div>
+
             </div>
 
           )}
 
         </CardBody>
       </Card>
-
-
       <Card>
         <CardHeader variant="gradient" color="gray" className="mb-8 p-6">
-          <Typography variant="h6" color="white">
-            Logs
+          <Typography
+            variant="h6"
+            color="white"
+            className="flex items-center justify-between"
+          >
+            <span>Logs</span>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-gray-400">
+                Einträge pro Seite:
+              </span>
+              <select
+                value={perPage}
+                onChange={handlePerPageChange}
+                className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                {PER_PAGE_OPTIONS.map(({ value, label }) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </Typography>
         </CardHeader>
         <CardBody className="overflow-x-scroll px-0 pt-0 pb-2">
