@@ -856,7 +856,7 @@ export function Maintenance() {
                 <Button
                   onClick={handleSshTestConnection}
                   disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
-                  className="w-full bg-teal-500">
+                  className="w-full bg-arcticBlue-500 hover:bg-arcticBlue-600">
                   {sshTesting ? 'Test läuft…' : 'Verbindung testen'}
                 </Button>
 
@@ -864,8 +864,7 @@ export function Maintenance() {
                 <Button
                   onClick={handleSshDeleteConfig}
                   disabled={sshSaving || sshTesting || sshDeleting || updateRunning}
-                  className="w-full"
-                  color="purple"
+                  className="w-full hover:bg-sunsetCoral-600 bg-sunsetCoral-500"
                 >
                   {sshDeleting ? 'Löschen…' : 'SSH-Einstellungen löschen'}
                 </Button>
@@ -900,7 +899,7 @@ export function Maintenance() {
                   color="purple"
                   onClick={handleScriptReset}
                   disabled={!scriptConfig || scriptConfig.source !== "custom" || scriptSaving || updateRunning}
-                  className="w-full">
+                  className="w-full hover:bg-sunsetCoral-600 bg-sunsetCoral-500">
                   Standard wiederherstellen
                 </Button>
 

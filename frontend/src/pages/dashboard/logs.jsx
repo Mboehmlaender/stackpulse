@@ -668,10 +668,9 @@ export function Logs() {
                   className="w-full md:flex-1">
                   Export SQL</Button>
                 <Button
-                  color="red"
                   onClick={handleDeleteFiltered}
                   disabled={actionLoading || loading || logs.length === 0}
-                  className="w-full md:flex-1">
+                  className="w-full md:flex-1 bg-sunsetCoral-500 hover:bg-sunsetCoral-600">
                   Angezeigte löschen</Button>
               </div>
 
@@ -1015,7 +1014,7 @@ export function Logs() {
                         <button
                           onClick={() => handleDeleteLog(log.id)}
                           disabled={actionLoading}
-                          className="rounded-md border border-red-600 px-3 py-1 text-xs text-red-300 transition hover:bg-red-600/20 disabled:opacity-60">
+                          className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60">
                           Löschen
                         </button>
                       </Typography>
