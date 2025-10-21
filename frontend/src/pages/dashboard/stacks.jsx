@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardBody,
   Button,
+  ButtonGroup,
   IconButton,
   Menu,
   MenuHandler,
@@ -17,6 +18,10 @@ import {
   Avatar,
   Tooltip,
   Progress,
+  Spinner,
+  Input,
+  Select,
+  Option
 } from "@material-tailwind/react";
 
 const SELECTION_PROMPT_STORAGE_KEY = "stackSelectionPreference";
@@ -72,6 +77,7 @@ export function Stacks() {
   const maintenanceMessage = maintenance?.message;
   const maintenanceLocked = maintenanceActive || Boolean(update?.running);
   const maintenanceBanner = maintenanceLocked ? (maintenanceMessage || (update?.running ? "Portainer-Update läuft" : "Wartungsmodus aktiv")) : "";
+  const noop = useCallback(() => { }, []);
 
   const stacksByIdRef = useRef(new Map());
 
@@ -500,8 +506,8 @@ export function Stacks() {
     );
   };
 
-  const handlePerPageChange = (event) => {
-    const value = event.target.value;
+
+  const handlePerPageChange = (value) => {
     if (!VALID_PER_PAGE_VALUES.has(value)) return;
     setPerPage(value);
     setPage(1);
@@ -772,95 +778,93 @@ export function Stacks() {
     }
   };
 
-  if (loading) return <p className="text-gray-400">Lade Stacks...</p>;
-  if (error) return <p className="text-red-400">{error}</p>;
 
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
-
       <Card>
         <CardHeader variant="gradient" color="gray" className="p-4 pt-2 pb-2">
-          <Typography variant="h6" color="white">
-            <span className="flex items-center gap-2">
-              <span>Filter und Optionen</span></span>
-          </Typography>
+          {!loading && !error ? (
+            <Typography variant="h6" color="white">
+              <span className="flex items-center gap-2">
+                <span>Filter und Optionen</span></span>
+            </Typography>
+          ) :
+            (
+              <Typography variant="h6" color="white">
+                <span className="flex items-center gap-2">
+                  <span>Lade Stacks</span></span>
+              </Typography>)
+          }
         </CardHeader>
         <CardBody>
-          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-6">
-              <div>
-                <span className="mb-2 block text-sm font-medium text-gray-300">Status</span>
-                <div className="inline-flex overflow-hidden rounded-lg border border-gray-700 bg-gray-900">
-                  <button
-                    type="button"
-                    onClick={() => setStatusFilter('all')}
-                    className={`px-4 py-2 text-sm font-medium transition ${statusFilter === 'all' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:text-white'} border-r border-gray-700 last:border-r-0`}
+          {loading ? (
+            <p className="flex py-6 text-center text-sm font-medium text-gray-400"> <Spinner className="mr-2 h-4 w-4 flex" />Lade Stacks...</p>
+          ) : error ? (
+            <p className="py-6 text-sm font-medium text-red-400">{error}</p>
+          ) : (
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <ButtonGroup
                   >
-                    Alle
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStatusFilter('current')}
-                    className={`px-4 py-2 text-sm font-medium transition ${statusFilter === 'current' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:text-white'} border-r border-gray-700 last:border-r-0`}
-                  >
-                    Aktuell
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStatusFilter('outdated')}
-                    className={`px-4 py-2 text-sm font-medium transition ${statusFilter === 'outdated' ? 'bg-purple-600 text-white' : 'text-gray-300 hover:text-white'}`}
-                  >
-                    Veraltet
-                  </button>
+                    <Button
+                      onClick={() => setStatusFilter('all')}
+
+                    >Alle</Button>
+                    <Button
+                      onClick={() => setStatusFilter('current')}
+
+                    >Aktuell</Button>
+                    <Button
+                      onClick={() => setStatusFilter('outdated')}
+
+                    >Veraltet</Button>
+                  </ButtonGroup>
                 </div>
-              </div>
-              <div className="md:w-64">
-                <label htmlFor="stack-search" className="mb-2 block text-sm font-medium text-gray-300">Suche</label>
-                <input
-                  id="stack-search"
-                  type="text"
+                <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Name oder ID"
-                  className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                />
+                  variant="static"
+                  placeholder="Name oder ID" />
+                              <div className="flex items-center gap-3">
+
+                <Select
+                  variant="static"
+                  label="Einträge pro Seite"
+                  onChange={noop}
+                  value={perPage}
+                >
+                  {PER_PAGE_OPTIONS.map(({ value, label }) => (
+                    <Option
+                      key={value}
+                      value={value}
+                      onClick={() => handlePerPageChange(value)}
+                    >
+                      {label}
+                    </Option>
+                  ))}
+                </Select>
+                </div>
+
+              <div className="flex flex-col items-end gap-2">
+                {selectionPreferenceStored && (
+                  <button
+                    type="button"
+                    onClick={clearStoredSelectionPreference}
+                    className="text-xs font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-100"
+                  >
+                    Gespeicherte Entscheidung löschen
+                  </button>
+                )}
+
+
               </div>
             </div>
-            <div className="flex flex-col items-end gap-2">
-              {selectionPreferenceStored && (
-                <button
-                  type="button"
-                  onClick={clearStoredSelectionPreference}
-                  className="text-xs font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-100"
-                >
-                  Gespeicherte Entscheidung löschen
-                </button>
-              )}
-              <button
-                onClick={handleBulkRedeploy}
-                disabled={bulkActionDisabled}
-                className={`px-5 py-2 rounded-lg font-medium transition ${bulkActionDisabled ? 'bg-purple-900 cursor-not-allowed text-gray-400' : 'bg-purple-500 hover:bg-purple-600'}`}
-              >
-                {bulkButtonLabel}
-              </button>
-              <label className="flex items-center gap-2 text-sm text-gray-300">
-                <span>Einträge pro Seite</span>
-                <select
-                  value={perPage}
-                  onChange={handlePerPageChange}
-                  className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                >
-                  {PER_PAGE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </div>
+          )}
+
+
         </CardBody>
       </Card>
+
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
 
         {paginatedStacks.map(stack => {
@@ -872,7 +876,6 @@ export function Stacks() {
           const isCurrent = stack.updateStatus === '✅';
           const isSelfStack = Boolean(stack.redeployDisabled);
           const isSelectable = !isBusy && !isCurrent && !isSelfStack && !maintenanceLocked;
-
           return (
             <Card key={stack.Id}>
               <CardBody
