@@ -10,7 +10,7 @@ module.exports = withMT({
         green: colors.green,
         slate: colors.slate,
         orange: colors.orange, // falls du z. B. text-orange-300 brauchst
-              auroraTeal: {50:'#f0fafb',100:'#e0f5f7',200:'#c3ecef',300:'#9de0e4',400:'#6ad3d8',500:'#38c6cc',600:'#2aa9b0',700:'#1f8d94',800:'#166e76',900:'#0c4f58'},
+        auroraTeal: {50:'#f0fafb',100:'#e0f5f7',200:'#c3ecef',300:'#9de0e4',400:'#6ad3d8',500:'#38c6cc',600:'#2aa9b0',700:'#1f8d94',800:'#166e76',900:'#0c4f58'},
         sunsetCoral: {50:'#fff6f5',100:'#ffece9',200:'#ffd7d3',300:'#ffb8b5',400:'#ff9189',500:'#ff6a5d',600:'#e65048',700:'#b93d38',800:'#8a2c28',900:'#5c1c1a'},
         lavenderSmoke: {50:'#faf8fc',100:'#f5f1f9',200:'#ece2f3',300:'#dac4e6',400:'#b88acf',500:'#9670b8',600:'#7a5894',700:'#5d4373',800:'#412f52',900:'#291e38'},
         mossGreen: {50:'#f5faf2',100:'#ebf5e5',200:'#d9ebca',300:'#b8d99e',400:'#8cc56f',500:'#60b240',600:'#4d8f33',700:'#3b6b27',800:'#2a491d',900:'#1c3012'},

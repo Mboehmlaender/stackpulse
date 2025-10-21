@@ -18,7 +18,7 @@ import {
   useSelect
 } from "@material-tailwind/react";
 
-const StickyOption = React.forwardRef(({ value, onValueSelect, onClick, onKeyDown, ...props }, ref) => {
+const StickyOption = React.forwardRef(({ value, onClick, onKeyDown, ...props }, ref) => {
   const { setOpen } = useSelect();
 
   const reopen = useCallback(() => {
@@ -31,20 +31,13 @@ const StickyOption = React.forwardRef(({ value, onValueSelect, onClick, onKeyDow
     });
   }, [setOpen]);
 
-  const commitSelection = useCallback(() => {
-    if (typeof onValueSelect === "function") {
-      onValueSelect(value);
-    }
-  }, [onValueSelect, value]);
-
   const handleClick = useCallback((event) => {
     if (typeof onClick === "function") {
       onClick(event);
     }
 
-    commitSelection();
     reopen();
-  }, [onClick, commitSelection, reopen]);
+  }, [onClick, reopen]);
 
   const handleKeyDown = useCallback((event) => {
     if (typeof onKeyDown === "function") {
@@ -52,10 +45,9 @@ const StickyOption = React.forwardRef(({ value, onValueSelect, onClick, onKeyDow
     }
 
     if (event.key === "Enter" || event.key === " ") {
-      commitSelection();
       reopen();
     }
-  }, [onKeyDown, commitSelection, reopen]);
+  }, [onKeyDown, reopen]);
 
   return (
     <Option
@@ -71,10 +63,10 @@ const StickyOption = React.forwardRef(({ value, onValueSelect, onClick, onKeyDow
 StickyOption.displayName = "StickyOption";
 
 const STATUS_COLORS = {
-  success: "text-green-400",
-  warning: "text-yellow-400",
-  error: "text-red-400",
-  started: "text-blue-300"
+  success: "text-mossGreen-500",
+  warning: "text-warmAmberGlow-500",
+  error: "text-sunsetCoral-500",
+  started: "text-arcticBlue-500"
 };
 
 const formatTimestamp = (value) => {
@@ -419,7 +411,7 @@ export function Logs() {
     }
   }, [filtersReady, currentFilters, perPage, page]);
 
-  const handleMultiSelectChange = (setter) => (valueOrEvent) => {
+  const handleMultiSelectChange = useCallback((setter) => (valueOrEvent) => {
     if (typeof valueOrEvent === "string") {
       const value = valueOrEvent;
       if (value === "") {
@@ -453,7 +445,12 @@ export function Logs() {
       setter(values);
     }
     setPage(1);
-  };
+  }, [setPage]);
+
+  const selectStacks = useMemo(() => handleMultiSelectChange(setSelectedStacks), [handleMultiSelectChange, setSelectedStacks]);
+  const selectStatuses = useMemo(() => handleMultiSelectChange(setSelectedStatuses), [handleMultiSelectChange, setSelectedStatuses]);
+  const selectRedeployTypes = useMemo(() => handleMultiSelectChange(setSelectedRedeployTypes), [handleMultiSelectChange, setSelectedRedeployTypes]);
+  const selectEndpoints = useMemo(() => handleMultiSelectChange(setSelectedEndpoints), [handleMultiSelectChange, setSelectedEndpoints]);
 
   const removeFilterValue = (setter, value) => {
     setter((prev) => prev.filter((entry) => entry !== value));
@@ -631,7 +628,7 @@ export function Logs() {
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
       <Card>
-        <CardHeader variant="gradient" color="gray" className="p-6 pt-2 pb-2">
+        <CardHeader variant="gradient" color="gray" className="p-4 pt-2 pb-2">
           <Typography variant="h6" color="white">
             <button
               onClick={handleToggleFilters}
@@ -679,7 +676,7 @@ export function Logs() {
                   <Select
                     multiple
                     onChange={noop}
-                    className="text-gray-500"
+                    className="text-stormGrey-500"
                     variant="static"
                     dismiss={{ itemPress: false }}
                     label="Stacks"
@@ -688,16 +685,22 @@ export function Logs() {
                       <StickyOption
                         key={value}
                         value={value}
-                        onValueSelect={handleMultiSelectChange(setSelectedStacks)}
+                        onClick={() => selectStacks(value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectStacks(value);
+                          }
+                        }}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
                       </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
                     {selectedStacks.length === 0 ? (
-                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300 ">
+                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white ">
                         Alle Stacks
                       </span>
                     ) : (
@@ -707,7 +710,7 @@ export function Logs() {
                             key={stackId}
                             type="button"
                             onClick={() => removeFilterValue(setSelectedStacks, stackId)}
-                            className="rounded-full bg-purple-500/80 px-2 py-0.5 text-white transition hover:bg-purple-500/90 focus:outline-none focus:ring-2 focus:ring-purple-300 cursor-pointer"
+                            className="rounded-full bg-lavenderSmoke-600/80 px-2 py-0.5 text-white transition hover:bg-lavenderSmoke-600/90 focus:outline-none focus:ring-2 focus:ring-lavenderSmoke-400 cursor-pointer"
                             title="Filter entfernen"
                           >
                             {stackLabelMap.get(stackId) ?? `Stack ${stackId}`}
@@ -721,7 +724,7 @@ export function Logs() {
                   <Select
                     multiple
                     onChange={noop}
-                    className="text-gray-500"
+                    className="text-stormGrey-500"
                     variant="static"
                     dismiss={{ itemPress: false }}
                     label="Status"
@@ -730,16 +733,22 @@ export function Logs() {
                       <StickyOption
                         key={value}
                         value={value}
-                        onValueSelect={handleMultiSelectChange(setSelectedStatuses)}
+                        onClick={() => selectStatuses(value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectStatuses(value);
+                          }
+                        }}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
                       </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
                     {selectedStatuses.length === 0 ? (
-                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
                         Alle Status
                       </span>
                     ) : (
@@ -749,7 +758,7 @@ export function Logs() {
                             key={status}
                             type="button"
                             onClick={() => removeFilterValue(setSelectedStatuses, status)}
-                            className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white transition hover:bg-brown-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            className="rounded-full bg-copperRust-600/80 px-2 py-0.5 text-white transition hover:bg-copperRust-600/90 focus:outline-none focus:ring-2 focus:ring-copperRust-400 cursor-pointer"
                             title="Filter entfernen"
                           >
                             {status}
@@ -763,7 +772,7 @@ export function Logs() {
                   <Select
                     multiple
                     onChange={noop}
-                    className="text-gray-500"
+                    className="text-stormGrey-500"
                     variant="static"
                     dismiss={{ itemPress: false }}
                     label="Redeploy-Typ"
@@ -772,7 +781,13 @@ export function Logs() {
                       <StickyOption
                         key={value}
                         value={value}
-                        onValueSelect={handleMultiSelectChange(setSelectedRedeployTypes)}
+                        onClick={() => selectRedeployTypes(value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectRedeployTypes(value);
+                          }
+                        }}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
@@ -780,9 +795,9 @@ export function Logs() {
 
                     ))}
                   </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
                     {selectedRedeployTypes.length === 0 ? (
-                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
                         Alle Typen
                       </span>
                     ) : (
@@ -792,7 +807,7 @@ export function Logs() {
                             key={type}
                             type="button"
                             onClick={() => removeFilterValue(setSelectedRedeployTypes, type)}
-                            className="rounded-full bg-brown-500/80 px-2 py-0.5 text-white transition hover:bg-brown-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            className="rounded-full bg-citrusPunch-600/80 px-2 py-0.5 text-white transition hover:bg-citrusPunch-600/90 focus:outline-none focus:ring-2 focus:ring-citrusPunch-400 cursor-pointer"
                             title="Filter entfernen"
                           >
                             {REDEPLOY_TYPE_LABELS[type] ?? type}
@@ -806,7 +821,7 @@ export function Logs() {
                   <Select
                     multiple
                     onChange={noop}
-                    className="text-gray-500"
+                    className="text-stormGrey-500"
                     variant="static"
                     dismiss={{ itemPress: false }}
                     label="Endpoints"
@@ -815,16 +830,22 @@ export function Logs() {
                       <StickyOption
                         key={value}
                         value={value}
-                        onValueSelect={handleMultiSelectChange(setSelectedEndpoints)}
+                        onClick={() => selectEndpoints(value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectEndpoints(value);
+                          }
+                        }}
                         className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
                       >
                         {label}
                       </StickyOption>
                     ))}
                   </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-gray-400">
+                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
                     {selectedEndpoints.length === 0 ? (
-                      <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-gray-300">
+                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
                         Alle Endpoints
                       </span>
                     ) : (
@@ -834,7 +855,7 @@ export function Logs() {
                             key={endpoint}
                             type="button"
                             onClick={() => removeFilterValue(setSelectedEndpoints, endpoint)}
-                            className="rounded-full bg-teal-500/80 px-2 py-0.5 text-white transition hover:bg-teal-500/90 focus:outline-none focus:ring-2 focus:ring-brown-300 cursor-pointer"
+                            className="rounded-full bg-emeraldMist-500/80 px-2 py-0.5 text-white transition hover:bg-emeraldMist-500/90 focus:outline-none focus:ring-2 focus:ring-emeraldMist-400 cursor-pointer"
                             title="Filter entfernen"
                           >
                             Endpoint {endpoint}
@@ -903,7 +924,7 @@ export function Logs() {
         </CardBody>
       </Card>
       <Card>
-        <CardHeader variant="gradient" color="gray" className="mb-8 p-6">
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
           <Typography
             variant="h6"
             color="white"
@@ -918,7 +939,7 @@ export function Logs() {
               <select
                 value={perPage}
                 onChange={handlePerPageChange}
-                className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-lavenderSmoke-500 focus:outline-none focus:ring-1 focus:ring-lavenderSmoke-500"
               >
                 {PER_PAGE_OPTIONS.map(({ value, label }) => (
                   <option key={value} value={value}>
@@ -936,11 +957,11 @@ export function Logs() {
                 {["Zeitpunkt", "Stack", "Art", "Status", "Nachricht", "Endpoint", "Aktionen"].map((el) => (
                   <th
                     key={el}
-                    className="border-b border-blue-gray-50 py-3 px-5 text-left"
+                    className="border-b border-stormGrey-50 py-3 px-5 text-left"
                   >
                     <Typography
                       variant="small"
-                      className="text-[11px] font-bold uppercase text-blue-gray-400"
+                      className="text-[11px] font-bold uppercase text-stormGrey-400"
                     >
                       {el}
                     </Typography>
@@ -962,7 +983,7 @@ export function Logs() {
                     <td className={className}>
                       <Typography
                         variant="small"
-                        className="mb-1 block text-xs font-medium text-blue-gray-600">
+                        className="mb-1 block text-xs font-medium text-stormGrey-600">
                         {formatTimestamp(log.timestamp)}
                       </Typography>
                     </td>
@@ -973,7 +994,7 @@ export function Logs() {
                           variant="small"
                         >
                           {showStackId && (
-                            <span className="text-xs text-gray-400">ID: {log.stackId}</span>
+                            <span className="text-xs text-stormGrey-400">ID: {log.stackId}</span>
                           )}
                         </Typography>
                       </div>

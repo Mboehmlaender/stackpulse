@@ -20,10 +20,10 @@ const UPDATE_STATUS_LABELS = {
 };
 
 const UPDATE_STATUS_STYLES = {
-  idle: "bg-gray-700 text-gray-200",
-  running: "bg-sky-600 text-white",
-  success: "bg-green-600 text-white",
-  error: "bg-red-600 text-white"
+  idle: "bg-stormGrey-700 text-gray-200",
+  running: "bg-arcticBlue-600 text-white",
+  success: "bg-mossGreen-600 text-white",
+  error: "bg-sunsetCoral-600 text-white"
 };
 
 const UPDATE_STAGE_LABELS = {
@@ -36,13 +36,13 @@ const UPDATE_STAGE_LABELS = {
 };
 
 const LOG_LEVEL_STYLES = {
-  info: "text-blue-700",
-  success: "text-green-700",
-  warning: "text-amber-700",
-  error: "text-red-700",
-  stdout: "text-gray-700",
-  stderr: "text-orange-700",
-  debug: "text-cyan-700"
+  info: "text-arcticBlue-700",
+  success: "text-mossGreen-700",
+  warning: "text-warmAmberGlow-700",
+  error: "text-sunsetCoral-700",
+  stdout: "text-stormGrey-700",
+  stderr: "text-warmAmberGlow-700",
+  debug: "text-lavenderSmoke-700"
 };
 
 const formatLogTimestamp = (value) => {
@@ -128,6 +128,7 @@ export function Maintenance() {
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
   const maintenanceMessage = maintenanceMeta?.message;
+  const maintenanceExtraType = maintenanceMeta?.extra?.type;
   const updateRunning = Boolean(updateState?.running);
 
   const [scriptDraft, setScriptDraft] = useState("");
@@ -432,10 +433,16 @@ export function Maintenance() {
 
     setMaintenanceToggleLoading(true);
     try {
-      await setMaintenanceMode({
-        active: nextActive,
-        message: nextActive ? (maintenanceMessage ?? undefined) : null
-      });
+      const shouldPreserveMessage = nextActive && Boolean(maintenanceExtraType);
+      const payload = { active: nextActive };
+
+      if (shouldPreserveMessage && maintenanceMessage) {
+        payload.message = maintenanceMessage;
+      } else {
+        payload.message = null;
+      }
+
+      await setMaintenanceMode(payload);
       showToast({
         variant: nextActive ? "info" : "success",
         title: nextActive ? "Wartungsmodus aktiviert" : "Wartungsmodus deaktiviert",
@@ -449,7 +456,7 @@ export function Maintenance() {
     } finally {
       setMaintenanceToggleLoading(false);
     }
-  }, [maintenanceLoading, maintenanceToggleLoading, maintenanceActive, updateRunning, setMaintenanceMode, maintenanceMessage, showToast]);
+  }, [maintenanceLoading, maintenanceToggleLoading, maintenanceActive, updateRunning, setMaintenanceMode, maintenanceMessage, maintenanceExtraType, showToast]);
 
   const handleTriggerUpdate = useCallback(async () => {
     if (maintenanceActive || updateRunning) {
@@ -589,8 +596,41 @@ export function Maintenance() {
           </div>
         </div>
       )}
+
       <Card>
-        <CardHeader variant="gradient" color="gray" className="mb-8 p-6">
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+            className="flex items-center justify-between"
+          >
+            <span>Wartungsmodus</span>
+
+          </Typography>
+        </CardHeader>
+        <CardBody className="flex flex-col gap-4 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-sm antialiased font-sans text-sm font-light leading-normal text-inherit">
+                Schaltet StackPulse für Benutzer in den Wartungsmodus.
+              </p>
+            </div>
+            <Switch
+              checked={maintenanceActive}
+              disabled={maintenanceToggleLoading || maintenanceLoading || updateRunning}
+              onChange={(event) => handleMaintenanceToggle(event.target.checked)}
+              ripple={false}
+              color="amber"
+            />
+          </div>
+          {maintenanceToggleLoading && (
+            <p className="text-xs text-stormGrey-500">Wartungsmodus wird aktualisiert…</p>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
           <Typography
             variant="h6"
             color="white"
@@ -616,7 +656,7 @@ export function Maintenance() {
                         : "Portainer ist auf dem aktuellen Stand.")}
               </p>
               {portainerUpdatedAt && !portainerLoading && (
-                <p className="mt-1 text-xs text-gray-500 block antialiased font-sans">
+                <p className="mt-1 text-xs text-stormGrey-500 block antialiased font-sans">
                   Stand: {portainerUpdatedAt.toLocaleString("de-DE", {
                     hour: "2-digit",
                     minute: "2-digit",
@@ -665,23 +705,23 @@ export function Maintenance() {
                 </div>
                 {portainerStatus.edition && (
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Edition</span>
+                    <span className="text-stormGrey-400">Edition</span>
                     <span className="font-medium">{portainerStatus.edition}</span>
                   </div>
                 )}
                 {portainerStatus.build && (
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Build</span>
+                    <span className="text-stormGrey-400">Build</span>
                     <span className="font-medium">{portainerStatus.build}</span>
                   </div>
                 )}
                 {portainerStatus.errors?.latestVersion && (
-                  <div className="rounded-md mt-8 border border-red-500/40 bg-red-900/40 px-3 py-2 text-xs">
+                  <div className="rounded-md mt-8 border  bg-sunsetCoral-600 text-white px-3 py-2 text-xs">
                     Neueste Version konnte nicht ermittelt werden: {portainerStatus.errors.latestVersion}
                   </div>
                 )}
                 {portainerStatus.errors?.container && (
-                  <div className="rounded-md mt-8 border border-red-500/40 bg-red-900/40 px-3 py-2 text-xs">
+                  <div className="rounded-md mt-8 border  bg-sunsetCoral-600 text-white px-3 py-2 text-xs">
                     Container-Details konnten nicht ermittelt werden: {portainerStatus.errors.container}
                   </div>
                 )}
@@ -870,7 +910,7 @@ export function Maintenance() {
                 </Button>
               </div>
               {sshTestResult && (
-                <p className={`mt-3 text-xs ${sshTestResult.success ? 'text-green-800' : 'text-red-800'}`}>
+                <p className={`mt-3 text-xs ${sshTestResult.success ? 'text-mossGreen-600' : 'text-sunsetCoral-500'}`}>
                   {sshTestResult.success ? 'SSH-Verbindung erfolgreich.' : `SSH-Verbindung fehlgeschlagen: ${sshTestResult.error}`}
                 </p>
               )}
@@ -905,7 +945,7 @@ export function Maintenance() {
 
               </div>
               {scriptConfig?.customUpdatedAt && (
-                <p className="mt-2 text-xs text-gray-500">
+                <p className="mt-2 text-xs text-stormGrey-500">
                   Zuletzt geändert: {formatCreatedAt(scriptConfig.customUpdatedAt)}
                 </p>
               )}
@@ -940,29 +980,29 @@ export function Maintenance() {
                   <span>{updateFinishedAt}</span>
                 </div>
                 {updateStatusMessage && (
-                  <div className="rounded-md border border-green-700 bg-green-800 px-3 py-2 text-xs text-white">
+                  <div className="rounded-md border border-mossGreen-700 bg-mossGreen-800 px-3 py-2 text-xs text-white">
                     {updateStatusMessage}
                   </div>
                 )}
                 {updateState?.error && (
-                  <div className="rounded-md border border-red-500/60 bg-red-900/40 px-3 py-2 text-xs text-red-200">
+                  <div className="rounded-md border border-sunsetCoral-500/60 bg-sunsetCoral-900/40 px-3 py-2 text-xs text-white">
                     {updateState.error}
                   </div>
                 )}
                 {updateActionError && (
-                  <div className="rounded-md border border-red-500/60 bg-red-900/40 px-3 py-2 text-xs text-red-200">
+                  <div className="rounded-md border border-sunsetCoral-500/60 bg-sunsetCoral-900/40 px-3 py-2 text-xs text-white">
                     {updateActionError}
                   </div>
                 )}
               </div>
               <div className="mt-3 h-40 overflow-y-auto rounded-md border border-gray-700/20 bg-gray-950/70 p-3 font-mono text-[11px] leading-relaxed">
                 {updateLogs.length === 0 ? (
-                  <p className="text-gray-500">Noch keine Protokolle vorhanden.</p>
+                  <p className="text-stormGrey-500">Noch keine Protokolle vorhanden.</p>
                 ) : (
                   updateLogs.map((entry, index) => (
                     <div key={`${entry.timestamp}-${index}`} className="mb-2 last:mb-0">
                       <span className="text-gray-500">[{formatLogTimestamp(entry.timestamp)}]</span>{" "}
-                      <span className={(LOG_LEVEL_STYLES[entry.level] ?? "text-gray-300") + " whitespace-normal break-words"} style={{ overflowWrap: "anywhere", wordBreak: "normal" }}>
+                      <span className={(LOG_LEVEL_STYLES[entry.level] ?? "text-stormGrey-300") + " whitespace-normal break-words"} style={{ overflowWrap: "anywhere", wordBreak: "normal" }}>
                         {entry.message}
                       </span>
                     </div>
@@ -984,46 +1024,124 @@ export function Maintenance() {
 
         </CardBody>
       </Card>
+
       <Card>
-        <CardHeader
-          color="transparent"
-          floated={false}
-          shadow={false}
-          className="m-0 p-4 block antialiased font-sans"
-        >
-          <Typography variant="h5" color="blue-gray" className="block antialiased font-sans">
-            Wartungsmodus
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+            className="flex items-center justify-between"
+          >
+            <span>Doppelte Stacks</span>
+
           </Typography>
         </CardHeader>
         <CardBody className="flex flex-col gap-4 p-4">
+          <div className="rounded-lg border border-warmAmberGlow-600 bg-warmAmberGlow-700 px-4 py-3 text-sm text-white">
+            Das Entfernen von deppelten Stacks ist noch nicht getestet. Bitte nicht in Produktivumgebungen einsetzen.
+          </div>
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-sm text-blue-gray-200">
-                Schaltet StackPulse für Benutzer in den Wartungsmodus.
+              <p className="text-sm antialiased font-sans text-sm font-light leading-normal text-inherit">
+                {isDuplicatesDisabled
+                  ? "Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert."
+                  : duplicatesLoading
+                    ? "Analyse läuft…"
+                    : totals.groups === 0
+                      ? "Keine Duplikate gefunden"
+                      : `${totals.groups} Stack-Namen mit insgesamt ${totals.duplicateCount} Duplikaten gefunden`}
               </p>
-              {maintenanceMessage ? (<p className="text-xs text-gray-500">Hinweis: {maintenanceMessage}</p>) : null}
-              <p className="text-xs text-gray-500">
-                {maintenanceActive
-                  ? `Aktiv seit ${maintenanceActivatedAt ?? "-"}.`
-                  : `Zuletzt geändert: ${maintenanceUpdatedAt ?? "-"}.`}
-              </p>
-              {updateRunning && (
-                <p className="text-xs text-amber-600">Portainer-Update läuft – Umschalten vorübergehend gesperrt.</p>
+              {duplicatesUpdatedAt && !duplicatesLoading && !isDuplicatesDisabled && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Stand: {duplicatesUpdatedAt.toLocaleString("de-DE", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                  })}
+                </p>
               )}
-              <p className="text-xs text-gray-500">
-                Status: {maintenanceActive ? "Aktiv" : "Inaktiv"}
-              </p>
             </div>
-            <Switch
-              checked={maintenanceActive}
-              disabled={maintenanceToggleLoading || maintenanceLoading || updateRunning}
-              onChange={(event) => handleMaintenanceToggle(event.target.checked)}
-              ripple={false}
-              color="amber"
-            />
+
+            <Button
+              onClick={() => fetchDuplicates({ silent: false })}
+              disabled={isDuplicatesDisabled || duplicatesLoading || duplicatesRefreshing || activeCleanupId !== null}
+              className=""
+            >
+              Aktualisieren
+            </Button>
+            {duplicatesError && !isDuplicatesDisabled && (
+              <div className="rounded-lg border border-sunsetCoral-500/60 bg-sunsetCoral-900/40 px-4 py-3 text-sm text-white">
+                {duplicatesError}
+              </div>
+            )}
           </div>
-          {maintenanceToggleLoading && (
-            <p className="text-xs text-gray-500">Wartungsmodus wird aktualisiert…</p>
+          {duplicatesLoading ? (
+            <div className="flex flex-col gap-4 p-4">
+              Daten werden geladen…
+            </div>
+          ) : totals.groups === 0 || isDuplicatesDisabled ? (
+            <div className="rounded-xl border-mossGreen-500/80 bg-mossGreen-900/90 text-mossGreen-100 p-8 text-center text-sm text-white">
+              {isDuplicatesDisabled
+                ? "Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert."
+                : "Es wurden keine doppelten Stacks gefunden."}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {duplicates.map((entry) => {
+                const canonicalId = entry?.canonical?.Id;
+                const duplicatesForEntry = entry?.duplicates || [];
+                const isProcessing = activeCleanupId === String(canonicalId);
+
+                return (
+                  <div
+                    key={canonicalId || entry.name}
+                    className="rounded-xl border border-gray-700 bg-gray-800/70 p-6 shadow"
+                  >
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-lg font-semibold text-white">{entry.name}</h3>
+                          <span className="rounded-full bg-amber-500/20 px-3 py-0.5 text-xs font-medium text-amber-200">
+                            {duplicatesForEntry.length} Duplikat{duplicatesForEntry.length === 1 ? "" : "e"}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-300">
+                          Behaltener Stack: ID {canonicalId} (Endpoint {entry?.canonical?.EndpointId ?? "-"})
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Typ: {resolveStackType(entry?.canonical?.Type)} • Erstellt: {formatCreatedAt(entry?.canonical?.Created)}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleCleanup(entry)}
+                        disabled={isDuplicatesDisabled || isProcessing || duplicatesRefreshing || duplicatesLoading}
+                        className="self-start rounded-lg bg-sunsetCoral-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sunsetCoral-600 disabled:opacity-50"
+                      >
+                        {isProcessing ? "Bereinigung läuft…" : `Bereinigen (${duplicatesForEntry.length})`}
+                      </button>
+                    </div>
+
+                    <div className="mt-5 grid gap-3">
+                      {duplicatesForEntry.map((duplicate) => (
+                        <div
+                          key={duplicate.Id}
+                          className="rounded-lg border border-sunsetCoral-500/40 bg-sunsetCoral-900/20 p-4 text-sm text-white"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold text-white">ID: {duplicate.Id}</span>
+                            <span>Endpoint: {duplicate.EndpointId ?? "-"}</span>
+                            <span>Typ: {resolveStackType(duplicate.Type)}</span>
+                            <span>Erstellt: {formatCreatedAt(duplicate.Created)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </CardBody>
       </Card>
