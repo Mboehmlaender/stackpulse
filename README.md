@@ -1,8 +1,9 @@
 ![StackPulse Logo](assets/images/stackpulse.png)
 
-# 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.3-blue.svg) 
+# 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
 
 **StackPulse** ist eine kleine Web-App, die über die Portainer-API deine Docker-Stacks verwaltet und aktualisiert.  
+Aktuell funktionier StackPulse nur mit der Business-Edition von Portainer. Die Communitiy-Edition wird in einem späteren Release implementiert!
 Sie besteht aus einem **Backend (Node.js/Express)** und einem **Frontend (React/Tailwind)**.  
 
 Ziel:  
@@ -26,7 +27,7 @@ Ziel:
 
 </details>
 
-<details>
+<details open>
   <summary>✅ v0.2 – Release</summary>
 
 ### Backend
@@ -47,55 +48,39 @@ Ziel:
 </details>
 
 <details open>
-  <summary>✅ v0.3 – Abgeschlossen</summary>
+  <summary>🟡 v0.3 – In Entwicklung</summary>
 
 ### Backend
-- [x] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen  
-- [x] Erweiterung der Logs (Portainer- und Datenbereinigungsvorgänge)  
+- [ ] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen
+- [ ] Erweiterung der Logs  
 - [x] API für Filter & Suche (Stacks nach Name/Status abrufen)  
-- [x] API für Sortierung der Stacks  
-- [x] Portainer-Steuerung: Start/Stop/Update per Standardbefehl oder benutzerdefiniertem Skript  
-- [x] Maintenance-Modus: Stackpulse pausiert während Portainer-Update und reaktiviert sich automatisch  
+- [ ] API für Sortierung der Stacks  
 
 ### Frontend
-- [x] Filter: Stacks nach Name oder Status durchsuchen  
-- [x] Sortierung: Stacks im Frontend sortieren  
-- [x] Benachrichtigungen im UI: erfolgreicher/fehlgeschlagener Redeploy (Toast + Notification-Center)  
-- [x] Visualisierung der Datenbereinigung (Konflikt/Auto-Fix Meldungen)  
-- [x] UI-Komponenten für Portainer-Status & Update-Steuerung  
-- [x] Wartungsbereich mit Statusanzeige und Update-Aktion  
+- [x] Filter: Stacks nach Name oder Status durchsuchen 
+- [ ] Sortierung: Stacks im Frontend sortieren
+- [ ] Benachrichtigungen im UI: erfolgreicher/fehlgeschlagener Redeploy (Toast + Notification-Center)  
+- [ ] Visualisierung der Datenbereinigung (Konflikt/Auto-Fix Meldungen)  
 
 ### Features
-- [x] Frontend-Filter und Sortierungen für schnellere Navigation bei vielen Stacks  
-- [x] Echtzeit-Feedback im UI (Notifications)  
-- [x] Datenkonsistenz sichern: keine doppelten Stack-IDs mehr  
-- [x] Portainer-Integration inkl. Update-Workflow und Maintenance-Modus  
-- [x] Verbesserte Nachvollziehbarkeit aller automatischen Prozesse  
+- [ ] Frontend-Filter und Sortierungen für schnellere Navigation bei vielen Stacks  
+- [ ] Echtzeit-Feedback im UI (Notifications)  
+- [ ] Datenkonsistenz sichern: keine doppelten Stack-IDs mehr
 
 </details>
 
-<details open>
-  <summary>🔮 v0.4 – Geplant</summary>
+<details>
+  <summary>🔮 Geplante Features (v0.4+)</summary>
 
-### Backend
-- [ ] Zugriffsschutz für Endpunkte (nur authentifizierte Nutzer)  
-- [ ] Benutzerverwaltung in SQLite (Username + Passwort speichern)  
-- [ ] Passwort-Hashing mit bcrypt oder ähnlichem Verfahren  
-- [ ] Basic Auth Middleware (HTTP-Header-basierte Authentifizierung)  
-- [ ] Session/Token-Verwaltung nach Login  
+- Notifications (z. B. via Webhooks oder Mail)  
+- Authentifizierung & Benutzerverwaltung  
+- Monitoring (Status, CPU/RAM)  
+- Verbesserte UI/UX  
+- Export/Import von Scheduler-Jobs (z. B. JSON)  
+- Health-Checks nach Redeploy (automatisierte Tests, Statusprüfung)   
+- Integration Community Edition
 
-### Frontend
-- [ ] Settings Page: UI-Komponenten für grundlegende Einstellungen  
-- [ ] Login-Formular für Username + Passwort  
-- [ ] UI-Sichtbarkeit abhängig vom Login (nur eingeloggte Nutzer sehen Redeploy- und Stack-Funktionen)  
-- [ ] Fehleranzeige bei falschem Login (UI-Feedback)  
-
-### Features
-- [ ] Benutzer-Authentifizierungssystem mit sicherem Login  
-- [ ] Zugriffsbeschränkung auf kritische Funktionen  
-- [ ] Einstellungsseite für zukünftige Systemkonfigurationen  
-- [ ] Verbesserte Sicherheit & Session-Handling  
-- [ ] Grundlage für Multi-User-Management  
+</details>
 
 </details>
 
