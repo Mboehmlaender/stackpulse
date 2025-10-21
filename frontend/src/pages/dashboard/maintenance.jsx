@@ -218,6 +218,7 @@ export function Maintenance() {
       } catch (err) {
         const message = err.response?.data?.error || err.message || "Fehler beim Prüfen des Portainer-Status";
         setPortainerError(message);
+        showToast({ variant: "error", title: "Statusaktualisierung fehlgeschlagen", description: message });
       } finally {
         if (silent) {
           setPortainerRefreshing(false);
@@ -230,7 +231,7 @@ export function Maintenance() {
 
     portainerRequestRef.current = requestPromise;
     return requestPromise;
-  }, []);
+  }, [showToast]);
 
   const fetchDuplicates = useCallback(async ({ silent = false } = {}) => {
     if (maintenanceActive || updateRunning) {
@@ -261,11 +262,14 @@ export function Maintenance() {
         setDuplicatesUpdatedAt(new Date());
       } catch (err) {
         if (err.response?.status === 423) {
+          const message = "Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert.";
           setDuplicates([]);
-          setDuplicatesError("Wartungsmodus aktiv – Duplikat-Verwaltung ist vorübergehend deaktiviert.");
+          setDuplicatesError(message);
+          showToast({ variant: "warning", title: "Duplikat-Verwaltung gesperrt", description: message });
         } else {
           const message = err.response?.data?.error || err.message || "Fehler beim Laden der Wartungsdaten";
           setDuplicatesError(message);
+          showToast({ variant: "error", title: "Duplikate konnten nicht geladen werden", description: message });
         }
       } finally {
         if (silent) {
@@ -279,7 +283,7 @@ export function Maintenance() {
 
     duplicatesRequestRef.current = requestPromise;
     return requestPromise;
-  }, [maintenanceActive, updateRunning]);
+  }, [maintenanceActive, updateRunning, showToast]);
 
   useEffect(() => {
     fetchPortainerStatus();
