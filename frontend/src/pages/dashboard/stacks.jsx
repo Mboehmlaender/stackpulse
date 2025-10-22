@@ -926,15 +926,55 @@ export function Stacks() {
 
             </div>
           )}
-          <div className="grid gap-6 md:justify-end md:items-center">
+          <div id="collect" className="mt-8 flex flex-col gap-4 md:flex-row md:items-start md:gap-6">
+            {selectedStackIds.length > 0 && (
+              <div className="w-full md:w-3/4">
+                <div className="flex flex-col gap-3 text-sm text-gray-300">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selectedStackIds.map((id) => {
+                      const stack = stacksById.get(id);
+                      const name = stack?.Name || `Stack ${id}`;
+                      const isFiltered = filteredStackIdSet.has(id);
+                      const isVisibleOnPage = visiblePageStackIds.has(id);
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => handleChipRemove(id)}
+                          className="inline-flex items-center gap-2 rounded-full border border-purple-500/60 bg-purple-500/10 px-3 py-1 text-purple-100 transition hover:border-purple-400 hover:bg-purple-500/20"
+                        >
+                          <span>{name}</span>
+                          {!isFiltered && (
+                            <span className="text-xs uppercase tracking-wide text-amber-300">Ausgefiltert</span>
+                          )}
+                          {isFiltered && !isVisibleOnPage && (
+                            <span className="text-xs uppercase tracking-wide text-blue-300">Andere Seite</span>
+                          )}
+                          <span className="text-xs font-semibold text-purple-200">x</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    className="mt-1 text-xs font-medium text-gray-400 underline underline-offset-2 transition hover:text-gray-200"
+                  >
+                    Auswahl aufheben
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="w-full md:w-1/4 md:ml-auto">
+              <Button
+                className="w-full bg-arcticBlue-500 hover:bg-arcticBlue-600"
+                onClick={handleBulkRedeploy}
+                disabled={bulkActionDisabled}
+              >
+                {bulkButtonLabel}
+              </Button>
+            </div>
 
-            <Button
-              className="w-full bg-arcticBlue-500 hover:bg-arcticBlue-600"
-              onClick={handleBulkRedeploy}
-              disabled={bulkActionDisabled}
-            >
-              {bulkButtonLabel}
-            </Button>
           </div>
         </CardBody>
       </Card>
@@ -1019,7 +1059,7 @@ export function Stacks() {
         })}
       </div>
       <PaginationControls disabled={loading || Boolean(error)} />
-    </div>
+    </div >
   );
 }
 
