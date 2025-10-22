@@ -60,7 +60,7 @@ export function Navbar({ brandName, routes, action }) {
         <IconButton
           variant="text"
           size="sm"
-          className="ml-auto text-inherit hover:bg-transparent focus:bg-transparent active:bg-transparent lg:hidden"
+          className="hml-auto text-inherit hover:bg-transparent focus:bg-transparent active:bg-transparent lg:hidden"
           onClick={() => setOpenNav(!openNav)}
         >
           {openNav ? (

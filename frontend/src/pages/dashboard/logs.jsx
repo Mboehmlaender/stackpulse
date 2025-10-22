@@ -18,6 +18,17 @@ import {
   useSelect
 } from "@material-tailwind/react";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
+import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+import { useToast } from "@/components/ToastProvider.jsx";
+
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
 
 const StickyOption = React.forwardRef(({ value, onClick, onKeyDown, ...props }, ref) => {
   const { setOpen } = useSelect();
@@ -136,6 +147,21 @@ export function Logs() {
   const [filtersReady, setFiltersReady] = useState(false);
   const [optionsInitialized, setOptionsInitialized] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
+
+    const { showToast } = useToast();
+    const {
+      maintenance: maintenanceMeta,
+      update: updateState,
+      script: scriptConfig,
+      ssh: sshConfig,
+    } = useMaintenance();
+  
+    const maintenanceActive = Boolean(maintenanceMeta?.active);
+    const maintenanceMessage = maintenanceMeta?.message;
+    const updateRunning = Boolean(updateState?.running);
+    const maintenanceLocked = maintenanceActive || updateRunning;
+    const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  
 
   const {
     page,
@@ -595,6 +621,19 @@ export function Logs() {
   const toggleOpen = () => setOpen((cur) => !cur);
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
+            {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+        <div className="flex flex-col gap-1">
+          <span>
+            Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+          </span>
+          {updateRunning && (
+            <span className="text-xs text-indigo-900">
+              Phase: {updateStageLabel}
+            </span>
+          )}
+        </div>
+      </div>
+      )}
       <Card>
         <CardHeader variant="gradient" color="gray" className="p-4 pt-2 pb-2">
           <Typography variant="h6" color="white">

@@ -12,14 +12,6 @@ import {
   CardBody,
   Button,
   ButtonGroup,
-  IconButton,
-  Menu,
-  MenuHandler,
-  MenuList,
-  MenuItem,
-  Avatar,
-  Tooltip,
-  Progress,
   Spinner,
   Input,
   Select,
@@ -928,29 +920,22 @@ export function Stacks() {
           )}
           <div id="collect" className="mt-8 flex flex-col gap-4 md:flex-row md:items-start md:gap-6">
             {selectedStackIds.length > 0 && (
-              <div className="w-full md:w-3/4">
+              <div className="w-full md:order-first order-last md:w-3/4">
                 <div className="flex flex-col gap-3 text-sm text-gray-300">
                   <div className="flex flex-wrap items-center gap-2">
                     {selectedStackIds.map((id) => {
                       const stack = stacksById.get(id);
                       const name = stack?.Name || `Stack ${id}`;
-                      const isFiltered = filteredStackIdSet.has(id);
-                      const isVisibleOnPage = visiblePageStackIds.has(id);
                       return (
                         <button
                           key={id}
                           type="button"
                           onClick={() => handleChipRemove(id)}
-                          className="inline-flex items-center gap-2 rounded-full border border-purple-500/60 bg-purple-500/10 px-3 py-1 text-purple-100 transition hover:border-purple-400 hover:bg-purple-500/20"
+                          className="inline-flex items-center gap-2 rounded-full bg-lavenderSmoke-600/80 px-2 py-0.5 text-white transition hover:bg-lavenderSmoke-600/90 focus:outline-none focus:ring-2 focus:ring-lavenderSmoke-400 cursor-pointer"
                         >
                           <span>{name}</span>
-                          {!isFiltered && (
-                            <span className="text-xs uppercase tracking-wide text-amber-300">Ausgefiltert</span>
-                          )}
-                          {isFiltered && !isVisibleOnPage && (
-                            <span className="text-xs uppercase tracking-wide text-blue-300">Andere Seite</span>
-                          )}
-                          <span className="text-xs font-semibold text-purple-200">x</span>
+                          
+                          <span className="text-xs font-semibold text-lavenderSmoke-200">x</span>
                         </button>
                       );
                     })}
@@ -958,7 +943,7 @@ export function Stacks() {
                   <button
                     type="button"
                     onClick={clearSelection}
-                    className="mt-1 text-xs font-medium text-gray-400 underline underline-offset-2 transition hover:text-gray-200"
+                    className="md:order-last self-start mt-1 text-xs font-medium text-gray-400 underline underline-offset-2 transition hover:text-gray-200"
                   >
                     Auswahl aufheben
                   </button>
@@ -994,6 +979,8 @@ export function Stacks() {
 
             <Card key={stack.Id}>
               <CardBody
+
+              
                 className={`flex w-full text-stormGrey-500 items-center justify-between gap-4 rounded-xl shadow-lg transition border
                 ${isSelected ? 'border-purple-500 ring-1 ring-purple-500/40' : 'border-transparent'}
                 ${!isSelectable || isBusy ? 'opacity-75 bg-stormGrey-200/20' : ''}`}
