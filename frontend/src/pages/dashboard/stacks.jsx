@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import axios from "axios";
 import { io } from "socket.io-client";
 import { useToast } from "@/components/ToastProvider.jsx";
-import { useMaintenance } from "@/context/MaintenanceContext.jsx";
+import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
+
 import {
   Typography,
   Card,
@@ -26,15 +28,6 @@ import {
 
 const SELECTION_PROMPT_STORAGE_KEY = "stackSelectionPreference";
 
-const PER_PAGE_DEFAULT = "50";
-const PER_PAGE_OPTIONS = [
-  { value: "10", label: "10" },
-  { value: "25", label: "25" },
-  { value: "50", label: "50" },
-  { value: "100", label: "100" },
-  { value: "all", label: "Alle" }
-];
-const VALID_PER_PAGE_VALUES = new Set(PER_PAGE_OPTIONS.map((option) => option.value));
 const STACKS_CACHE_DURATION = 30 * 1000;
 const STACKS_REFRESH_INTERVAL = 30 * 1000;
 let stacksCache = { data: null, timestamp: 0 };
@@ -48,6 +41,15 @@ const REDEPLOY_PHASES = {
   INFO: 'info'
 };
 
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
+
 const isCacheFresh = () => Boolean(stacksCache.data) && (Date.now() - stacksCache.timestamp < STACKS_CACHE_DURATION);
 const updateStacksCache = (data) => {
   stacksCache = { data, timestamp: Date.now() };
@@ -57,7 +59,11 @@ const prepareInitialStacks = (data) => {
   if (!Array.isArray(data)) return [];
   return [...data].sort((a, b) => (a?.Name || '').localeCompare(b?.Name || ''));
 };
+
+
+
 export function Stacks() {
+
   const [stacks, setStacks] = useState(() => prepareInitialStacks(stacksCache.data));
   const [loading, setLoading] = useState(() => !stacksCache.data);
   const [error, setError] = useState("");
@@ -67,19 +73,35 @@ export function Stacks() {
   const [selectionPromptVisible, setSelectionPromptVisible] = useState(false);
   const [rememberSelectionChoice, setRememberSelectionChoice] = useState(false);
   const [selectionPreferenceStored, setSelectionPreferenceStored] = useState(false);
-  const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
-  const [page, setPage] = useState(1);
 
   const { showToast } = useToast();
+  const {
+    maintenance: maintenanceMeta,
+    update: updateState,
+    script: scriptConfig,
+    ssh: sshConfig,
+  } = useMaintenance();
 
-  const { maintenance, update } = useMaintenance();
-  const maintenanceActive = Boolean(maintenance?.active);
-  const maintenanceMessage = maintenance?.message;
-  const maintenanceLocked = maintenanceActive || Boolean(update?.running);
-  const maintenanceBanner = maintenanceLocked ? (maintenanceMessage || (update?.running ? "Portainer-Update läuft" : "Wartungsmodus aktiv")) : "";
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const maintenanceLocked = maintenanceActive || updateRunning;
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+
+  const {
+    page,
+    perPage,
+    perPageOptions,
+    setPage,
+    setTotals,
+    handlePerPageChange,
+    resetPagination
+  } = usePage();
+
+
   const noop = useCallback(() => { }, []);
 
-  const stacksByIdRef = useRef(new Map());
+  useEffect(() => () => resetPagination(), [resetPagination]);
 
   useEffect(() => {
     if (maintenanceLocked) {
@@ -88,6 +110,9 @@ export function Stacks() {
       setSelectedStackIds([]);
     }
   }, [maintenanceLocked]);
+
+  const stacksByIdRef = useRef(new Map());
+
 
   const mergeStackState = useCallback((previousStacks, incomingStacks) => {
     const prevMap = new Map(previousStacks.map((stack) => [stack.Id, stack]));
@@ -242,7 +267,7 @@ export function Stacks() {
   }, []);
 
   const fetchStacks = useCallback(async ({ force = false, silent = false } = {}) => {
-    if (maintenanceActive) {
+    if ((maintenanceActive || updateRunning)) {
       if (!silent) {
         setLoading(false);
       }
@@ -266,6 +291,7 @@ export function Stacks() {
       setLoading(true);
     }
 
+
     try {
       if (force || !stacksCachePromise) {
         stacksCachePromise = axios.get("/api/stacks")
@@ -278,7 +304,10 @@ export function Stacks() {
           });
       }
 
+
       const data = await stacksCachePromise;
+
+
       setStacks(prev => mergeStackState(prev, data));
       setError("");
     } catch (err) {
@@ -291,14 +320,14 @@ export function Stacks() {
         setLoading(false);
       }
     }
-  }, [maintenanceActive, mergeStackState]);
+  }, [maintenanceActive, updateRunning, mergeStackState]);
 
   useEffect(() => {
     fetchStacks();
   }, [fetchStacks]);
 
   useEffect(() => {
-    if (typeof document === 'undefined' || maintenanceActive) return undefined;
+    if (typeof document === 'undefined' || maintenanceActive || updateRunning) return undefined;
 
     const intervalId = setInterval(() => {
       if (!document.hidden) {
@@ -307,10 +336,10 @@ export function Stacks() {
     }, STACKS_REFRESH_INTERVAL);
 
     return () => clearInterval(intervalId);
-  }, [fetchStacks, maintenanceActive]);
+  }, [fetchStacks, maintenanceActive, updateRunning]);
 
   useEffect(() => {
-    if (typeof document === 'undefined' || maintenanceActive) return undefined;
+    if (typeof document === 'undefined' || maintenanceActive || updateRunning) return undefined;
 
     const handleVisibility = () => {
       if (!document.hidden) {
@@ -322,7 +351,7 @@ export function Stacks() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchStacks, maintenanceActive]);
+  }, [fetchStacks, maintenanceActive, updateRunning]);
 
   useEffect(() => {
     setSelectedStackIds(prev => {
@@ -388,6 +417,10 @@ export function Stacks() {
     const start = (page - 1) * perPageNumber;
     return filteredStacks.slice(start, start + perPageNumber);
   }, [filteredStacks, perPage, page]);
+
+  useEffect(() => {
+    setTotals(filteredStacks.length, paginatedStacks.length);
+  }, [filteredStacks.length, paginatedStacks.length, setTotals]);
 
   const visiblePageStackIds = useMemo(() => new Set(paginatedStacks.map((stack) => stack.Id)), [paginatedStacks]);
 
@@ -476,7 +509,7 @@ export function Stacks() {
 
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, normalizedSearch]);
+  }, [statusFilter, normalizedSearch, setPage]);
 
   useEffect(() => {
     if (perPage === 'all') {
@@ -484,21 +517,15 @@ export function Stacks() {
       return;
     }
 
-    const perPageNumber = Number(perPage);
+    const perPageNumber = Number(perPage) || 1;
     const totalPagesCalc = Math.max(1, Math.ceil(filteredStacks.length / perPageNumber));
     if (page > totalPagesCalc) {
       setPage(totalPagesCalc);
     }
-  }, [filteredStacks.length, perPage, page]);
-
-  const totalItems = filteredStacks.length;
-  const perPageNumber = perPage === 'all' ? (totalItems || 1) : Number(perPage);
-  const totalPages = perPage === 'all' ? 1 : Math.max(1, Math.ceil(totalItems / perPageNumber));
-  const pageStart = totalItems === 0 ? 0 : (perPage === 'all' ? 1 : ((page - 1) * perPageNumber + 1));
-  const pageEnd = perPage === 'all' ? totalItems : Math.min(totalItems, page * perPageNumber);
+  }, [filteredStacks.length, perPage, page, setPage]);
 
   const toggleStackSelection = (stackId, disabled) => {
-    if (maintenanceLocked || disabled) return;
+    if (disabled) return;
     setSelectedStackIds(prev =>
       prev.includes(stackId)
         ? prev.filter(id => id !== stackId)
@@ -506,25 +533,6 @@ export function Stacks() {
     );
   };
 
-
-  const handlePerPageChange = (value) => {
-    if (!VALID_PER_PAGE_VALUES.has(value)) return;
-    setPerPage(value);
-    setPage(1);
-  };
-
-  const handlePrevPage = () => {
-    setPage((prev) => Math.max(1, prev - 1));
-  };
-
-  const handleNextPage = () => {
-    if (perPage === 'all') return;
-    setPage((prev) => {
-      const perPageNumberLocal = Number(perPage);
-      const totalPagesCalc = Math.max(1, Math.ceil(filteredStacks.length / perPageNumberLocal));
-      return Math.min(totalPagesCalc, prev + 1);
-    });
-  };
 
   const applySelectionPreference = (action) => {
     const remember = rememberSelectionChoice;
@@ -748,7 +756,7 @@ export function Stacks() {
   const hasOutdatedStacks = eligiblePageStacks.length > 0;
   const bulkButtonLabel = hasSelection
     ? `Redeploy Auswahl (${selectedStackIds.length})`
-    : 'Redeploy All';
+    : 'Redeploy Alle';
 
   const bulkActionDisabled = maintenanceLocked || (hasSelection
     ? selectionPromptVisible || selectedStackIds.length === 0 || selectedStackIds.every(id => {
@@ -780,7 +788,23 @@ export function Stacks() {
 
 
   return (
+
     <div className="mt-12 mb-8 flex flex-col gap-12">
+
+      {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+        <div className="flex flex-col gap-1">
+          <span>
+            Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+          </span>
+          {updateRunning && (
+            <span className="text-xs text-indigo-900">
+              Phase: {updateStageLabel}
+            </span>
+          )}
+        </div>
+      </div>
+      )}
+
       <Card>
         <CardHeader variant="gradient" color="gray" className="p-4 pt-2 pb-2">
           {!loading && !error ? (
@@ -798,70 +822,120 @@ export function Stacks() {
         </CardHeader>
         <CardBody>
           {loading ? (
-            <p className="flex py-6 text-center text-sm font-medium text-gray-400"> <Spinner className="mr-2 h-4 w-4 flex" />Lade Stacks...</p>
+            <p className="flex py-6 text-center text-sm font-medium text-gray-400">
+              <Spinner className="mr-2 h-4 w-4 flex" />Lade Stacks...
+            </p>
           ) : error ? (
             <p className="py-6 text-sm font-medium text-red-400">{error}</p>
           ) : (
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <ButtonGroup
+            <div className="gap-4">
+              <div className="w-full">
+                <ButtonGroup fullWidth>
+                  <Button
+                    onClick={() => setStatusFilter('all')}
+                  >Alle</Button>
+                  <Button
+                    onClick={() => setStatusFilter('current')}
+
+                  >Aktuell</Button>
+                  <Button
+                    onClick={() => setStatusFilter('outdated')}
+
+                  >Veraltet</Button>
+                </ButtonGroup>
+              </div>
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
+                <div className="md:flex-1">
+                  <Input
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    variant="static"
+                    placeholder="Name oder ID"
+                  />
+                </div>
+                <div className="md:mt-0 mt-8 md:flex-1">
+                  <Select
+                    variant="static"
+                    label="Einträge pro Seite"
+                    onChange={noop}
+                    value={perPage}
                   >
-                    <Button
-                      onClick={() => setStatusFilter('all')}
-
-                    >Alle</Button>
-                    <Button
-                      onClick={() => setStatusFilter('current')}
-
-                    >Aktuell</Button>
-                    <Button
-                      onClick={() => setStatusFilter('outdated')}
-
-                    >Veraltet</Button>
-                  </ButtonGroup>
+                    {perPageOptions.map(({ value, label }) => (
+                      <Option
+                        key={value}
+                        value={value}
+                        onClick={() => handlePerPageChange(value)}
+                      >
+                        {label}
+                      </Option>
+                    ))}
+                  </Select>
                 </div>
-                <Input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  variant="static"
-                  placeholder="Name oder ID" />
-                              <div className="flex items-center gap-3">
-
-                <Select
-                  variant="static"
-                  label="Einträge pro Seite"
-                  onChange={noop}
-                  value={perPage}
-                >
-                  {PER_PAGE_OPTIONS.map(({ value, label }) => (
-                    <Option
-                      key={value}
-                      value={value}
-                      onClick={() => handlePerPageChange(value)}
-                    >
-                      {label}
-                    </Option>
-                  ))}
-                </Select>
-                </div>
-
-              <div className="flex flex-col items-end gap-2">
+              </div>
+              <div className="flex items-center justify-end gap-3 mt-5">
                 {selectionPreferenceStored && (
                   <button
-                    type="button"
                     onClick={clearStoredSelectionPreference}
-                    className="text-xs font-medium text-amber-300 underline underline-offset-2 transition hover:text-amber-100"
+                    className="block antialiased font-sans text-sm leading-normal text-inherit text-xs font-medium text-warmAmberGlow-500 underline underline-offset-2 transition hover:text-warmAmberGlow-600"
+
                   >
                     Gespeicherte Entscheidung löschen
                   </button>
                 )}
-
-
               </div>
             </div>
           )}
 
+          {selectionPromptVisible && (
+            <div className="flex flex-col mt-5">
 
+              <div className="flex flex-col gap-3 rounded-lg border border-arcticBlue-800 bg-arcticBlue-900/90 px-4 py-3 text-arcticBlue-100 md:flex-row md:items-center md:justify-between">
+                <div className="space-y-2 block antialiased font-sans text-sm font-light leading-normal text-inherit">
+                  <p>
+                    {selectedStackIds.length === 1
+                      ? '1 Stack ist weiterhin ausgewählt.'
+                      : `${selectedStackIds.length} Stacks sind weiterhin ausgewählt.`}
+                    {' '}Soll die Auswahl entfernt werden?
+                  </p>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={rememberSelectionChoice}
+                      onChange={(event) => setRememberSelectionChoice(event.target.checked)}
+                      className="h-4 w-4 rounded border border-arcticBlue-400 bg-arcticBlue-900 text-arcticBlue-400 focus:ring-arcticBlue-300"
+                    />
+                    <span className="text-xs">Einstellung merken (bis Browser geschlossen wird)</span>
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => applySelectionPreference('keep')}
+                    className="rounded-md border border-arcticBlue-600 bg-arcticBlue-700 px-4 py-2 font-sans font-bold text-center uppercase transition-all hover:bg-arcticBlue-800"
+                  >
+                    Auswahl behalten
+                  </Button>
+                  <Button
+                    onClick={() => applySelectionPreference('clear')}
+                    className="rounded-md border border-sunsetCoral-500 bg-sunsetCoral-600 px-4 py-2 font-sans font-bold text-center uppercase transition-all hover:bg-sunsetCoral-600"
+                  >
+                    Auswahl entfernen
+                  </Button>
+
+                </div>
+              </div>
+
+            </div>
+          )}
+          <div className="grid gap-6 md:justify-end md:items-center">
+
+            <Button
+              className="w-full bg-arcticBlue-500 hover:bg-arcticBlue-600"
+              onClick={handleBulkRedeploy}
+              disabled={bulkActionDisabled}
+            >
+              {bulkButtonLabel}
+            </Button>
+          </div>
         </CardBody>
       </Card>
 
@@ -875,8 +949,9 @@ export function Stacks() {
           const isSelected = selectedStackIds.includes(stack.Id);
           const isCurrent = stack.updateStatus === '✅';
           const isSelfStack = Boolean(stack.redeployDisabled);
-          const isSelectable = !isBusy && !isCurrent && !isSelfStack && !maintenanceLocked;
+          const isSelectable = !isBusy && !isCurrent && !isSelfStack;
           return (
+
             <Card key={stack.Id}>
               <CardBody
                 className={`flex w-full text-stormGrey-500 items-center justify-between gap-4 rounded-xl shadow-lg transition border
@@ -929,7 +1004,7 @@ export function Stacks() {
                   ) : (
                     <Button
                       onClick={() => handleRedeploy(stack.Id)}
-                      disabled={isBusy || maintenanceLocked}
+                      disabled={isBusy}
                       className="disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Redeploy
@@ -939,9 +1014,11 @@ export function Stacks() {
 
               </CardBody>
             </Card>
+
           );
         })}
       </div>
+      <PaginationControls disabled={loading || Boolean(error)} />
     </div>
   );
 }

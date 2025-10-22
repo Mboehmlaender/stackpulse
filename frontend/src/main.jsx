@@ -14,23 +14,26 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import { ThemeProvider } from "@material-tailwind/react";
-import { MaterialTailwindControllerProvider } from "@/context";
+import { MaterialTailwindControllerProvider } from "@/components";
 import "./tailwind.css";
 import ToastProvider from "@/components/ToastProvider.jsx";
-import MaintenanceProvider from "@/context/MaintenanceContext.jsx";
+import MaintenanceProvider from "@/components/MaintenanceProvider.jsx";
+import PageProvider from "@/components/PageProvider.jsx";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
       <MaintenanceProvider>
         <ToastProvider>
-        <ThemeProvider>
-          <MaterialTailwindControllerProvider>
-            <App />
-          </MaterialTailwindControllerProvider>
-        </ThemeProvider>
-      </ToastProvider>
-    </MaintenanceProvider>
-  </BrowserRouter>
-  </React.StrictMode >
+          <PageProvider>
+            <ThemeProvider>
+              <MaterialTailwindControllerProvider>
+                <App />
+              </MaterialTailwindControllerProvider>
+            </ThemeProvider>
+          </PageProvider>
+        </ToastProvider>
+      </MaintenanceProvider>
+    </BrowserRouter>
+  </React.StrictMode>
 );

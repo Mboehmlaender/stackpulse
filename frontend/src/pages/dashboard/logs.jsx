@@ -17,6 +17,7 @@ import {
   Input,
   useSelect
 } from "@material-tailwind/react";
+import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 
 const StickyOption = React.forwardRef(({ value, onClick, onKeyDown, ...props }, ref) => {
   const { setOpen } = useSelect();
@@ -91,16 +92,6 @@ const normalizeDateParam = (value) => {
 const FILTER_STORAGE_KEY = "redeployLogFilters";
 const ALL_OPTION_VALUE = "__all__";
 const ALL_OPTION_LABEL = "- Alle -";
-const PER_PAGE_DEFAULT = "50";
-const PER_PAGE_OPTIONS = [
-  { value: "10", label: "10" },
-  { value: "25", label: "25" },
-  { value: "50", label: "50" },
-  { value: "100", label: "100" },
-  { value: "all", label: "Alle" }
-];
-const VALID_PER_PAGE_VALUES = new Set(PER_PAGE_OPTIONS.map((option) => option.value));
-
 const REDEPLOY_TYPE_LABELS = {
   Einzeln: "Einzeln",
   Alle: "Alle",
@@ -124,7 +115,6 @@ const hasActiveFilters = (filters) => Boolean(
 export function Logs() {
 
   const [logs, setLogs] = useState([]);
-  const [totalLogs, setTotalLogs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
@@ -147,10 +137,21 @@ export function Logs() {
   const [optionsInitialized, setOptionsInitialized] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
-  const [perPage, setPerPage] = useState(PER_PAGE_DEFAULT);
-  const [page, setPage] = useState(1);
+  const {
+    page,
+    perPage,
+    perPageOptions,
+    setPage,
+    setPerPage: setPerPageValue,
+    setTotals,
+    handlePerPageChange,
+    validPerPageValues,
+    resetPagination
+  } = usePage();
 
   const noop = useCallback(() => { }, []);
+
+  useEffect(() => () => resetPagination(), [resetPagination]);
 
   const updateFilterOptions = useCallback((payload) => {
     const logsPayload = Array.isArray(payload) ? payload : payload?.items ?? [];
@@ -258,8 +259,8 @@ export function Logs() {
         const rawPerPage = storedPagination.perPage;
         if (rawPerPage !== undefined) {
           const parsedPerPage = String(rawPerPage);
-          if (VALID_PER_PAGE_VALUES.has(parsedPerPage)) {
-            setPerPage(parsedPerPage);
+          if (validPerPageValues.has(parsedPerPage)) {
+            setPerPageValue(parsedPerPage, { resetPage: false });
           }
         }
 
@@ -273,7 +274,7 @@ export function Logs() {
     } finally {
       setFiltersReady(true);
     }
-  }, []);
+  }, [setPage, setPerPageValue, validPerPageValues]);
 
   const buildFilterParams = useCallback(() => {
     const params = {};
@@ -364,7 +365,7 @@ export function Logs() {
         const total = Array.isArray(data) ? items.length : data.total ?? items.length;
 
         setLogs(items);
-        setTotalLogs(total);
+        setTotals(total, items.length);
 
         if (perPage === 'all') {
           if (page !== 1) setPage(1);
@@ -389,7 +390,7 @@ export function Logs() {
     return () => {
       cancelled = true;
     };
-  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal, perPage, page]);
+  }, [filtersReady, buildFilterParams, updateFilterOptions, refreshSignal, perPage, page, setTotals]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -473,21 +474,6 @@ export function Logs() {
     setFiltersOpen((prev) => !prev);
   };
 
-  const handlePerPageChange = (event) => {
-    const value = event.target.value;
-    if (!VALID_PER_PAGE_VALUES.has(value)) return;
-    setPerPage(value);
-    setPage(1);
-  };
-
-  const handlePageChange = (nextPage) => {
-    if (perPage === 'all') return;
-    if (nextPage < 1) return;
-    const totalPages = Math.max(1, Math.ceil((totalLogs || 0) / Number(perPage)));
-    if (nextPage > totalPages) return;
-    setPage(nextPage);
-  };
-
   const stackSelectOptions = useMemo(() => {
     const entries = stackOptions.filter((option) => option.value !== ALL_OPTION_VALUE);
     return [
@@ -537,24 +523,6 @@ export function Logs() {
     if (toDate) count += 1;
     return count;
   }, [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
-
-  const totalPages = useMemo(() => {
-    if (perPage === 'all') return 1;
-    const numeric = Number(perPage) || Number(PER_PAGE_DEFAULT);
-    return Math.max(1, Math.ceil((totalLogs || 0) / numeric));
-  }, [perPage, totalLogs]);
-
-  const rangeStart = useMemo(() => {
-    if (totalLogs === 0) return 0;
-    if (perPage === 'all') return 1;
-    return (page - 1) * Number(perPage) + 1;
-  }, [totalLogs, perPage, page]);
-
-  const rangeEnd = useMemo(() => {
-    if (totalLogs === 0) return 0;
-    if (perPage === 'all') return totalLogs;
-    return Math.min(totalLogs, (page - 1) * Number(perPage) + logs.length);
-  }, [totalLogs, perPage, page, logs.length]);
 
   const handleDeleteLog = async (id) => {
     if (!window.confirm("Diesen Log-Eintrag dauerhaft löschen?")) return;
@@ -866,8 +834,8 @@ export function Logs() {
                   </div>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2 mt-5">
-                <div className="grid gap-4 flex-1">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
+                <div className="md:flex-1">
                   <Input
                     value={messageQuery}
                     onChange={(event) => {
@@ -877,6 +845,24 @@ export function Logs() {
                     variant="static"
                     label="Nachricht (Freitext)"
                     placeholder="Suche" />
+                </div>
+                <div className="md:mt-0 mt-8 md:flex-1">
+                  <Select
+                    variant="static"
+                    label="Einträge pro Seite"
+                    onChange={noop}
+                    value={perPage}
+                  >
+                    {perPageOptions.map(({ value, label }) => (
+                      <Option
+                        key={value}
+                        value={value}
+                        onClick={() => handlePerPageChange(value)}
+                      >
+                        {label}
+                      </Option>
+                    ))}
+                  </Select>
                 </div>
               </div>
               <div className="flex flex-col md:flex-row flex-wrap gap-4 mt-8">
@@ -931,23 +917,6 @@ export function Logs() {
             className="flex items-center justify-between"
           >
             <span>Logs</span>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs uppercase tracking-wide text-gray-400">
-                Einträge pro Seite:
-              </span>
-              <select
-                value={perPage}
-                onChange={handlePerPageChange}
-                className="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-lavenderSmoke-500 focus:outline-none focus:ring-1 focus:ring-lavenderSmoke-500"
-              >
-                {PER_PAGE_OPTIONS.map(({ value, label }) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
           </Typography>
         </CardHeader>
         <CardBody className="overflow-x-scroll px-0 pt-0 pb-2">
@@ -1048,40 +1017,7 @@ export function Logs() {
           </table>
         </CardBody>
       </Card>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span>
-          {totalLogs === 0
-            ? "Keine Einträge"
-            : perPage === 'all'
-              ? `Zeige alle ${totalLogs} Einträge`
-              : `Zeige ${rangeStart.toLocaleString()} – ${rangeEnd.toLocaleString()} von ${totalLogs.toLocaleString()} Einträgen`}
-        </span>
-        {perPage !== 'all' && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => handlePageChange(page - 1)}
-              disabled={page <= 1 || actionLoading}
-              className="rounded-md border border-slate-300 p-2.5 text-center text-sm transition-all shadow-sm hover:shadow-lg text-slate-600 hover:text-white hover:bg-slate-800 hover:border-slate-800 focus:text-white focus:bg-slate-800 focus:border-slate-800 active:border-slate-800 active:text-white active:bg-slate-800 disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none">
-
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-4 h-4">
-                <path d="M11.03 3.97a.75.75 0 0 1 0 1.06l-6.22 6.22H21a.75.75 0 0 1 0 1.5H4.81l6.22 6.22a.75.75 0 1 1-1.06 1.06l-7.5-7.5a.75.75 0 0 1 0-1.06l7.5-7.5a.75.75 0 0 1 1.06 0Z" />
-              </svg>
-            </button>
-
-            <p className="text-slate-600">
-              Seite <strong className="text-slate-800">{page}</strong> /&nbsp;<strong className="text-slate-800">{totalPages}</strong>
-            </p>
-            <button
-              onClick={() => handlePageChange(page + 1)}
-              disabled={page >= totalPages || actionLoading}
-              className="rounded-md border border-slate-300 p-2.5 text-center text-sm transition-all shadow-sm hover:shadow-lg text-slate-600 hover:text-white hover:bg-slate-800 hover:border-slate-800 focus:text-white focus:bg-slate-800 focus:border-slate-800 active:border-slate-800 active:text-white active:bg-slate-800 disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none" type="button">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-4 h-4">
-                <path d="M12.97 3.97a.75.75 0 0 1 1.06 0l7.5 7.5a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 1 1-1.06-1.06l6.22-6.22H3a.75.75 0 0 1 0-1.5h16.19l-6.22-6.22a.75.75 0 0 1 0-1.06Z" />
-              </svg>
-            </button>
-          </div>
-        )}
-      </div>
+      <PaginationControls disabled={actionLoading} />
     </div>
 
 

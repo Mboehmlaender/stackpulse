@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { useToast } from "@/components/ToastProvider.jsx";
-import { useMaintenance } from "@/context/MaintenanceContext.jsx";
+import { useMaintenance } from "@/components/MaintenanceProvider";
 
 import {
   Typography,
