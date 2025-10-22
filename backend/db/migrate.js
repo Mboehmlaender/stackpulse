@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS redeploy_logs (
 );
 `;
 
+
+
 db.exec(createRedeployLogsTable);
 
 try {
@@ -27,5 +29,18 @@ try {
 }
 
 console.log('✅ redeploy_logs table ready');
+
+const createSettingsTable = `
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`;
+
+db.exec(createSettingsTable);
+
+console.log('✅ settings table ready');
+
 
 db.close();
