@@ -4,20 +4,20 @@ const ToastContext = createContext(null);
 
 const VARIANT_STYLES = {
   success: {
-    container: "border-mossGreen-500/80 bg-mossGreen-900/90 text-white",
-    accent: "bg-mossGreen-400"
+    container: "border-green-500/80 bg-green-950/90 text-green-100",
+    accent: "bg-green-400"
   },
   warning: {
-    container: "border-warmAmberGlow-500/80 bg-warmAmberGlow-900/90 text-white",
-    accent: "bg-warmAmberGlow-400"
+    container: "border-yellow-500/80 bg-yellow-950/90 text-yellow-100",
+    accent: "bg-yellow-400"
   },
   error: {
-    container: "border-sunsetCoral-500/80 bg-sunsetCoral-900/90 text-white",
-    accent: "bg-sunsetCoral-400"
+    container: "border-red-500/80 bg-red-950/90 text-red-100",
+    accent: "bg-red-400"
   },
   info: {
-    container: "border-arcticBlue-500 bg-arcticBlue-900/90 text-white",
-    accent: "bg-arcticBlue-400"
+    container: "border-sky-500/60 bg-sky-950/90 text-sky-100",
+    accent: "bg-sky-400"
   }
 };
 

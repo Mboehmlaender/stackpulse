@@ -532,7 +532,7 @@ export default function Maintenance() {
           {maintenanceError}
         </div>
       )}
-
+      {/* Beginn Portainer Update */}
       <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -918,6 +918,7 @@ export default function Maintenance() {
           </div>
         </div>
       </div>
+      {/* Ende Portainer Update */}
       <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-6 shadow-lg">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>

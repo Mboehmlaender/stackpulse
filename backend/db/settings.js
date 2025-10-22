@@ -1,15 +1,5 @@
 import { db } from './index.js';
 
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )
-`;
-
-db.prepare(CREATE_TABLE_SQL).run();
-
 const getSettingStmt = db.prepare('SELECT key, value, updated_at FROM settings WHERE key = ?');
 const setSettingStmt = db.prepare(`
   INSERT INTO settings (key, value, updated_at)

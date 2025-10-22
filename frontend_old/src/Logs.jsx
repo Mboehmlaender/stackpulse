@@ -807,12 +807,12 @@ export default function Logs() {
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-3">
-              <button
+              <Button
                 onClick={handleResetFilters}
                 className="rounded-md border border-gray-600 px-4 py-2 text-gray-200 transition hover:bg-gray-700"
               >
                 Zurücksetzen
-              </button>
+              </Button>
             </div>
           </div>
         )}
