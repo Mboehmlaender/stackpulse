@@ -22,7 +22,7 @@ export const routes = [
       },
       {
         icon: <WrenchScrewdriverIcon {...icon} />,
-        name: "maintenance",
+        name: "wartung",
         path: "/maintenance",
         element: <Maintenance />,
       },
