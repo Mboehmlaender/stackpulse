@@ -3,7 +3,7 @@
 # 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
 
 **StackPulse** ist eine kleine Web-App, die über die Portainer-API deine Docker-Stacks verwaltet und aktualisiert.  
-Aktuell funktionier StackPulse nur mit der Business-Edition von Portainer. Die Communitiy-Edition wird in einem späteren Release implementiert!
+Aktuell funktioniert StackPulse nur mit der Business-Edition von Portainer. Die Communitiy-Edition wird in einem späteren Release implementiert!
 Sie besteht aus einem **Backend (Node.js/Express)** und einem **Frontend (React/Tailwind)**.  
 
 Ziel:  
@@ -27,7 +27,7 @@ Ziel:
 
 </details>
 
-<details open>
+<details>
   <summary>✅ v0.2 – Release</summary>
 
 ### Backend
@@ -47,37 +47,51 @@ Ziel:
 
 </details>
 
-<details open>
-  <summary>🟡 v0.3 – In Entwicklung</summary>
+<details>
+  <summary>✅ v0.3 – Release</summary>
 
 ### Backend
-- [ ] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen
-- [ ] Erweiterung der Logs  
+- [x] Automatische Datenbereinigung: Duplikate bei Stack-IDs erkennen & entfernen
+- [x] Erweiterung der Logs  
 - [x] API für Filter & Suche (Stacks nach Name/Status abrufen)  
-- [ ] API für Sortierung der Stacks  
 
 ### Frontend
 - [x] Filter: Stacks nach Name oder Status durchsuchen 
-- [ ] Sortierung: Stacks im Frontend sortieren
-- [ ] Benachrichtigungen im UI: erfolgreicher/fehlgeschlagener Redeploy (Toast + Notification-Center)  
-- [ ] Visualisierung der Datenbereinigung (Konflikt/Auto-Fix Meldungen)  
+- [x] Benachrichtigungen im UI: erfolgreicher/fehlgeschlagener Redeploy (Toast)  
+- [x] Visualisierung der Datenbereinigung (Konflikt/Auto-Fix Meldungen)  
 
 ### Features
-- [ ] Frontend-Filter und Sortierungen für schnellere Navigation bei vielen Stacks  
-- [ ] Echtzeit-Feedback im UI (Notifications)  
-- [ ] Datenkonsistenz sichern: keine doppelten Stack-IDs mehr
+- [x] Frontend-Filter für schnellere Navigation bei vielen Stacks  
+- [x] Echtzeit-Feedback im UI (Notifications)  
+- [x] Datenkonsistenz sichern: keine doppelten Stack-IDs mehr
+
+</details>
+
+<details open>
+<summary>✅ v0.4 – Release</summary>
+
+### Backend
+- keine Änderungen
+
+### Frontend
+- [x] GUI komplett überarbeitet 
+- [x] Umstellung auf Material Tailwind
+- [x] Dashboard von Creative Tim als neues Frontend
+
+### Features
+- [x] Neue, übersichtliche Oberfläche im Material Design
+- [x] leicht erweiterbar durch vorgefertigte Komponenten 
+- [x] kleine Bugfixes
 
 </details>
 
 <details>
-  <summary>🔮 Geplante Features (v0.4+)</summary>
+  <summary>🔮 Geplante Features (v0.5+)</summary>
 
 - Notifications (z. B. via Webhooks oder Mail)  
 - Authentifizierung & Benutzerverwaltung  
 - Monitoring (Status, CPU/RAM)  
-- Verbesserte UI/UX  
 - Export/Import von Scheduler-Jobs (z. B. JSON)  
-- Health-Checks nach Redeploy (automatisierte Tests, Statusprüfung)   
 - Integration Community Edition
 
 </details>
