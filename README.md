@@ -85,7 +85,7 @@ Ziel:
 
 </details>
 
-<details>
+<details open>
   <summary>🔮 Geplante Features (v0.5+)</summary>
 
 - Notifications (z. B. via Webhooks oder Mail)  
