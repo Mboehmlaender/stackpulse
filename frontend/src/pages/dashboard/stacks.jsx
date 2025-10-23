@@ -150,8 +150,16 @@ export function Stacks() {
     console.log("🔌 Socket connected");
 
     socket.on("redeployStatus", async (payload = {}) => {
-      const { stackId } = payload;
-      if (!stackId) return;
+      const { stackId: rawStackId } = payload;
+      if (!rawStackId) return;
+
+      let stackId = rawStackId;
+      if (typeof rawStackId === 'string') {
+        const numericId = Number(rawStackId);
+        if (!Number.isNaN(numericId)) {
+          stackId = numericId;
+        }
+      }
 
       const resolvedPhaseRaw = payload.redeployPhase ?? payload.phase;
       let resolvedPhase = resolvedPhaseRaw;
@@ -173,7 +181,9 @@ export function Stacks() {
         resolvedPhase = REDEPLOY_PHASES.INFO;
       }
 
-      const stackSnapshot = stacksByIdRef.current.get(stackId);
+      const stackSnapshot =
+        stacksByIdRef.current.get(stackId) ??
+        stacksByIdRef.current.get(String(stackId));
       const stackName = payload.stackName ?? stackSnapshot?.Name;
       const stackLabel = stackName ? `${stackName} (ID: ${stackId})` : `Stack ${stackId}`;
 
@@ -202,7 +212,7 @@ export function Stacks() {
 
       setStacks(prev =>
         prev.map(stack => {
-          if (stack.Id !== stackId) return stack;
+          if (String(stack.Id) !== String(stackId)) return stack;
 
           const nextPhase = resolvedPhase ?? stack.redeployPhase ?? null;
           const isQueued = nextPhase === REDEPLOY_PHASES.QUEUED;
@@ -361,7 +371,12 @@ export function Stacks() {
   }, [stacks]);
 
   useEffect(() => {
-    stacksByIdRef.current = new Map(stacks.map((stack) => [stack.Id, stack]));
+    const nextMap = new Map();
+    stacks.forEach((stack) => {
+      nextMap.set(stack.Id, stack);
+      nextMap.set(String(stack.Id), stack);
+    });
+    stacksByIdRef.current = nextMap;
   }, [stacks]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -413,19 +428,6 @@ export function Stacks() {
   useEffect(() => {
     setTotals(filteredStacks.length, paginatedStacks.length);
   }, [filteredStacks.length, paginatedStacks.length, setTotals]);
-
-  const visiblePageStackIds = useMemo(() => new Set(paginatedStacks.map((stack) => stack.Id)), [paginatedStacks]);
-
-  const eligiblePageStacks = useMemo(
-    () => paginatedStacks.filter((stack) => {
-      if (stack.updateStatus === '✅') return false;
-      if (stack.redeployDisabled) return false;
-      const phase = stack.redeployPhase;
-      if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return false;
-      return true;
-    }),
-    [paginatedStacks]
-  );
 
   const selectionPreferenceRef = useRef({ action: 'keep', remember: false });
   const previousFiltersRef = useRef({ status: statusFilter, search: normalizedSearch });
@@ -634,44 +636,45 @@ export function Stacks() {
   };
 
   const handleRedeployAll = async () => {
-    if (!eligiblePageStacks.length) return;
+    if (!eligibleFilteredStacks.length) return;
 
-    const targetIds = new Set(eligiblePageStacks.map((stack) => stack.Id));
+    const targetIdList = eligibleFilteredStacks.map((stack) => stack.Id);
+    const targetIdSet = new Set(targetIdList.map((id) => String(id)));
 
     setStacks(prev =>
-      prev.map(stack =>
-        targetIds.has(stack.Id)
-          ? {
-            ...stack,
-            redeployPhase: REDEPLOY_PHASES.QUEUED,
-            redeploying: true,
-            redeployQueued: true
-          }
-          : stack
-      )
+      prev.map(stack => {
+        const key = String(stack.Id);
+        if (!targetIdSet.has(key)) return stack;
+        return {
+          ...stack,
+          redeployPhase: REDEPLOY_PHASES.QUEUED,
+          redeploying: true,
+          redeployQueued: true
+        };
+      })
     );
 
     try {
-      if (targetIds.size === eligibleFilteredStacks.length) {
+      if (!hasActiveFilters) {
         await axios.put("/api/stacks/redeploy-all");
       } else {
-        await axios.put("/api/stacks/redeploy-selection", { stackIds: Array.from(targetIds) });
+        await axios.put("/api/stacks/redeploy-selection", { stackIds: targetIdList });
       }
-      setSelectedStackIds((prev) => prev.filter((id) => !targetIds.has(id)));
+      setSelectedStackIds((prev) => prev.filter((id) => !targetIdSet.has(String(id))));
       // Statusupdates kommen über Socket.IO
     } catch (err) {
       console.error("❌ Fehler beim Redeploy ALL:", err);
       setStacks(prev =>
-        prev.map(stack =>
-          targetIds.has(stack.Id)
-            ? {
-              ...stack,
-              redeployPhase: null,
-              redeploying: false,
-              redeployQueued: false
-            }
-            : stack
-        )
+        prev.map(stack => {
+          const key = String(stack.Id);
+          if (!targetIdSet.has(key)) return stack;
+          return {
+            ...stack,
+            redeployPhase: null,
+            redeploying: false,
+            redeployQueued: false
+          };
+        })
       );
 
       const errorText = err.response?.data?.error || err.message || 'Unbekannter Fehler';
@@ -745,7 +748,7 @@ export function Stacks() {
   };
 
   const hasSelection = selectedStackIds.length > 0;
-  const hasOutdatedStacks = eligiblePageStacks.length > 0;
+  const hasOutdatedStacks = eligibleFilteredStacks.length > 0;
   const bulkButtonLabel = hasSelection
     ? `Redeploy Auswahl (${selectedStackIds.length})`
     : 'Redeploy Alle';
