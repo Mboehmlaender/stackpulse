@@ -13,6 +13,10 @@ services:
       PORTAINER_API_KEY: "Your_Portainer_API_Key"
       PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
       SELF_STACK_ID: "Stackpulse ID"
+      SUPERUSER_USERNAME: "Your_Superuser_Username" (optional)
+      SUPERUSER_EMAIL: "Your_Superuser_Email" (optional)
+      SUPERUSER_PASSWORD: "Your_Superuser_Password" (optional)
+      SELF_STACK_ID: "Your_StackPulse_Stack_ID"
     restart: unless-stopped
 
 volumes:

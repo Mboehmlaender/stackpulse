@@ -11,6 +11,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
+import { ensureSuperuserFromEnv, getSuperuserSummary, hasSuperuser, registerSuperuser, removeSuperuser } from './auth/superuser.js';
 import {
   logRedeployEvent,
   buildLogFilter,
@@ -22,6 +23,8 @@ import { getSetting, setSetting, deleteSetting } from './db/settings.js';
 import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
 
 dotenv.config();
+
+ensureSuperuserFromEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1114,6 +1117,61 @@ const redeployStackById = async (stackId, redeployType) => {
 };
 
 // --- API Endpoints ---
+
+// Superuser Setup
+app.get('/api/auth/superuser/status', (req, res) => {
+  const exists = hasSuperuser();
+  const user = exists ? getSuperuserSummary() : null;
+  res.json({ exists, user });
+});
+
+app.post('/api/auth/superuser/register', (req, res) => {
+  if (hasSuperuser()) {
+    return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+  }
+
+  const { username, email, password } = req.body || {};
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'MISSING_FIELDS' });
+  }
+
+  try {
+    const user = registerSuperuser({ username, email, password });
+    res.status(201).json({ user });
+  } catch (error) {
+    switch (error.code) {
+      case 'USERNAME_REQUIRED':
+        return res.status(400).json({ error: 'USERNAME_REQUIRED' });
+      case 'EMAIL_INVALID':
+        return res.status(400).json({ error: 'EMAIL_INVALID' });
+      case 'PASSWORD_TOO_SHORT':
+        return res.status(400).json({ error: 'PASSWORD_TOO_SHORT' });
+      case 'SUPERUSER_ALREADY_EXISTS':
+        return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+      default:
+        console.error('⚠️ Fehler beim Registrieren des Superusers:', error);
+        return res.status(500).json({ error: 'INTERNAL_ERROR' });
+    }
+  }
+});
+
+app.delete('/api/auth/superuser', (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(404).json({ error: 'SUPERUSER_NOT_FOUND' });
+  }
+
+  try {
+    const result = removeSuperuser();
+    res.json({ success: true, usersRemoved: result.usersRemoved, groupRemoved: result.groupRemoved });
+  } catch (error) {
+    if (error.code === 'SUPERUSER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SUPERUSER_NOT_FOUND' });
+    }
+    console.error('⚠️ Fehler beim Löschen des Superusers:', error);
+    res.status(500).json({ error: 'INTERNAL_ERROR' });
+  }
+});
 
 // Stacks abrufen
 app.get('/api/stacks', maintenanceGuard, async (req, res) => {

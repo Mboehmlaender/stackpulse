@@ -131,6 +131,16 @@ export default function MaintenanceProvider({ children }) {
     return response.data;
   }, []);
 
+  const fetchSuperuserStatus = useCallback(async () => {
+    const response = await axios.get("/api/auth/superuser/status");
+    return response.data ?? { exists: false, user: null };
+  }, []);
+
+  const removeSuperuserAccount = useCallback(async () => {
+    const response = await axios.delete("/api/auth/superuser");
+    return response.data ?? { success: false };
+  }, []);
+
   const value = useMemo(() => ({
     maintenance: state.maintenance,
     update: state.update,
@@ -147,8 +157,10 @@ export default function MaintenanceProvider({ children }) {
     resetScript,
     saveSshConfig,
     deleteSshConfig,
-    testSshConnection
-  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection]);
+    testSshConnection,
+    fetchSuperuserStatus,
+    removeSuperuserAccount
+  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection, fetchSuperuserStatus, removeSuperuserAccount]);
 
   return (
     <MaintenanceContext.Provider value={value}>

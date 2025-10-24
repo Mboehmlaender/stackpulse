@@ -123,7 +123,9 @@ export function Maintenance() {
     resetScript,
     saveSshConfig,
     deleteSshConfig,
-    testSshConnection
+    testSshConnection,
+    fetchSuperuserStatus,
+    removeSuperuserAccount
   } = useMaintenance();
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
@@ -182,6 +184,12 @@ export function Maintenance() {
   const scriptIsDirty = scriptConfig ? scriptDraft !== scriptBaseline : false;
   const scriptSourceLabel = scriptConfig?.source === "custom" ? "Benutzerdefiniert" : "Standard";
 
+  const [superuserStatusLoading, setSuperuserStatusLoading] = useState(true);
+  const [superuserExists, setSuperuserExists] = useState(false);
+  const [superuserSummary, setSuperuserSummary] = useState(null);
+  const [superuserStatusError, setSuperuserStatusError] = useState("");
+  const [superuserDeleteLoading, setSuperuserDeleteLoading] = useState(false);
+
   const [duplicates, setDuplicates] = useState([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(true);
   const [duplicatesError, setDuplicatesError] = useState("");
@@ -196,6 +204,27 @@ export function Maintenance() {
   const [portainerRefreshing, setPortainerRefreshing] = useState(false);
   const [portainerUpdatedAt, setPortainerUpdatedAt] = useState(null);
   const portainerRequestRef = useRef(null);
+
+  const loadSuperuserStatus = useCallback(async ({ silent = false } = {}) => {
+    setSuperuserStatusLoading(true);
+    setSuperuserStatusError("");
+    try {
+      const data = await fetchSuperuserStatus();
+      const exists = Boolean(data?.exists);
+      setSuperuserExists(exists);
+      setSuperuserSummary(exists ? data.user ?? null : null);
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Superuser-Status konnte nicht geladen werden";
+      setSuperuserExists(false);
+      setSuperuserSummary(null);
+      setSuperuserStatusError(message);
+      if (!silent) {
+        showToast({ variant: "error", title: "Statusabfrage fehlgeschlagen", description: message });
+      }
+    } finally {
+      setSuperuserStatusLoading(false);
+    }
+  }, [fetchSuperuserStatus, showToast]);
 
   const fetchPortainerStatus = useCallback(async ({ silent = false } = {}) => {
     if (portainerRequestRef.current) {
@@ -284,6 +313,10 @@ export function Maintenance() {
     duplicatesRequestRef.current = requestPromise;
     return requestPromise;
   }, [maintenanceActive, updateRunning, showToast]);
+
+  useEffect(() => {
+    loadSuperuserStatus({ silent: true });
+  }, [loadSuperuserStatus]);
 
   useEffect(() => {
     fetchPortainerStatus();
@@ -423,6 +456,49 @@ export function Maintenance() {
     }
   }, [deleteSshConfig, showToast]);
 
+  const handleSuperuserDelete = useCallback(async () => {
+    if (superuserDeleteLoading || superuserStatusLoading || !superuserExists) {
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        "Superuser und zugehörige Gruppe wirklich löschen?\nDies setzt die Superuser-Einrichtung zurück."
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    try {
+      setSuperuserDeleteLoading(true);
+      const response = await removeSuperuserAccount();
+      const removedUsers = Number(response?.usersRemoved ?? 0);
+      showToast({
+        variant: "success",
+        title: "Superuser gelöscht",
+        description: removedUsers > 1
+          ? `${removedUsers} Konten aus der Superuser-Gruppe wurden entfernt.`
+          : "Superuser-Konto wurde entfernt."
+      });
+      await loadSuperuserStatus({ silent: true });
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 404) {
+        await loadSuperuserStatus({ silent: true });
+        showToast({
+          variant: "info",
+          title: "Kein Superuser vorhanden",
+          description: "Es ist kein Superuser mehr vorhanden."
+        });
+      } else {
+        const message = err.response?.data?.error || err.message || "Superuser konnte nicht gelöscht werden";
+        showToast({ variant: "error", title: "Löschen fehlgeschlagen", description: message });
+      }
+    } finally {
+      setSuperuserDeleteLoading(false);
+    }
+  }, [superuserDeleteLoading, superuserStatusLoading, superuserExists, removeSuperuserAccount, loadSuperuserStatus, showToast]);
   const handleMaintenanceToggle = useCallback(async (nextActive) => {
     if (maintenanceLoading || maintenanceToggleLoading) return;
     if (nextActive === maintenanceActive) return;
@@ -630,6 +706,63 @@ export function Maintenance() {
           {maintenanceToggleLoading && (
             <p className="text-xs text-stormGrey-500">Wartungsmodus wird aktualisiert…</p>
           )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+            className="flex items-center justify-between"
+          >
+            <span>Superuser</span>
+
+          </Typography>
+        </CardHeader>
+        <CardBody className="flex flex-col gap-4 p-4">
+          <div className="space-y-2">
+            {superuserStatusLoading && (
+              <p className="text-sm text-stormGrey-500">Status wird geladen…</p>
+            )}
+            {!superuserStatusLoading && superuserStatusError && (
+              <p className="text-sm text-sunsetCoral-600">{superuserStatusError}</p>
+            )}
+            {!superuserStatusLoading && !superuserStatusError && superuserExists && (
+              <div className="space-y-1">
+                <p className="text-sm">Superuser ist angelegt.</p>
+                <p className="text-xs text-stormGrey-500">
+                  Benutzername: <span className="font-medium text-stormGrey-900">{superuserSummary?.username ?? "unbekannt"}</span>
+                  {superuserSummary?.email ? ` - ${superuserSummary.email}` : ""}
+                </p>
+              </div>
+            )}
+            {!superuserStatusLoading && !superuserStatusError && !superuserExists && (
+              <p className="text-sm">Es ist kein Superuser vorhanden.</p>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <Button
+              variant="outlined"
+              color="gray"
+              onClick={() => loadSuperuserStatus()}
+              disabled={superuserStatusLoading || superuserDeleteLoading}
+              className="w-full sm:w-auto"
+            >
+              Status aktualisieren
+            </Button>
+            <Button
+              color="red"
+              onClick={handleSuperuserDelete}
+              disabled={superuserStatusLoading || superuserDeleteLoading || !superuserExists}
+              className="w-full sm:w-auto"
+            >
+              {superuserDeleteLoading ? "Wird gelöscht…" : "Superuser löschen"}
+            </Button>
+          </div>
+          <p className="text-xs text-stormGrey-500">
+            Entfernt das Superuser-Konto samt zugehöriger Gruppe. Danach kann der Erstbenutzer bei Bedarf erneut angelegt werden.
+          </p>
         </CardBody>
       </Card>
 

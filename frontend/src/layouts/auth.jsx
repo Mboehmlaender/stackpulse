@@ -7,6 +7,7 @@ import {
 } from "@heroicons/react/24/solid";
 import { Navbar, Footer } from "@/widgets/layout";
 import routes from "@/routes";
+import { RegSuperuser } from "@/pages/auth/regsuperuser";
 
 export function Auth() {
   const navbarRoutes = [
@@ -35,6 +36,7 @@ export function Auth() {
   return (
     <div className="relative min-h-screen w-full">
       <Routes>
+        <Route path="/regsuperuser" element={<RegSuperuser />} />
         {routes.map(
           ({ layout, pages }) =>
             layout === "auth" &&
