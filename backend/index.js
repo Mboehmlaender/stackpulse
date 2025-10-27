@@ -45,6 +45,8 @@ import {
   removeServer,
   setServerApiKey
 } from './setup/index.js';
+import { listUsers } from './users/index.js';
+import { listGroups } from './groups/index.js';
 
 dotenv.config();
 
@@ -1669,6 +1671,26 @@ app.get('/api/auth/session', (req, res) => {
   touchSession(token);
   setAuthCookie(res, token);
   res.json({ user: sanitizeUser(user) });
+});
+
+app.get('/api/users', (req, res) => {
+  try {
+    const users = listUsers();
+    res.json({ items: users, total: users.length });
+  } catch (error) {
+    console.error('⚠️ [Users] Abruf der Benutzerliste fehlgeschlagen:', error);
+    res.status(500).json({ error: 'USERS_FETCH_FAILED' });
+  }
+});
+
+app.get('/api/groups', (req, res) => {
+  try {
+    const groups = listGroups();
+    res.json({ items: groups, total: groups.length });
+  } catch (error) {
+    console.error('⚠️ [Groups] Abruf der Benutzergruppenliste fehlgeschlagen:', error);
+    res.status(500).json({ error: 'GROUPS_FETCH_FAILED' });
+  }
 });
 
 // Superuser Setup
