@@ -18,6 +18,12 @@ const selectSuperuser = db.prepare(`
 const selectUserByUsername = db.prepare('SELECT * FROM users WHERE username = ?');
 const selectUserByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
 const selectUserById = db.prepare('SELECT * FROM users WHERE id = ?');
+const updateLastLogin = db.prepare(`
+  UPDATE users
+  SET last_login = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
 
 const insertUser = db.prepare(`
   INSERT INTO users (username, email, password_hash, password_salt, is_active, created_at, updated_at)
@@ -31,8 +37,8 @@ const updateUser = db.prepare(`
 `);
 
 const insertMembership = db.prepare(`
-  INSERT OR IGNORE INTO user_group_memberships (user_id, group_id, role)
-  VALUES (?, ?, ?)
+  INSERT OR IGNORE INTO user_group_memberships (user_id, group_id)
+  VALUES (?, ?)
 `);
 
 const removeMembershipsForGroup = db.prepare(`
@@ -70,22 +76,46 @@ const creationTransaction = db.transaction(({ username, email, passwordHash, pas
   }
 
   removeMembershipsForGroup.run(groupId);
-  insertMembership.run(userId, groupId, SUPERUSER_GROUP_NAME);
+  insertMembership.run(userId, groupId);
 
   return selectUserById.get(userId);
 });
 
-function hashPassword(password) {
+export function hashPassword(password) {
   if (!password || typeof password !== 'string') {
-    throw new Error('INVALID_PASSWORD');
+    const err = new Error('INVALID_PASSWORD');
+    err.code = 'INVALID_PASSWORD';
+    throw err;
   }
   const trimmed = password.trim();
+  if (!trimmed) {
+    const err = new Error('INVALID_PASSWORD');
+    err.code = 'INVALID_PASSWORD';
+    throw err;
+  }
   if (trimmed.length < 8) {
-    throw new Error('PASSWORD_TOO_SHORT');
+    const err = new Error('PASSWORD_TOO_SHORT');
+    err.code = 'PASSWORD_TOO_SHORT';
+    throw err;
   }
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.pbkdf2Sync(trimmed, salt, 120000, 64, 'sha512').toString('hex');
   return { salt, hash };
+}
+
+export function verifyPassword(password, hash, salt) {
+  if (!hash || !salt) return false;
+  if (!password || typeof password !== 'string') return false;
+  const trimmed = password.trim();
+  if (!trimmed) return false;
+
+  const derived = crypto.pbkdf2Sync(trimmed, salt, 120000, 64, 'sha512').toString('hex');
+  const storedBuffer = Buffer.from(hash, 'hex');
+  const derivedBuffer = Buffer.from(derived, 'hex');
+  if (storedBuffer.length !== derivedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(storedBuffer, derivedBuffer);
 }
 
 function ensureGroup(name, description = null) {
@@ -99,6 +129,25 @@ function ensureGroup(name, description = null) {
 export function hasSuperuser() {
   const { count } = countSuperusers.get(SUPERUSER_GROUP_NAME);
   return count > 0;
+}
+
+export function findUserByIdentifier(identifier) {
+  const value = String(identifier || '').trim();
+  if (!value) return null;
+  if (value.includes('@')) {
+    return selectUserByEmail.get(value.toLowerCase());
+  }
+  return selectUserByUsername.get(value);
+}
+
+export function findUserById(id) {
+  if (!id) return null;
+  return selectUserById.get(id);
+}
+
+export function markUserLogin(userId) {
+  if (!userId) return;
+  updateLastLogin.run(userId);
 }
 
 function createOrUpdateSuperuser({ username, email, password }) {

@@ -133,7 +133,31 @@ export default function MaintenanceProvider({ children }) {
 
   const fetchSuperuserStatus = useCallback(async () => {
     const response = await axios.get("/api/auth/superuser/status");
-    return response.data ?? { exists: false, user: null };
+    const data = response.data ?? {};
+    return {
+      exists: Boolean(data.exists),
+      user: data.user ?? null
+    };
+  }, []);
+
+  const fetchSetupStatus = useCallback(async () => {
+    const response = await axios.get("/api/setup/status");
+    return response.data ?? {};
+  }, []);
+
+  const deleteSetupEndpoint = useCallback(async (endpointId) => {
+    const response = await axios.delete(`/api/setup/endpoints/${endpointId}`);
+    return response.data ?? { success: false };
+  }, []);
+
+  const deleteSetupServer = useCallback(async (serverId) => {
+    const response = await axios.delete(`/api/setup/servers/${serverId}`);
+    return response.data ?? { success: false };
+  }, []);
+
+  const updateSetupApiKey = useCallback(async (serverId, apiKey) => {
+    const response = await axios.put(`/api/setup/servers/${serverId}/api-key`, { apiKey });
+    return response.data ?? { success: false };
   }, []);
 
   const removeSuperuserAccount = useCallback(async () => {
@@ -159,8 +183,12 @@ export default function MaintenanceProvider({ children }) {
     deleteSshConfig,
     testSshConnection,
     fetchSuperuserStatus,
+    fetchSetupStatus,
+    deleteSetupEndpoint,
+    deleteSetupServer,
+    updateSetupApiKey,
     removeSuperuserAccount
-  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection, fetchSuperuserStatus, removeSuperuserAccount]);
+  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection, fetchSuperuserStatus, fetchSetupStatus, deleteSetupEndpoint, deleteSetupServer, updateSetupApiKey, removeSuperuserAccount]);
 
   return (
     <MaintenanceContext.Provider value={value}>

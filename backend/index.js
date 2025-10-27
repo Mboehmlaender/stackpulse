@@ -11,7 +11,17 @@ import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
-import { ensureSuperuserFromEnv, getSuperuserSummary, hasSuperuser, registerSuperuser, removeSuperuser } from './auth/superuser.js';
+import {
+  ensureSuperuserFromEnv,
+  getSuperuserSummary,
+  hasSuperuser,
+  registerSuperuser,
+  removeSuperuser,
+  findUserByIdentifier,
+  findUserById,
+  markUserLogin,
+  verifyPassword
+} from './auth/superuser.js';
 import {
   logRedeployEvent,
   buildLogFilter,
@@ -21,10 +31,25 @@ import {
 } from './db/redeployLogs.js';
 import { getSetting, setSetting, deleteSetting } from './db/settings.js';
 import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
+import {
+  ensureDefaultsFromEnv,
+  getActiveEndpointExternalId,
+  getActiveApiKey,
+  getActiveServerUrl,
+  hasServer,
+  hasEndpoint,
+  hasApiKey,
+  getSetupStatus,
+  completeSetup,
+  removeEndpoint,
+  removeServer,
+  setServerApiKey
+} from './setup/index.js';
 
 dotenv.config();
 
 ensureSuperuserFromEnv();
+ensureDefaultsFromEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,13 +64,46 @@ app.get('*', (req, res, next) => {
 });
 
 const PORT = 4001;
-const ENDPOINT_ID = Number(process.env.PORTAINER_ENDPOINT_ID);
+
+const requireActiveEndpointId = () => {
+  const value = getActiveEndpointExternalId();
+  if (!value) {
+    const error = new Error('ENDPOINT_NOT_CONFIGURED');
+    error.code = 'ENDPOINT_NOT_CONFIGURED';
+    throw error;
+  }
+  return value;
+};
 
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+const resolvePortainerBaseUrl = () => {
+  const envUrl = typeof process.env.PORTAINER_URL === 'string' ? process.env.PORTAINER_URL.trim() : '';
+  if (envUrl) return envUrl;
+  const activeUrl = getActiveServerUrl();
+  return activeUrl ? activeUrl.trim() : '';
+};
+
 const axiosInstance = axios.create({
-  httpsAgent: agent,
-  headers: { "X-API-Key": process.env.PORTAINER_API_KEY },
-  baseURL: process.env.PORTAINER_URL,
+  httpsAgent: agent
+});
+
+axiosInstance.interceptors.request.use((config) => {
+  const currentBase = typeof config.baseURL === 'string' ? config.baseURL.trim() : '';
+  const effectiveBase = currentBase || resolvePortainerBaseUrl();
+  if (!effectiveBase) {
+    throw new Error('PORTAINER_URL_NOT_CONFIGURED');
+  }
+  config.baseURL = effectiveBase;
+
+  const apiKey = getActiveApiKey();
+  if (apiKey) {
+    config.headers = config.headers || {};
+    config.headers["X-API-Key"] = apiKey;
+  } else if (config.headers?.["X-API-Key"]) {
+    delete config.headers["X-API-Key"];
+  }
+  return config;
 });
 
 const REDEPLOY_PHASES = {
@@ -57,6 +115,132 @@ const REDEPLOY_PHASES = {
 };
 
 const redeployingStacks = new Map();
+
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'sp_auth_token';
+const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const envSessionTtl = Number(process.env.AUTH_SESSION_TTL_MS);
+const AUTH_SESSION_TTL_MS = Number.isFinite(envSessionTtl) && envSessionTtl > 0 ? envSessionTtl : DEFAULT_SESSION_TTL_MS;
+
+const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production',
+  path: '/'
+};
+
+const activeSessions = new Map();
+
+const PUBLIC_API_ROUTES = [
+  { method: 'GET', matcher: /^\/api\/auth\/superuser\/status$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/superuser\/register$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/login$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/logout$/ },
+  { method: 'GET', matcher: /^\/api\/auth\/session$/ },
+  { method: 'GET', matcher: /^\/api\/setup\/status$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/complete$/ }
+];
+
+const sanitizeUser = (user) => ({
+  id: user.id,
+  username: user.username,
+  email: user.email
+});
+
+const cleanupExpiredSessions = () => {
+  const now = Date.now();
+  for (const [token, session] of activeSessions.entries()) {
+    if (!session || session.expiresAt <= now) {
+      activeSessions.delete(token);
+    }
+  }
+};
+
+const removeSessionsForUser = (userId) => {
+  if (!userId) return;
+  for (const [token, session] of activeSessions.entries()) {
+    if (session?.userId === userId) {
+      activeSessions.delete(token);
+    }
+  }
+};
+
+const createSessionForUser = (user) => {
+  cleanupExpiredSessions();
+  removeSessionsForUser(user.id);
+  const token = crypto.randomBytes(48).toString('hex');
+  const expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
+  activeSessions.set(token, { userId: user.id, expiresAt });
+  return { token, expiresAt };
+};
+
+const getSessionRecord = (token) => {
+  if (!token) return null;
+  cleanupExpiredSessions();
+  const record = activeSessions.get(token);
+  if (!record) return null;
+  if (record.expiresAt <= Date.now()) {
+    activeSessions.delete(token);
+    return null;
+  }
+  return record;
+};
+
+const touchSession = (token) => {
+  if (!token) return;
+  const record = activeSessions.get(token);
+  if (!record) return;
+  record.expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
+  activeSessions.set(token, record);
+};
+
+const extractAuthToken = (req) => {
+  const rawCookie = req.headers?.cookie;
+  if (rawCookie && typeof rawCookie === 'string') {
+    const parts = rawCookie.split(';');
+    for (const part of parts) {
+      const [name, ...rest] = part.trim().split('=');
+      if (name === AUTH_COOKIE_NAME) {
+        return rest.join('=');
+      }
+    }
+  }
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
+  if (authHeader && typeof authHeader === 'string') {
+    const lower = authHeader.toLowerCase();
+    if (lower.startsWith('bearer ')) {
+      return authHeader.slice(7).trim();
+    }
+  }
+  return null;
+};
+
+const setAuthCookie = (res, token) => {
+  if (!token || !res) return;
+  if (typeof res.cookie === 'function') {
+    res.cookie(AUTH_COOKIE_NAME, token, {
+      ...AUTH_COOKIE_OPTIONS,
+      maxAge: AUTH_SESSION_TTL_MS
+    });
+  } else {
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax`);
+  }
+};
+
+const clearAuthCookie = (res) => {
+  if (!res) return;
+  if (typeof res.clearCookie === 'function') {
+    res.clearCookie(AUTH_COOKIE_NAME, {
+      ...AUTH_COOKIE_OPTIONS,
+      maxAge: 0
+    });
+  } else {
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=; Path=/; Max-Age=0`);
+  }
+};
+
+const isPublicApiRoute = (req) => {
+  return PUBLIC_API_ROUTES.some(({ method, matcher }) => req.method === method && matcher.test(req.path));
+};
 
 const isActiveRedeployPhase = (phase) => phase === REDEPLOY_PHASES.QUEUED || phase === REDEPLOY_PHASES.STARTED;
 
@@ -461,7 +645,8 @@ const testSshConnection = async (configOverride = null) => {
 
 const detectPortainerContainer = async () => {
   try {
-    const containersRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/json`, {
+    const endpointId = requireActiveEndpointId();
+    const containersRes = await axiosInstance.get(`/api/endpoints/${endpointId}/docker/containers/json`, {
       params: { all: true }
     });
     const containers = Array.isArray(containersRes.data) ? containersRes.data : [];
@@ -487,7 +672,7 @@ const detectPortainerContainer = async () => {
       return { summary: null, error: 'Portainer-Container nicht gefunden' };
     }
 
-    const inspectRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/${matchedContainer.Id}/json`);
+    const inspectRes = await axiosInstance.get(`/api/endpoints/${endpointId}/docker/containers/${matchedContainer.Id}/json`);
     const inspect = inspectRes.data ?? {};
 
     const trimName = (value) => (typeof value === 'string' ? value.replace(/^\//, '') : value);
@@ -732,6 +917,7 @@ let currentPortainerUpdatePromise = null;
 
 const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) => {
   let maintenanceActivated = false;
+  const endpointId = requireActiveEndpointId();
 
   try {
     addUpdateLog(`Portainer-Update gestartet (Quelle: ${scriptSource})`, 'info');
@@ -758,7 +944,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       stackName: 'Portainer',
       status: 'started',
       message: `Portainer Update gestartet (Ziel: ${targetVersion ?? 'unbekannt'})`,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE
     });
 
@@ -767,7 +953,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       stackName: 'StackPulse Wartung',
       status: 'started',
       message: 'Wartungsmodus aktiviert (Portainer Update)',
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE
     });
 
@@ -797,7 +983,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       stackName: 'Portainer',
       status: 'success',
       message: `Portainer Update abgeschlossen (Version: ${finalVersion ?? 'unbekannt'})`,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE
     });
 
@@ -821,7 +1007,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
         stackName: 'StackPulse Wartung',
         status: 'success',
         message: 'Wartungsmodus deaktiviert',
-        endpoint: ENDPOINT_ID,
+        endpoint: endpointId,
         redeployType: REDEPLOY_TYPES.MAINTENANCE
       });
     }
@@ -832,7 +1018,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       stackName: 'Portainer',
       status: 'error',
       message,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE
     });
 
@@ -854,7 +1040,7 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
         stackName: 'StackPulse Wartung',
         status: 'error',
         message: 'Wartungsmodus deaktiviert (Fehler)',
-        endpoint: ENDPOINT_ID,
+        endpoint: endpointId,
         redeployType: REDEPLOY_TYPES.MAINTENANCE
       });
     }
@@ -864,8 +1050,9 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
 };
 
 const fetchPortainerStacks = async () => {
+  const endpointId = requireActiveEndpointId();
   const stacksRes = await axiosInstance.get('/api/stacks');
-  return stacksRes.data.filter((stack) => stack.EndpointId === ENDPOINT_ID);
+  return stacksRes.data.filter((stack) => String(stack.EndpointId) === String(endpointId));
 };
 
 const buildStackCollections = (stacks = []) => {
@@ -982,13 +1169,14 @@ const shouldFallbackToStackFile = (message) => {
 const redeployStackById = async (stackId, redeployType) => {
   let stack;
   const messages = getRedeployMessages(redeployType);
+  const endpointId = requireActiveEndpointId();
 
   try {
     const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
     stack = stackRes.data;
 
-    if (stack.EndpointId !== ENDPOINT_ID) {
-      throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
+    if (String(stack.EndpointId) !== String(endpointId)) {
+      throw new Error(`Stack gehört nicht zum Endpoint ${endpointId}`);
     }
 
     const targetId = stack.Id || stackId;
@@ -1107,7 +1295,7 @@ const redeployStackById = async (stackId, redeployType) => {
       stackName: fallbackName,
       status: 'error',
       message: errorMessage,
-      endpoint: stack?.EndpointId || ENDPOINT_ID,
+      endpoint: stack?.EndpointId || endpointId,
       redeployType
     });
 
@@ -1116,7 +1304,372 @@ const redeployStackById = async (stackId, redeployType) => {
   }
 };
 
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
+  if (req.method === 'OPTIONS' || isPublicApiRoute(req)) {
+    return next();
+  }
+
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const token = extractAuthToken(req);
+  const session = getSessionRecord(token);
+  if (!session) {
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  const user = findUserById(session.userId);
+  if (!user || !user.is_active) {
+    activeSessions.delete(token);
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  req.user = sanitizeUser(user);
+  req.authToken = token;
+  touchSession(token);
+  setAuthCookie(res, token);
+  next();
+});
+
 // --- API Endpoints ---
+
+app.get('/api/setup/status', (req, res) => {
+  try {
+    const status = getSetupStatus();
+    res.json(status);
+  } catch (error) {
+    console.error('⚠️ [Setup] Statusabfrage fehlgeschlagen:', error);
+    res.status(500).json({ error: 'SETUP_STATUS_FAILED' });
+  }
+});
+
+app.post('/api/setup/complete', (req, res) => {
+  const { superuser: superuserInput, server: serverInput, endpoint: endpointInput, apiKey: apiKeyInput } = req.body ?? {};
+  const initialStatus = getSetupStatus();
+  const needsSuperuser = initialStatus.requirements.superuser;
+  const needsServer = initialStatus.requirements.server;
+  const needsEndpoint = initialStatus.requirements.endpoint;
+  const needsApiKey = initialStatus.requirements.apiKey;
+
+  const created = {};
+
+  const normalizeServerInput = (input) => {
+    if (!input) return null;
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    const url = typeof input.url === 'string' ? input.url.trim() : '';
+    if (!url) {
+      return { name: name || '', url: '' };
+    }
+    return {
+      name: name || null,
+      url
+    };
+  };
+
+  const normalizeEndpointInput = (input) => {
+    if (!input) return null;
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    const externalRaw = input.externalId !== undefined && input.externalId !== null
+      ? String(input.externalId).trim()
+      : '';
+    const serverIdRaw = input.serverId !== undefined && input.serverId !== null ? Number(input.serverId) : null;
+    const serverId = Number.isFinite(serverIdRaw) ? serverIdRaw : null;
+
+    return {
+      name: name || null,
+      externalId: externalRaw || '',
+      serverId
+    };
+  };
+
+  const normalizeApiKeyInput = (input) => {
+    if (!input) return null;
+    if (typeof input === 'string') {
+      const value = input.trim();
+      return { value, serverId: null };
+    }
+    if (typeof input === 'object') {
+      const rawValue = typeof input.value === 'string' ? input.value : typeof input.key === 'string' ? input.key : '';
+      const value = rawValue.trim();
+      const serverIdRaw = input.serverId !== undefined && input.serverId !== null ? Number(input.serverId) : null;
+      const serverId = Number.isFinite(serverIdRaw) ? serverIdRaw : null;
+      return { value, serverId };
+    }
+    return null;
+  };
+
+  try {
+    let serverPayload = normalizeServerInput(serverInput);
+    let endpointPayload = normalizeEndpointInput(endpointInput);
+    const apiKeyPayload = normalizeApiKeyInput(apiKeyInput);
+
+    if (needsServer && (!serverPayload || !serverPayload.url)) {
+      return res.status(400).json({ error: 'SERVER_DETAILS_REQUIRED' });
+    }
+
+    if (endpointPayload && !endpointPayload.externalId) {
+      endpointPayload.externalId = '';
+    }
+
+    if (needsEndpoint && (!endpointPayload || !endpointPayload.externalId)) {
+      const fallbackExternal = initialStatus.envDefaults.endpointExternalId?.trim();
+      if (fallbackExternal) {
+        endpointPayload = endpointPayload || {};
+        endpointPayload.externalId = fallbackExternal;
+        endpointPayload.name = endpointPayload.name || initialStatus.envDefaults.endpointName || `Endpoint ${fallbackExternal}`;
+      } else {
+        return res.status(400).json({ error: 'ENDPOINT_DETAILS_REQUIRED' });
+      }
+    }
+
+    const shouldHandleInfrastructure =
+      needsServer ||
+      needsEndpoint ||
+      (serverPayload && serverPayload.url) ||
+      (endpointPayload && endpointPayload.externalId);
+
+    if (shouldHandleInfrastructure) {
+      const endpointInputPayload = endpointPayload;
+      if (!endpointInputPayload || !endpointInputPayload.externalId) {
+        return res.status(400).json({ error: 'ENDPOINT_DETAILS_REQUIRED' });
+      }
+
+      const setupResult = completeSetup({
+        server: serverPayload && serverPayload.url ? serverPayload : null,
+        endpoint: endpointInputPayload
+      });
+
+      created.server = setupResult.server;
+      created.endpoint = setupResult.endpoint;
+      created.defaultEndpoint = setupResult.defaultEndpoint;
+    }
+
+    let targetServerId = apiKeyPayload?.serverId ?? created.server?.id ?? endpointPayload?.serverId ?? null;
+
+    if (needsSuperuser) {
+      const username = typeof superuserInput?.username === 'string' ? superuserInput.username.trim() : '';
+      const email = typeof superuserInput?.email === 'string' ? superuserInput.email.trim() : '';
+      const password = typeof superuserInput?.password === 'string' ? superuserInput.password : '';
+
+      if (!username || !email || !password) {
+        return res.status(400).json({ error: 'SUPERUSER_DETAILS_REQUIRED' });
+      }
+
+      const user = registerSuperuser({ username, email, password });
+      created.superuser = user;
+    }
+
+    const statusSnapshot = getSetupStatus();
+
+    if (!targetServerId) {
+      targetServerId = statusSnapshot.servers.items?.[0]?.id ?? null;
+    }
+
+    if (apiKeyPayload && apiKeyPayload.value) {
+      if (!targetServerId) {
+        return res.status(400).json({ error: 'SERVER_DETAILS_REQUIRED' });
+      }
+      const apiKeyResult = setServerApiKey({ serverId: targetServerId, apiKey: apiKeyPayload.value });
+      created.apiKey = apiKeyResult;
+    } else if (needsApiKey) {
+      return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+    }
+
+    const finalStatus = getSetupStatus();
+    created.defaultEndpoint = finalStatus.endpoints.default;
+    res.status(201).json({
+      success: finalStatus.setupComplete,
+      status: finalStatus,
+      created
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_URL_REQUIRED':
+      case 'SERVER_NAME_REQUIRED':
+      case 'SERVER_DETAILS_REQUIRED':
+      case 'ENDPOINT_DETAILS_REQUIRED':
+      case 'ENDPOINT_EXTERNAL_ID_REQUIRED':
+      case 'USERNAME_REQUIRED':
+      case 'EMAIL_INVALID':
+      case 'PASSWORD_TOO_SHORT':
+      case 'INVALID_PASSWORD':
+      case 'API_KEY_REQUIRED':
+        return res.status(400).json({ error: code });
+      case 'API_KEY_ENCRYPT_FAILED':
+        console.error('⚠️ [Setup] API-Key Verschlüsselung fehlgeschlagen:', error);
+        return res.status(500).json({ error: 'API_KEY_ENCRYPT_FAILED' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      case 'SUPERUSER_ALREADY_EXISTS':
+        return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+      default:
+        console.error('⚠️ [Setup] Fehler beim Abschluss:', error);
+        return res.status(500).json({ error: 'SETUP_FAILED' });
+    }
+  }
+});
+
+app.delete('/api/setup/endpoints/:id', (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    return res.status(400).json({ error: 'ENDPOINT_ID_INVALID' });
+  }
+
+  try {
+    const result = removeEndpoint(numericId);
+    const status = getSetupStatus();
+    res.json({ success: true, removed: result, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'ENDPOINT_ID_INVALID':
+        return res.status(400).json({ error: 'ENDPOINT_ID_INVALID' });
+      case 'ENDPOINT_NOT_FOUND':
+        return res.status(404).json({ error: 'ENDPOINT_NOT_FOUND' });
+      default:
+        console.error('⚠️ [Setup] Endpoint konnte nicht gelöscht werden:', error);
+        return res.status(500).json({ error: 'ENDPOINT_DELETE_FAILED' });
+    }
+  }
+});
+
+app.delete('/api/setup/servers/:id', (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+
+  try {
+    const result = removeServer(numericId);
+    const status = getSetupStatus();
+    res.json({ success: true, removed: result, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      default:
+        console.error('⚠️ [Setup] Server konnte nicht gelöscht werden:', error);
+        return res.status(500).json({ error: 'SERVER_DELETE_FAILED' });
+    }
+  }
+});
+
+app.put('/api/setup/servers/:id/api-key', (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+
+  const rawValue = typeof req.body?.apiKey === 'string' ? req.body.apiKey : typeof req.body?.key === 'string' ? req.body.key : '';
+
+  try {
+    const result = setServerApiKey({ serverId: numericId, apiKey: rawValue });
+    const status = getSetupStatus();
+    res.json({ success: true, updated: result, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      case 'API_KEY_REQUIRED':
+        return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+      case 'API_KEY_ENCRYPT_FAILED':
+        console.error('⚠️ [Setup] API-Key Verschlüsselung fehlgeschlagen:', error);
+        return res.status(500).json({ error: 'API_KEY_ENCRYPT_FAILED' });
+      default:
+        console.error('⚠️ [Setup] API-Key konnte nicht aktualisiert werden:', error);
+        return res.status(500).json({ error: 'API_KEY_UPDATE_FAILED' });
+    }
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const { identifier, password } = req.body ?? {};
+  if (!identifier || !password) {
+    return res.status(400).json({ error: 'MISSING_CREDENTIALS' });
+  }
+
+  const user = findUserByIdentifier(identifier);
+  if (!user || !user.is_active) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
+
+  const passwordValid = verifyPassword(password, user.password_hash, user.password_salt);
+  if (!passwordValid) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
+
+  const session = createSessionForUser(user);
+  markUserLogin(user.id);
+  setAuthCookie(res, session.token);
+
+  res.json({ user: sanitizeUser(user) });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = extractAuthToken(req);
+  if (token) {
+    activeSessions.delete(token);
+  }
+  clearAuthCookie(res);
+  res.json({ success: true });
+});
+
+app.get('/api/auth/session', (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const token = extractAuthToken(req);
+  const session = getSessionRecord(token);
+  if (!session) {
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  const user = findUserById(session.userId);
+  if (!user || !user.is_active) {
+    activeSessions.delete(token);
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  touchSession(token);
+  setAuthCookie(res, token);
+  res.json({ user: sanitizeUser(user) });
+});
 
 // Superuser Setup
 app.get('/api/auth/superuser/status', (req, res) => {
@@ -1225,6 +1778,9 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
     res.json(stacksWithStatus);
   } catch (err) {
     console.error(`❌ Fehler beim Abrufen der Stacks:`, err.message);
+    if (err.message === 'PORTAINER_URL_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PORTAINER_URL_NOT_CONFIGURED' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1237,6 +1793,9 @@ app.get('/api/maintenance/portainer-status', async (req, res) => {
   } catch (err) {
     const message = err.response?.data?.message || err.message || 'Unbekannter Fehler';
     console.error(`❌ [Maintenance] Fehler beim Prüfen des Portainer-Status: ${message}`);
+    if (message === 'PORTAINER_URL_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PORTAINER_URL_NOT_CONFIGURED' });
+    }
     res.status(500).json({ error: message });
   }
 });
@@ -1737,8 +2296,9 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
   console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
 
   try {
+    const endpointId = requireActiveEndpointId();
     const stacksRes = await axiosInstance.get('/api/stacks');
-    const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
+    const filteredStacks = stacksRes.data.filter(stack => String(stack.EndpointId) === String(endpointId));
 
     console.log("📦 Redeploy ALL für folgende Stacks:");
     filteredStacks.forEach(s => console.log(`   - ${s.Name}`));
@@ -1758,7 +2318,7 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       stackName: '---',
       status: 'started',
       message: `Redeploy ALL gestartet für: ${stackSummary}`,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.ALL
     });
 
@@ -1789,7 +2349,7 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       stackName: '---',
       status: 'success',
       message: 'Redeploy ALL abgeschlossen',
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.ALL
     });
 
@@ -1801,7 +2361,7 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       stackName: '---',
       status: 'error',
       message,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.ALL
     });
     console.error('❌ Fehler bei Redeploy ALL:', message);
@@ -1820,6 +2380,7 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
   }
 
   try {
+    const endpointId = requireActiveEndpointId();
     const normalizedIds = stackIds.map((id) => String(id));
     const { filteredStacks } = await loadStackCollections();
     const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
@@ -1850,7 +2411,7 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
       stackName: `Auswahl (${stackIds.length})`,
       status: 'started',
       message: `Redeploy Auswahl gestartet für: ${summaryText}`,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.SELECTION
     });
 
@@ -1860,7 +2421,7 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
         stackName: `Auswahl (${stackIds.length})`,
         status: 'success',
         message: 'Redeploy Auswahl übersprungen: keine veralteten Stacks',
-        endpoint: ENDPOINT_ID,
+        endpoint: endpointId,
         redeployType: REDEPLOY_TYPES.SELECTION
       });
       return res.json({ success: true, message: 'Keine veralteten Stacks in der Auswahl' });
@@ -1888,7 +2449,7 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
       stackName: `Auswahl (${stackIds.length})`,
       status: 'success',
       message: 'Redeploy Auswahl abgeschlossen',
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.SELECTION
     });
 
@@ -1900,7 +2461,7 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
       stackName: `Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
       status: 'error',
       message,
-      endpoint: ENDPOINT_ID,
+      endpoint: endpointId,
       redeployType: REDEPLOY_TYPES.SELECTION
     });
     console.error('❌ Fehler bei Redeploy Auswahl:', message);
@@ -1911,4 +2472,3 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
 server.listen(PORT, () => {
   console.log(`🚀 Server läuft auf Port ${PORT}`);
 });
-

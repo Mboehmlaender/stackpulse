@@ -16,53 +16,112 @@ export function Dashboard() {
   const { sidenavType } = controller;
   const location = useLocation();
   const navigate = useNavigate();
-  const [superuserRequired, setSuperuserRequired] = useState(false);
-  const [statusChecked, setStatusChecked] = useState(false);
+  const [setupChecked, setSetupChecked] = useState(false);
+  const [setupIncomplete, setSetupIncomplete] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  const checkSuperuserStatus = useCallback(async () => {
-    setStatusChecked(false);
+  const checkSetupStatus = useCallback(async () => {
+    setSetupChecked(false);
     try {
-      const response = await fetch("/api/auth/superuser/status");
+      const response = await fetch("/api/setup/status", { credentials: "include" });
       if (!response.ok) {
         throw new Error("STATUS_REQUEST_FAILED");
       }
       const data = await response.json();
-      setSuperuserRequired(!data.exists);
+      setSetupIncomplete(!data.setupComplete);
     } catch (error) {
-      console.error("⚠️ [Superuser] Statusprüfung fehlgeschlagen:", error);
-      setSuperuserRequired(true);
+      console.error("⚠️ [Setup] Statusprüfung fehlgeschlagen:", error);
+      setSetupIncomplete(true);
     } finally {
-      setStatusChecked(true);
+      setSetupChecked(true);
     }
   }, []);
 
-  useEffect(() => {
-    checkSuperuserStatus();
-  }, [checkSuperuserStatus]);
+  const checkSession = useCallback(async () => {
+    setAuthChecked(false);
+    try {
+      const response = await fetch("/api/auth/session", { credentials: "include" });
+      if (response.status === 403) {
+        setSetupIncomplete(true);
+        setIsAuthenticated(false);
+        return;
+      }
+      if (!response.ok) {
+        setIsAuthenticated(false);
+        return;
+      }
+      const data = await response.json();
+      setIsAuthenticated(Boolean(data?.user));
+    } catch (error) {
+      console.error("⚠️ [Auth] Sessionprüfung fehlgeschlagen:", error);
+      setIsAuthenticated(false);
+    } finally {
+      setAuthChecked(true);
+    }
+  }, [setSetupIncomplete, setIsAuthenticated, setAuthChecked]);
 
   useEffect(() => {
-    if (!statusChecked) return;
-    if (superuserRequired) {
-      if (location.pathname !== "/auth/regsuperuser") {
-        navigate("/auth/regsuperuser", { replace: true });
+    checkSetupStatus();
+  }, [checkSetupStatus]);
+
+  useEffect(() => {
+    if (!setupChecked || setupIncomplete) return;
+    checkSession();
+  }, [setupChecked, setupIncomplete, checkSession]);
+
+  useEffect(() => {
+    if (!setupChecked) return;
+
+    if (setupIncomplete) {
+      if (location.pathname !== "/setup") {
+        navigate("/setup", { replace: true });
       }
-    } else if (location.pathname === "/auth/regsuperuser") {
+      return;
+    }
+
+    if (!authChecked) return;
+
+    if (!isAuthenticated) {
+      if (location.pathname !== "/auth/sign-in") {
+        navigate("/auth/sign-in", { replace: true });
+      }
+      return;
+    }
+
+    if (location.pathname === "/setup" || location.pathname.startsWith("/auth/")) {
       navigate("/dashboard/stacks", { replace: true });
     }
-  }, [superuserRequired, statusChecked, location.pathname, navigate]);
+  }, [setupChecked, setupIncomplete, authChecked, isAuthenticated, location.pathname, navigate]);
 
-  if (!statusChecked) {
+  if (!setupChecked) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-blue-gray-50/50">
-        <span className="text-blue-gray-500">Lade Systemstatus ...</span>
+        <span className="text-blue-gray-500">Pruefe Systemkonfiguration ...</span>
       </div>
     );
   }
 
-  if (superuserRequired) {
+  if (setupIncomplete) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-blue-gray-50/50">
-        <span className="text-blue-gray-500">Superuser-Einrichtung erforderlich ...</span>
+        <span className="text-blue-gray-500">Setup erforderlich ...</span>
+      </div>
+    );
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-blue-gray-50/50">
+        <span className="text-blue-gray-500">Pruefe Anmeldung ...</span>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-blue-gray-50/50">
+        <span className="text-blue-gray-500">Weiterleitung zur Anmeldung ...</span>
       </div>
     );
   }

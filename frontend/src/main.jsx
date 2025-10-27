@@ -10,6 +10,7 @@
 * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 */
 import React from "react";
+import axios from "axios";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { BrowserRouter } from "react-router-dom";
@@ -19,6 +20,8 @@ import "./tailwind.css";
 import ToastProvider from "@/components/ToastProvider.jsx";
 import MaintenanceProvider from "@/components/MaintenanceProvider.jsx";
 import PageProvider from "@/components/PageProvider.jsx";
+
+axios.defaults.withCredentials = true;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

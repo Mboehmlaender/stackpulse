@@ -9,7 +9,8 @@ import {
   CardHeader,
   CardBody,
   Button,
-  Switch
+  Switch,
+  Input
 } from "@material-tailwind/react";
 
 const UPDATE_STATUS_LABELS = {
@@ -125,6 +126,10 @@ export function Maintenance() {
     deleteSshConfig,
     testSshConnection,
     fetchSuperuserStatus,
+    fetchSetupStatus,
+    deleteSetupEndpoint,
+    deleteSetupServer,
+    updateSetupApiKey,
     removeSuperuserAccount
   } = useMaintenance();
 
@@ -189,6 +194,13 @@ export function Maintenance() {
   const [superuserSummary, setSuperuserSummary] = useState(null);
   const [superuserStatusError, setSuperuserStatusError] = useState("");
   const [superuserDeleteLoading, setSuperuserDeleteLoading] = useState(false);
+  const [setupResources, setSetupResources] = useState(null);
+  const [setupResourcesLoading, setSetupResourcesLoading] = useState(true);
+  const [setupResourcesError, setSetupResourcesError] = useState("");
+  const [apiKeyDrafts, setApiKeyDrafts] = useState({});
+  const [apiKeyUpdatingId, setApiKeyUpdatingId] = useState(null);
+  const [serverDeleteId, setServerDeleteId] = useState(null);
+  const [endpointDeleteId, setEndpointDeleteId] = useState(null);
 
   const [duplicates, setDuplicates] = useState([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(true);
@@ -225,6 +237,30 @@ export function Maintenance() {
       setSuperuserStatusLoading(false);
     }
   }, [fetchSuperuserStatus, showToast]);
+
+  const loadSetupResources = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setSetupResourcesLoading(true);
+    }
+    setSetupResourcesError("");
+    try {
+      const data = await fetchSetupStatus();
+      setSetupResources(data);
+      setApiKeyDrafts({});
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Setup-Daten konnten nicht geladen werden";
+      setSetupResourcesError(message);
+      if (!silent) {
+        showToast({
+          variant: "error",
+          title: "Setup-Daten",
+          description: message
+        });
+      }
+    } finally {
+      setSetupResourcesLoading(false);
+    }
+  }, [fetchSetupStatus, showToast]);
 
   const fetchPortainerStatus = useCallback(async ({ silent = false } = {}) => {
     if (portainerRequestRef.current) {
@@ -319,12 +355,24 @@ export function Maintenance() {
   }, [loadSuperuserStatus]);
 
   useEffect(() => {
+    loadSetupResources();
+  }, [loadSetupResources]);
+
+  useEffect(() => {
     fetchPortainerStatus();
   }, [fetchPortainerStatus]);
 
   useEffect(() => {
     fetchDuplicates();
   }, [fetchDuplicates]);
+
+  const setupServers = useMemo(() => setupResources?.servers?.items ?? [], [setupResources]);
+  const setupEndpoints = useMemo(() => setupResources?.endpoints?.items ?? [], [setupResources]);
+  const apiKeyInfoMap = useMemo(() => {
+    const items = setupResources?.apiKeys?.items ?? [];
+    return new Map(items.map((entry) => [entry.serverId, entry]));
+  }, [setupResources]);
+  const setupComplete = useMemo(() => Boolean(setupResources?.setupComplete), [setupResources]);
 
   const totals = useMemo(() => {
     const groups = Array.isArray(duplicates) ? duplicates.length : 0;
@@ -499,6 +547,135 @@ export function Maintenance() {
       setSuperuserDeleteLoading(false);
     }
   }, [superuserDeleteLoading, superuserStatusLoading, superuserExists, removeSuperuserAccount, loadSuperuserStatus, showToast]);
+
+  const handleDeleteEndpoint = useCallback(async (endpointId) => {
+    if (endpointDeleteId === endpointId) {
+      return;
+    }
+    const target = setupEndpoints.find((entry) => entry.id === endpointId);
+    if (!target) {
+      return;
+    }
+    const label = target.name || `Endpoint ${target.external_id}`;
+    const confirmMessage = `Endpoint "${label}" wirklich löschen?${target.is_default ? "\nDieser Endpoint ist aktuell als Standard markiert." : ""}`;
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(confirmMessage);
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setEndpointDeleteId(endpointId);
+    try {
+      await deleteSetupEndpoint(endpointId);
+      showToast({
+        variant: "success",
+        title: "Endpoint gelöscht",
+        description: `Endpoint "${label}" wurde entfernt.`
+      });
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Endpoint konnte nicht gelöscht werden.";
+      showToast({
+        variant: "error",
+        title: "Endpoint löschen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setEndpointDeleteId(null);
+    }
+  }, [deleteSetupEndpoint, endpointDeleteId, loadSetupResources, setupEndpoints, showToast]);
+
+  const handleDeleteServer = useCallback(async (serverId) => {
+    if (serverDeleteId === serverId) {
+      return;
+    }
+    const target = setupServers.find((entry) => entry.id === serverId);
+    if (!target) {
+      return;
+    }
+    const linkedEndpoints = setupEndpoints.filter((entry) => entry.server_id === serverId);
+    const label = target.name || target.url || `Server ${serverId}`;
+    const confirmMessage = [
+      `Server "${label}" wirklich löschen?`,
+      linkedEndpoints.length ? `Dabei werden ${linkedEndpoints.length} zugeordnete Endpoint(s) entfernt.` : null,
+      "Das System benötigt anschließend erneut einen gültigen Server/Endpoint im Setup."
+    ].filter(Boolean).join("\n");
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(confirmMessage);
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setServerDeleteId(serverId);
+    try {
+      await deleteSetupServer(serverId);
+      showToast({
+        variant: "success",
+        title: "Server gelöscht",
+        description: `Server "${label}" wurde entfernt.`
+      });
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Server konnte nicht gelöscht werden.";
+      showToast({
+        variant: "error",
+        title: "Server löschen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setServerDeleteId(null);
+    }
+  }, [deleteSetupServer, loadSetupResources, serverDeleteId, setupEndpoints, setupServers, showToast]);
+
+  const handleApiKeyDraftChange = useCallback((serverId, value) => {
+    setApiKeyDrafts((prev) => ({
+      ...prev,
+      [serverId]: value
+    }));
+  }, []);
+
+  const handleApiKeyUpdate = useCallback(async (serverId) => {
+    const draft = (apiKeyDrafts[serverId] ?? "").trim();
+    if (!draft) {
+      showToast({
+        variant: "warning",
+        title: "API-Key fehlt",
+        description: "Bitte gib einen API-Key ein."
+      });
+      return;
+    }
+    if (apiKeyUpdatingId === serverId) {
+      return;
+    }
+
+    setApiKeyUpdatingId(serverId);
+    try {
+      await updateSetupApiKey(serverId, draft);
+      showToast({
+        variant: "success",
+        title: "API-Key aktualisiert",
+        description: "Der API-Key wurde gespeichert."
+      });
+      setApiKeyDrafts((prev) => ({
+        ...prev,
+        [serverId]: ""
+      }));
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "API-Key konnte nicht aktualisiert werden.";
+      showToast({
+        variant: "error",
+        title: "Aktualisierung fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setApiKeyUpdatingId(null);
+    }
+  }, [apiKeyDrafts, apiKeyUpdatingId, loadSetupResources, showToast, updateSetupApiKey]);
+
   const handleMaintenanceToggle = useCallback(async (nextActive) => {
     if (maintenanceLoading || maintenanceToggleLoading) return;
     if (nextActive === maintenanceActive) return;
@@ -705,6 +882,181 @@ export function Maintenance() {
           </div>
           {maintenanceToggleLoading && (
             <p className="text-xs text-stormGrey-500">Wartungsmodus wird aktualisiert…</p>
+          )}
+      </CardBody>
+    </Card>
+
+      <Card>
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+            className="flex items-center justify-between"
+          >
+            <span>Server &amp; Endpoints</span>
+
+          </Typography>
+        </CardHeader>
+        <CardBody className="flex flex-col gap-4 p-4">
+          {setupResourcesLoading && (
+            <p className="text-sm text-stormGrey-500">Daten werden geladen…</p>
+          )}
+          {!setupResourcesLoading && setupResourcesError && (
+            <Alert color="red" className="border border-red-200 bg-red-50 text-red-700">
+              {setupResourcesError}
+            </Alert>
+          )}
+          {!setupResourcesLoading && !setupResourcesError && (
+            <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
+                    Server
+                  </Typography>
+                  <Typography variant="small" color="blue-gray">
+                    {setupServers.length} vorhanden
+                  </Typography>
+                </div>
+                {setupServers.length === 0 ? (
+                  <p className="text-sm text-stormGrey-500">
+                    Es sind derzeit keine Server hinterlegt.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {setupServers.map((server) => {
+                      const apiKeyInfo = apiKeyInfoMap.get(server.id) || null;
+                      const hasKey = Boolean(apiKeyInfo?.hasKey);
+                      const apiKeyUpdatedLabel = apiKeyInfo?.updatedAt
+                        ? new Date(apiKeyInfo.updatedAt).toLocaleString("de-DE", {
+                            year: "numeric",
+                            month: "2-digit",
+                            day: "2-digit",
+                            hour: "2-digit",
+                            minute: "2-digit"
+                          })
+                        : null;
+
+                      return (
+                        <div
+                          key={server.id}
+                          className="flex flex-col gap-3 rounded-md border border-blue-gray-100 p-3 md:flex-row md:items-start md:justify-between"
+                        >
+                          <div className="flex flex-col gap-1">
+                            <p className="text-sm font-medium text-stormGrey-900">
+                              {server.name || "Ohne Namen"}
+                            </p>
+                            <p className="text-xs text-stormGrey-500 break-all">
+                              {server.url}
+                            </p>
+                            <p className="text-xs text-stormGrey-500">
+                              API-Key: {hasKey ? "vorhanden" : "nicht hinterlegt"}{apiKeyUpdatedLabel ? ` (aktualisiert am ${apiKeyUpdatedLabel})` : ""}
+                            </p>
+                          </div>
+                          <div className="flex w-full flex-col gap-2 md:max-w-xs">
+                            <Input
+                              type="password"
+                              label="Neuer API-Key"
+                              value={apiKeyDrafts[server.id] ?? ""}
+                              onChange={(event) => handleApiKeyDraftChange(server.id, event.target.value)}
+                              disabled={setupResourcesLoading || apiKeyUpdatingId === server.id}
+                            />
+                            <div className="flex items-center gap-2 justify-end">
+                              <Button
+                                variant="text"
+                                color="red"
+                                size="sm"
+                                onClick={() => handleDeleteServer(server.id)}
+                                disabled={setupResourcesLoading || serverDeleteId === server.id || endpointDeleteId !== null || apiKeyUpdatingId === server.id}
+                              >
+                                {serverDeleteId === server.id ? "Lösche…" : "Löschen"}
+                              </Button>
+                              <Button
+                                color="blue"
+                                size="sm"
+                                onClick={() => handleApiKeyUpdate(server.id)}
+                                disabled={setupResourcesLoading || apiKeyUpdatingId === server.id}
+                              >
+                                {apiKeyUpdatingId === server.id ? "Speichere…" : "API-Key speichern"}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
+                    Endpoints
+                  </Typography>
+                  <Typography variant="small" color="blue-gray">
+                    {setupEndpoints.length} vorhanden
+                  </Typography>
+                </div>
+                {setupEndpoints.length === 0 ? (
+                  <p className="text-sm text-stormGrey-500">
+                    Es sind derzeit keine Endpoints hinterlegt.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {setupEndpoints.map((endpoint) => (
+                      <div
+                        key={endpoint.id}
+                        className="flex flex-col gap-2 rounded-md border border-blue-gray-100 p-3 md:flex-row md:items-center md:justify-between"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-stormGrey-900">
+                              {endpoint.name || `Endpoint ${endpoint.external_id}`}
+                            </p>
+                            {endpoint.is_default ? (
+                              <span className="rounded-full bg-arcticBlue-100 px-2 py-0.5 text-[10px] font-semibold text-arcticBlue-700">
+                                Standard
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-xs text-stormGrey-500">
+                            ID: {endpoint.external_id} · Server: {endpoint.server_name || endpoint.server_url}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="text"
+                            color="red"
+                            size="sm"
+                            onClick={() => handleDeleteEndpoint(endpoint.id)}
+                            disabled={setupResourcesLoading || endpointDeleteId === endpoint.id || serverDeleteId !== null}
+                          >
+                            {endpointDeleteId === endpoint.id ? "Lösche…" : "Löschen"}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {!setupComplete && (
+                <Alert color="amber" className="border border-amber-200 bg-amber-50 text-amber-800">
+                  Das Setup ist aktuell unvollständig. Bitte öffne den Setup-Bereich, um Server, Endpoint und API-Key erneut festzulegen.
+                </Alert>
+              )}
+
+              <div className="flex items-center justify-end">
+                <Button
+                  variant="outlined"
+                  color="gray"
+                  size="sm"
+                  onClick={() => loadSetupResources()}
+                  disabled={setupResourcesLoading}
+                >
+                  Aktualisieren
+                </Button>
+              </div>
+            </div>
           )}
         </CardBody>
       </Card>

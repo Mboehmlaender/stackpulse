@@ -58,6 +58,45 @@ CREATE TABLE IF NOT EXISTS user_group_memberships (
 );
 `;
 
+
+const createServersTable = `
+CREATE TABLE IF NOT EXISTS servers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+const createEndpointsTable = `
+CREATE TABLE IF NOT EXISTS endpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+  UNIQUE (server_id, external_id)
+);
+`;
+
+
+const createServerApiKeysTable = `
+CREATE TABLE IF NOT EXISTS server_api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL UNIQUE,
+  key_cipher TEXT NOT NULL,
+  key_iv TEXT NOT NULL,
+  key_tag TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+`;
+
 const createUserSettingsTable = `
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id INTEGER NOT NULL,
@@ -96,6 +135,15 @@ console.log('✅ user_groups table ready');
 
 db.exec(createUserGroupMembershipsTable);
 console.log('✅ user_group_memberships table ready');
+
+db.exec(createServersTable);
+console.log('✅ servers table ready');
+
+db.exec(createEndpointsTable);
+console.log('✅ endpoints table ready');
+
+db.exec(createServerApiKeysTable);
+console.log('✅ server_api_keys table ready');
 
 db.exec(createUserSettingsTable);
 console.log('✅ user_settings table ready');

@@ -3,9 +3,11 @@ import {
   WrenchScrewdriverIcon,
   ListBulletIcon,
   ServerStackIcon,
-  RectangleStackIcon
+  RectangleStackIcon,
+  UserIcon,
+  UserGroupIcon
 } from "@heroicons/react/24/solid";
-import { Stacks, Maintenance, Logs } from "@/pages/dashboard";
+import { Stacks, Maintenance, Logs, Users, Usergroups } from "@/pages/dashboard";
 import { SignIn, SignUp } from "@/pages/auth";
 
 const icon = {
@@ -33,6 +35,18 @@ export const routes = [
         name: "logs",
         path: "/logs",
         element: <Logs />,
+      },
+      {
+        icon: <UserIcon {...icon} />,
+        name: "benutzer",
+        path: "/users",
+        element: <Users />,
+      },
+      {
+        icon: <UserGroupIcon {...icon} />,
+        name: "rechtegruppen",
+        path: "/usergroups",
+        element: <Usergroups />,
       },
     ],
   },
