@@ -148,20 +148,20 @@ export function Logs() {
   const [optionsInitialized, setOptionsInitialized] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
-    const { showToast } = useToast();
-    const {
-      maintenance: maintenanceMeta,
-      update: updateState,
-      script: scriptConfig,
-      ssh: sshConfig,
-    } = useMaintenance();
-  
-    const maintenanceActive = Boolean(maintenanceMeta?.active);
-    const maintenanceMessage = maintenanceMeta?.message;
-    const updateRunning = Boolean(updateState?.running);
-    const maintenanceLocked = maintenanceActive || updateRunning;
-    const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
-  
+  const { showToast } = useToast();
+  const {
+    maintenance: maintenanceMeta,
+    update: updateState,
+    script: scriptConfig,
+    ssh: sshConfig,
+  } = useMaintenance();
+
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const maintenanceLocked = maintenanceActive || updateRunning;
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+
 
   const {
     page,
@@ -620,8 +620,8 @@ export function Logs() {
   const [open, setOpen] = React.useState(false);
   const toggleOpen = () => setOpen((cur) => !cur);
   return (
-    <div className="mt-12 mb-8 flex flex-col gap-12">
-            {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+    <div className="mt-12 mb-8">
+      {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
         <div className="flex flex-col gap-1">
           <span>
             Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
@@ -635,14 +635,14 @@ export function Logs() {
       </div>
       )}
       <Card>
-        <CardHeader variant="gradient" color="gray" className="p-4 pt-2 pb-2">
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
           <Typography variant="h6" color="white">
             <button
               onClick={handleToggleFilters}
               className="flex w-full items-center justify-between"
             >
               <span className="flex items-center gap-2">
-                <span>Filter und Optionen</span>
+                <span>Logs</span>
                 {activeFilterCount > 0 && (
 
                   <span className="rounded-full bg-blue-gray-500/80 px-2 py-0.5 text-xs text-white">
@@ -651,14 +651,14 @@ export function Logs() {
                 )}
               </span>
               <span className="text-xs uppercase tracking-wide text-gray-400">
-                {filtersOpen ? "Ausblenden" : "Anzeigen"}
+                {filtersOpen ? "Filter ausblenden" : "Filter anzeigen"}
               </span>
             </button>
           </Typography>
         </CardHeader>
-        <CardBody>
+        <CardBody className="pt-0">
           {filtersOpen && (
-            <div>
+            <div className="mb-8">
 
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -945,118 +945,106 @@ export function Logs() {
             </div>
 
           )}
-
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
-          <Typography
-            variant="h6"
-            color="white"
-            className="flex items-center justify-between"
-          >
-            <span>Logs</span>
-          </Typography>
-        </CardHeader>
-        <CardBody className="overflow-x-scroll px-0 pt-0 pb-2">
-          <table className="w-full min-w-[640px] table-auto">
-            <thead>
-              <tr>
-                {["Zeitpunkt", "Stack", "Art", "Status", "Nachricht", "Endpoint", "Aktionen"].map((el) => (
-                  <th
-                    key={el}
-                    className="border-b border-stormGrey-50 py-3 px-5 text-left"
-                  >
-                    <Typography
-                      variant="small"
-                      className="text-[11px] font-bold uppercase text-stormGrey-400"
-                    >
+          <div className="overflow-x-auto rounded-lg border border-blue-gray-50">
+            <table className="w-full min-w-[720px] table-auto text-left">
+              <thead>
+                <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-stormGrey-400">
+                  {["Zeitpunkt", "Stack", "Art", "Status", "Nachricht", "Endpoint", "Aktionen"].map((el) => (
+                    <th key={el} className="px-6 py-4 font-semibold">
                       {el}
-                    </Typography>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log) => {
-                const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
-                const className = "py-3 px-5";
-                const stackDisplayName = log.stackName || "Unbekannt";
-                const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
-                const redeployTypeLabel = log.redeployType
-                  ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
-                  : '---';
-                return (
-                  <tr key={log.id}>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                        className="mb-1 block text-xs font-medium text-stormGrey-600">
-                        {formatTimestamp(log.timestamp)}
-                      </Typography>
-                    </td>
-                    <td className={className}>
-                      <div className="flex flex-col">
-                        <span className="font-medium">{stackDisplayName}</span>
-                        <Typography
-                          variant="small"
-                        >
-                          {showStackId && (
-                            <span className="text-xs text-stormGrey-400">ID: {log.stackId}</span>
-                          )}
-                        </Typography>
-                      </div>
-                    </td>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                      >
-                        {redeployTypeLabel}
-                      </Typography>
-                    </td>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                        className={`font-semibold ${statusClass}`}
-                      >
-                        {log.status}
-                      </Typography>
-                    </td>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                      >
-                        {log.message || "-"}
-                      </Typography>
-                    </td>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                      >
-                        {log.endpoint ?? "-"}
-                      </Typography>
-                    </td>
-                    <td className={className}>
-                      <Typography
-                        variant="small"
-                      >
-                        <button
-                          onClick={() => handleDeleteLog(log.id)}
-                          disabled={actionLoading}
-                          className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60">
-                          Löschen
-                        </button>
-                      </Typography>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-8 text-center text-stormGrey-400">
+                      Logs werden geladen ...
                     </td>
                   </tr>
-                );
-              }
-              )}
-            </tbody>
-          </table>
+                ) : logs.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-8 text-center text-stormGrey-400">
+                      Keine Logs gefunden.
+                    </td>
+                  </tr>
+                ) : (
+                  logs.map((log, index) => {
+                    const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
+                    const stackDisplayName = log.stackName || "Unbekannt";
+                    const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
+                    const redeployTypeLabel = log.redeployType
+                      ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
+                      : '---';
+                    const rowClass = index === logs.length - 1 ? "" : "border-b border-blue-gray-50";
+                    return (
+                      <tr key={log.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
+                        <td className="px-6 py-4">
+                          <Typography
+                            variant="small"
+                            className="mb-1 block text-xs font-medium text-stormGrey-600">
+                            {formatTimestamp(log.timestamp)}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <span className="font-medium">{stackDisplayName}</span>
+                            <Typography variant="small">
+                              {showStackId && (
+                                <span className="text-xs text-stormGrey-400">ID: {log.stackId}</span>
+                              )}
+                            </Typography>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            {redeployTypeLabel}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography
+                            variant="small"
+                            className={`font-semibold ${statusClass}`}
+                          >
+                            {log.status}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            {log.message || "-"}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            {log.endpoint ?? "-"}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            <button
+                              onClick={() => handleDeleteLog(log.id)}
+                              disabled={actionLoading}
+                              className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60">
+                              Löschen
+                            </button>
+                          </Typography>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <Typography variant="small" color="gray">
+              {""}
+            </Typography>
+            <PaginationControls disabled={loading && logs.length === 0} />
+          </div>
         </CardBody>
       </Card>
-      <PaginationControls disabled={actionLoading} />
     </div>
 
 

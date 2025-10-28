@@ -9,6 +9,7 @@ import {
   Footer,
 } from "@/widgets/layout";
 import routes from "@/routes";
+import { UserDetails } from "@/pages/dashboard/userDetails.jsx";
 import { useMaterialTailwindController, setOpenConfigurator } from "@/components";
 
 export function Dashboard() {
@@ -154,6 +155,7 @@ export function Dashboard() {
                 <Route exact path={path} element={element} />
               ))
           )}
+          <Route path="users/:userId" element={<UserDetails />} />
         </Routes>
         <div className="text-blue-gray-600">
           <Footer />

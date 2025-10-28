@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   password_salt TEXT,
+  avatar_color TEXT,
   is_active INTEGER NOT NULL DEFAULT 1,
   last_login DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -129,6 +130,17 @@ console.log('✅ settings table ready');
 
 db.exec(createUsersTable);
 console.log('✅ users table ready');
+
+try {
+  const userColumns = db.prepare('PRAGMA table_info(users)').all();
+  const hasAvatarColor = userColumns.some((column) => column.name === 'avatar_color');
+  if (!hasAvatarColor) {
+    db.exec('ALTER TABLE users ADD COLUMN avatar_color TEXT');
+    console.log('ℹ️ avatar_color column hinzugefügt');
+  }
+} catch (err) {
+  console.error('⚠️ Konnte avatar_color Spalte nicht prüfen/erstellen:', err.message);
+}
 
 db.exec(createUserGroupsTable);
 console.log('✅ user_groups table ready');

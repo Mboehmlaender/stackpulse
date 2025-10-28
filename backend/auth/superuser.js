@@ -3,6 +3,36 @@ import { db } from '../db/index.js';
 
 export const SUPERUSER_GROUP_NAME = 'superuser';
 
+const AVATAR_COLORS = [
+  'bg-arcticBlue-600',
+  'bg-copperRust-500',
+  'bg-sunsetCoral-600',
+  'bg-mintTea-400',
+  'bg-lavenderSmoke-500',
+  'bg-emeraldMist-500',
+  'bg-roseQuartz-500',
+  'bg-auroraTeal-500',
+  'bg-citrusPunch-500',
+  'bg-mossGreen-400'
+];
+
+const DEFAULT_AVATAR_COLOR = 'bg-mossGreen-500';
+const AVATAR_COLOR_SET = new Set([...AVATAR_COLORS, DEFAULT_AVATAR_COLOR]);
+
+const pickRandomAvatarColor = () => {
+  if (!Array.isArray(AVATAR_COLORS) || AVATAR_COLORS.length === 0) {
+    return DEFAULT_AVATAR_COLOR;
+  }
+  const index = Math.floor(Math.random() * AVATAR_COLORS.length);
+  return AVATAR_COLORS[index] ?? DEFAULT_AVATAR_COLOR;
+};
+
+const normalizeAvatarColor = (value) => {
+  if (!value) return null;
+  const candidate = String(value).trim();
+  return AVATAR_COLOR_SET.has(candidate) ? candidate : null;
+};
+
 const selectGroupByName = db.prepare('SELECT * FROM user_groups WHERE name = ?');
 const insertGroup = db.prepare('INSERT INTO user_groups (name, description) VALUES (?, ?)');
 
@@ -26,13 +56,13 @@ const updateLastLogin = db.prepare(`
 `);
 
 const insertUser = db.prepare(`
-  INSERT INTO users (username, email, password_hash, password_salt, is_active, created_at, updated_at)
-  VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  INSERT INTO users (username, email, password_hash, password_salt, avatar_color, is_active, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 `);
 
 const updateUser = db.prepare(`
   UPDATE users
-  SET username = ?, email = ?, password_hash = ?, password_salt = ?, is_active = 1, updated_at = CURRENT_TIMESTAMP
+  SET username = ?, email = ?, password_hash = ?, password_salt = ?, is_active = 1, avatar_color = COALESCE(?, avatar_color), updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
 
@@ -63,15 +93,19 @@ const countSuperusers = db.prepare(`
   WHERE g.name = ?
 `);
 
-const creationTransaction = db.transaction(({ username, email, passwordHash, passwordSalt, groupId }) => {
+const creationTransaction = db.transaction(({ username, email, passwordHash, passwordSalt, groupId, avatarColor }) => {
   const existingUser = selectUserByUsername.get(username) || selectUserByEmail.get(email);
 
   let userId;
   if (existingUser) {
-    updateUser.run(username, email, passwordHash, passwordSalt, existingUser.id);
+    const existingColor = normalizeAvatarColor(existingUser.avatar_color);
+    const normalizedNewColor = normalizeAvatarColor(avatarColor);
+    const colorToPersist = existingColor || normalizedNewColor || DEFAULT_AVATAR_COLOR;
+    updateUser.run(username, email, passwordHash, passwordSalt, colorToPersist, existingUser.id);
     userId = existingUser.id;
   } else {
-    const result = insertUser.run(username, email, passwordHash, passwordSalt);
+    const colorToPersist = normalizeAvatarColor(avatarColor) || DEFAULT_AVATAR_COLOR;
+    const result = insertUser.run(username, email, passwordHash, passwordSalt, colorToPersist);
     userId = result.lastInsertRowid;
   }
 
@@ -164,19 +198,24 @@ function createOrUpdateSuperuser({ username, email, password }) {
 
   const { hash, salt } = hashPassword(password);
   const group = ensureGroup(SUPERUSER_GROUP_NAME, 'System Superuser');
+  const avatarColor = pickRandomAvatarColor();
 
   const user = creationTransaction({
     username: normalizedUsername,
     email: normalizedEmail,
     passwordHash: hash,
     passwordSalt: salt,
-    groupId: group.id
+    groupId: group.id,
+    avatarColor
   });
+
+  const persistedColor = normalizeAvatarColor(user.avatar_color) || avatarColor || DEFAULT_AVATAR_COLOR;
 
   return {
     id: user.id,
     username: user.username,
-    email: user.email
+    email: user.email,
+    avatarColor: persistedColor
   };
 }
 

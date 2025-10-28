@@ -7,11 +7,40 @@ import {
   Typography,
   Chip,
   Button,
+  Select,
+  Option,
   Input
 } from "@material-tailwind/react";
+import { useNavigate } from "react-router-dom";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
+
+const normalizeUserGroups = (rawGroups) => {
+  if (!Array.isArray(rawGroups)) {
+    return [];
+  }
+  return rawGroups
+    .map((group) => {
+      if (group && typeof group === "object") {
+        const id = Number(group.id);
+        const name = typeof group.name === "string" ? group.name : "";
+        if (!name) {
+          return null;
+        }
+        return {
+          id: Number.isFinite(id) ? id : null,
+          name
+        };
+      }
+      if (typeof group === "string") {
+        const name = group.trim();
+        return name ? { id: null, name } : null;
+      }
+      return null;
+    })
+    .filter(Boolean);
+};
 
 export function Users() {
   const [users, setUsers] = useState([]);
@@ -22,6 +51,8 @@ export function Users() {
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
   const maintenanceActive = Boolean(maintenance?.active);
+  const navigate = useNavigate();
+  const noop = useCallback(() => { }, []);
 
   const {
     page,
@@ -48,10 +79,11 @@ export function Users() {
           username: item.username || "",
           email: item.email || "",
           isActive: Boolean(item.isActive),
+          avatarColor: typeof item.avatarColor === "string" ? item.avatarColor.trim() : null,
           lastLogin: item.lastLogin || null,
           createdAt: item.createdAt || null,
           updatedAt: item.updatedAt || null,
-          groups: Array.isArray(item.groups) ? item.groups : []
+          groups: normalizeUserGroups(item.groups)
         }))
         .sort((a, b) => a.username.localeCompare(b.username, "de-DE"));
       setUsers(sorted);
@@ -99,7 +131,7 @@ export function Users() {
       const haystacks = [
         user.username,
         user.email,
-        ...user.groups
+        ...user.groups.map((group) => group.name)
       ].map((value) => String(value || "").toLowerCase());
       return haystacks.some((value) => value.includes(query));
     });
@@ -165,48 +197,14 @@ export function Users() {
 
   return (
     <div className="mt-12">
-      <Card className="border border-blue-gray-100 shadow-sm">
-        <CardHeader
-          floated={false}
-          shadow={false}
-          color="transparent"
-          className="m-0 flex flex-col gap-4 bg-transparent p-6 md:flex-row md:items-center md:justify-between"
-        >
-          <div>
-            <Typography variant="h4" color="blue-gray">
-              Benutzerverwaltung
-            </Typography>
-            <Typography variant="small" color="gray" className="font-normal">
-              Übersicht aller im System angelegten Benutzer.
-            </Typography>
-          </div>
-          <div className="flex flex-col items-stretch gap-3 md:flex-row md:items-center">
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-gray-400">
-                Einträge pro Seite
-              </label>
-              <select
-                value={perPage}
-                onChange={handlePerPageChange}
-                className="w-full rounded-lg border border-blue-gray-100 px-3 py-2 text-sm text-blue-gray-700 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 md:w-40"
-              >
-                {perPageOptions.map(({ value, label }) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <Button
-              variant="outlined"
-              color="blue"
-              onClick={handleRefresh}
-              disabled={loading}
-              className="whitespace-nowrap"
-            >
-              {loading ? "Lädt ..." : "Aktualisieren"}
-            </Button>
-          </div>
+      <Card>
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+          >
+            <span>Benutzerverwaltung</span>
+          </Typography>
         </CardHeader>
         <CardBody className="pt-0">
           {maintenanceActive && (
@@ -215,8 +213,36 @@ export function Users() {
             </div>
           )}
 
-          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div className="w-full md:max-w-md">
+          <div className="mb-8">
+
+            <div className="flex flex-wrap gap-2">            {/* <div className="flex flex-col items-stretch gap-3 md:flex-row md:items-center">
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-gray-400">
+                  Einträge pro Seite
+                </label>
+                <select
+                  value={perPage}
+                  onChange={handlePerPageChange}
+                  className="w-full rounded-lg border border-blue-gray-100 px-3 py-2 text-sm text-blue-gray-700 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 md:w-40"
+                >
+                  {perPageOptions.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button
+                variant="outlined"
+                color="blue"
+                onClick={handleRefresh}
+                disabled={loading}
+                className="whitespace-nowrap"
+              >
+                {loading ? "Lädt ..." : "Aktualisieren"}
+              </Button>
+            </div> */}
+              {/* <div className="w-full md:max-w-md">
               <Input
                 label="Suchen nach Name, E-Mail oder Gruppe"
                 value={searchQuery}
@@ -224,8 +250,8 @@ export function Users() {
                 disabled={loading && !users.length}
                 crossOrigin=""
               />
-            </div>
-            {searchQuery && (
+            </div> */}
+              {/* {searchQuery && (
               <Button
                 variant="text"
                 color="blue-gray"
@@ -234,9 +260,36 @@ export function Users() {
               >
                 Suche zurücksetzen
               </Button>
-            )}
-          </div>
+            )} */}
 
+
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
+                <div className="md:flex-1">
+                  <Input
+                    label="Suchen nach Name, E-Mail oder Gruppe"
+                    value={searchQuery}
+                    onChange={handleSearchChange}
+                    disabled={loading && !users.length}
+                    crossOrigin=""
+                  />
+                </div>
+                <div className="md:mt-0 mt-8 md:flex-1">
+                  <Select
+                    variant="static"
+                    label="Einträge pro Seite"
+                    onChange={noop}
+                    value={perPage}
+                  >
+                    {perPageOptions.map(({ value, label }) => (
+                      <Option key={value} value={value}>
+                        {label}
+                      </Option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </div>
           {error && (
             <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               {error}
@@ -246,25 +299,27 @@ export function Users() {
           <div className="overflow-x-auto rounded-lg border border-blue-gray-50">
             <table className="w-full min-w-[720px] table-auto text-left">
               <thead>
-                <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-blue-gray-400">
+                <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-stormGrey-400">
                   <th className="px-6 py-4 font-semibold">Benutzername</th>
                   <th className="px-6 py-4 font-semibold">E-Mail</th>
                   <th className="px-6 py-4 font-semibold">Gruppen</th>
                   <th className="px-6 py-4 font-semibold">Status</th>
                   <th className="px-6 py-4 font-semibold">Letzte Anmeldung</th>
                   <th className="px-6 py-4 font-semibold">Erstellt am</th>
+                  <th className="px-6 py-4 font-semibold">Aktionen</th>
+
                 </tr>
               </thead>
               <tbody>
                 {loading && users.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                    <td colSpan={7} className="px-6 py-8 text-center text-blue-gray-400">
                       Benutzerdaten werden geladen ...
                     </td>
                   </tr>
                 ) : paginatedUsers.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                    <td colSpan={7} className="px-6 py-8 text-center text-blue-gray-400">
                       Keine Benutzer gefunden.
                     </td>
                   </tr>
@@ -272,18 +327,32 @@ export function Users() {
                   paginatedUsers.map((user, index) => {
                     const rowClass = index === paginatedUsers.length - 1 ? "" : "border-b border-blue-gray-50";
                     return (
-                      <tr key={user.id} className={`text-sm text-blue-gray-700 ${rowClass}`}>
-                        <td className="px-6 py-4 font-medium text-blue-gray-900">{user.username || "–"}</td>
-                        <td className="px-6 py-4">{user.email || "–"}</td>
+                      <tr key={user.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="font-medium text-stormGrey-900">
+                            {user.username || "–"}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            {user.email || "–"}
+                          </Typography>
+                        </td>
                         <td className="px-6 py-4">
                           {user.groups.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
                               {user.groups.map((group) => (
-                                <Chip key={group} value={group} size="sm" color="blue-gray" variant="ghost" />
+                                <Chip
+                                  key={group.id ?? group.name}
+                                  value={group.name}
+                                  size="sm"
+                                  color="blue-gray"
+                                  variant="ghost"
+                                />
                               ))}
                             </div>
                           ) : (
-                            <span className="text-blue-gray-400">–</span>
+                            <span className="text-stormGrey-400">–</span>
                           )}
                         </td>
                         <td className="px-6 py-4">
@@ -294,8 +363,26 @@ export function Users() {
                             variant="ghost"
                           />
                         </td>
-                        <td className="px-6 py-4">{formatTimestamp(user.lastLogin)}</td>
-                        <td className="px-6 py-4">{formatTimestamp(user.createdAt)}</td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            {formatTimestamp(user.lastLogin)}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            {formatTimestamp(user.createdAt)}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Button
+                            size="sm"
+                            variant="outlined"
+                            color="blue-gray"
+                            onClick={() => navigate(`/dashboard/users/${user.id}`)}
+                          >
+                            Details
+                          </Button>
+                        </td>
                       </tr>
                     );
                   })
@@ -306,9 +393,7 @@ export function Users() {
 
           <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <Typography variant="small" color="gray">
-              {!loading && users.length === 0
-                ? "Noch keine Benutzer angelegt."
-                : `${filteredCount.toLocaleString("de-DE")} Benutzer gefunden`}
+              {""}
             </Typography>
             <PaginationControls disabled={loading && users.length === 0} />
           </div>

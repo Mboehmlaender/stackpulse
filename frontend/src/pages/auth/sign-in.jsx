@@ -6,6 +6,7 @@ import {
   Alert,
 } from "@material-tailwind/react";
 import { useNavigate } from "react-router-dom";
+import pattern from "@/assets/images/pattern.png";
 
 export function SignIn() {
   const navigate = useNavigate();
@@ -195,7 +196,7 @@ export function SignIn() {
         </form>
       </div>
       <div className="w-2/5 h-full hidden lg:block">
-        <img src="/img/pattern.png" className="h-full w-full object-cover rounded-3xl" />
+        <img src={pattern} className="h-full w-full object-cover rounded-3xl" />
       </div>
     </section>
   );

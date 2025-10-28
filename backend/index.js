@@ -45,7 +45,7 @@ import {
   removeServer,
   setServerApiKey
 } from './setup/index.js';
-import { listUsers } from './users/index.js';
+import { listUsers, getUserById, updateUserGroups } from './users/index.js';
 import { listGroups } from './groups/index.js';
 
 dotenv.config();
@@ -145,7 +145,8 @@ const PUBLIC_API_ROUTES = [
 const sanitizeUser = (user) => ({
   id: user.id,
   username: user.username,
-  email: user.email
+  email: user.email,
+  avatarColor: user.avatar_color || null
 });
 
 const cleanupExpiredSessions = () => {
@@ -1680,6 +1681,53 @@ app.get('/api/users', (req, res) => {
   } catch (error) {
     console.error('⚠️ [Users] Abruf der Benutzerliste fehlgeschlagen:', error);
     res.status(500).json({ error: 'USERS_FETCH_FAILED' });
+  }
+});
+
+app.get('/api/users/:userId', (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const user = getUserById(numericId);
+    if (!user) {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    res.json({ item: user });
+  } catch (error) {
+    console.error(`⚠️ [Users] Abruf der Benutzerdetails fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_FETCH_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId/groups', (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+  const { groupIds } = req.body ?? {};
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const updatedUser = updateUserGroups(numericId, Array.isArray(groupIds) ? groupIds : []);
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND', details: error.missingGroupIds || [] });
+    }
+    console.error(`⚠️ [Users] Aktualisierung der Gruppenzuordnung fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_GROUPS_UPDATE_FAILED' });
   }
 });
 

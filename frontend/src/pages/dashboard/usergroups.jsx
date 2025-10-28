@@ -7,7 +7,10 @@ import {
   Typography,
   Chip,
   Button,
-  Input
+  Select,
+  Option,
+  Input,
+  useSelect
 } from "@material-tailwind/react";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
@@ -35,6 +38,7 @@ export function Usergroups() {
   } = usePage();
 
   useEffect(() => () => resetPagination(), [resetPagination]);
+  const noop = useCallback(() => { }, []);
 
   const fetchGroups = useCallback(async () => {
     setLoading(true);
@@ -50,9 +54,9 @@ export function Usergroups() {
           memberCount: Number(item.memberCount) || 0,
           members: Array.isArray(item.members)
             ? item.members.map((member) => ({
-                id: member.id,
-                username: member.username || ""
-              })).filter((member) => member.username)
+              id: member.id,
+              username: member.username || ""
+            })).filter((member) => member.username)
             : [],
           createdAt: item.createdAt || null,
           updatedAt: item.updatedAt || null
@@ -170,77 +174,54 @@ export function Usergroups() {
   return (
     <div className="mt-12">
       <Card className="border border-blue-gray-100 shadow-sm">
-        <CardHeader
-          floated={false}
-          shadow={false}
-          color="transparent"
-          className="m-0 flex flex-col gap-4 bg-transparent p-6 md:flex-row md:items-center md:justify-between"
-        >
-          <div>
-            <Typography variant="h4" color="blue-gray">
-              Benutzergruppen
-            </Typography>
-            <Typography variant="small" color="gray" className="font-normal">
-              Übersicht aller Gruppen inklusive Mitgliederliste.
-            </Typography>
-          </div>
-          <div className="flex flex-col items-stretch gap-3 md:flex-row md:items-center">
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-gray-400">
-                Einträge pro Seite
-              </label>
-              <select
-                value={perPage}
-                onChange={handlePerPageChange}
-                className="w-full rounded-lg border border-blue-gray-100 px-3 py-2 text-sm text-blue-gray-700 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 md:w-40"
-              >
-                {perPageOptions.map(({ value, label }) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <Button
-              variant="outlined"
-              color="blue"
-              onClick={handleRefresh}
-              disabled={loading}
-              className="whitespace-nowrap"
-            >
-              {loading ? "Lädt ..." : "Aktualisieren"}
-            </Button>
-          </div>
+        <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+          <Typography
+            variant="h6"
+            color="white"
+          >
+            <span>Benutzergruppen</span>
+          </Typography>
         </CardHeader>
         <CardBody className="pt-0">
+
           {maintenanceActive && (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
             </div>
           )}
 
-          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div className="w-full md:max-w-md">
-              <Input
-                label="Suchen nach Gruppenname, Beschreibung oder Mitglied"
-                value={searchQuery}
-                onChange={handleSearchChange}
-                disabled={loading && !groups.length}
-                crossOrigin=""
-              />
+          <div className="mb-8">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="md:flex-1">
+                <Input
+                  label="Suchen nach Name, E-Mail oder Gruppe"
+                  value={searchQuery}
+                  onChange={handleSearchChange}
+                  disabled={loading && !groups.length}
+                  crossOrigin=""
+                />
+              </div>
+              <div className="md:mt-0 mt-8 md:flex-1">
+                <Select
+                  variant="static"
+                  label="Einträge pro Seite"
+                  onChange={noop}
+                  value={perPage}
+                >
+                  {perPageOptions.map(({ value, label }) => (
+                    <Option key={value} value={value}>
+                      {label}
+                    </Option>
+                  ))}
+                </Select>
+              </div>
             </div>
-            {searchQuery && (
-              <Button
-                variant="text"
-                color="blue-gray"
-                onClick={handleClearSearch}
-                className="w-full md:w-auto"
-              >
-                Suche zurücksetzen
-              </Button>
-            )}
           </div>
-
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              {error}
+            </div>
+          )}
           {error && (
             <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               {error}
@@ -250,25 +231,27 @@ export function Usergroups() {
           <div className="overflow-x-auto rounded-lg border border-blue-gray-50">
             <table className="w-full min-w-[720px] table-auto text-left">
               <thead>
-                <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-blue-gray-400">
+                <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-stormGrey-400">
                   <th className="px-6 py-4 font-semibold">Gruppenname</th>
                   <th className="px-6 py-4 font-semibold">Beschreibung</th>
                   <th className="px-6 py-4 font-semibold">Mitglieder</th>
                   <th className="px-6 py-4 font-semibold">Anzahl</th>
                   <th className="px-6 py-4 font-semibold">Erstellt am</th>
                   <th className="px-6 py-4 font-semibold">Zuletzt aktualisiert</th>
+                  <th className="px-6 py-4 font-semibold">Aktionen</th>
+
                 </tr>
               </thead>
               <tbody>
                 {loading && groups.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                    <td colSpan={6} className="px-6 py-8 text-center text-stormGrey-400">
                       Gruppen werden geladen ...
                     </td>
                   </tr>
                 ) : paginatedGroups.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                    <td colSpan={6} className="px-6 py-8 text-center text-stormGrey-400">
                       Keine Gruppen gefunden.
                     </td>
                   </tr>
@@ -276,14 +259,20 @@ export function Usergroups() {
                   paginatedGroups.map((group, index) => {
                     const rowClass = index === paginatedGroups.length - 1 ? "" : "border-b border-blue-gray-50";
                     return (
-                      <tr key={group.id} className={`text-sm text-blue-gray-700 ${rowClass}`}>
-                        <td className="px-6 py-4 font-medium text-blue-gray-900">{group.name || "–"}</td>
+                      <tr key={group.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
                         <td className="px-6 py-4">
-                          {group.description ? (
-                            group.description
-                          ) : (
-                            <span className="text-blue-gray-400">–</span>
-                          )}
+                          <Typography variant="small" className="font-medium text-stormGrey-900">
+                            {group.name || "–"}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small">
+                            {group.description ? (
+                              group.description
+                            ) : (
+                              <span className="text-stormGrey-400">–</span>
+                            )}
+                          </Typography>
                         </td>
                         <td className="px-6 py-4">
                           {group.members.length > 0 ? (
@@ -299,7 +288,7 @@ export function Usergroups() {
                               ))}
                             </div>
                           ) : (
-                            <span className="text-blue-gray-400">Keine Mitglieder</span>
+                            <span className="text-stormGrey-400">Keine Mitglieder</span>
                           )}
                         </td>
                         <td className="px-6 py-4">
@@ -310,8 +299,21 @@ export function Usergroups() {
                             variant="ghost"
                           />
                         </td>
-                        <td className="px-6 py-4">{formatTimestamp(group.createdAt)}</td>
-                        <td className="px-6 py-4">{formatTimestamp(group.updatedAt)}</td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            {formatTimestamp(group.createdAt)}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            {formatTimestamp(group.updatedAt)}
+                          </Typography>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            Aktionen
+                          </Typography>
+                        </td>
                       </tr>
                     );
                   })
