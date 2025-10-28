@@ -3,7 +3,7 @@ import { db } from '../db/index.js';
 
 export const SUPERUSER_GROUP_NAME = 'superuser';
 
-const AVATAR_COLORS = [
+export const AVATAR_COLORS = [
   'bg-arcticBlue-600',
   'bg-copperRust-500',
   'bg-sunsetCoral-600',
@@ -16,10 +16,10 @@ const AVATAR_COLORS = [
   'bg-mossGreen-400'
 ];
 
-const DEFAULT_AVATAR_COLOR = 'bg-mossGreen-500';
+export const DEFAULT_AVATAR_COLOR = 'bg-mossGreen-500';
 const AVATAR_COLOR_SET = new Set([...AVATAR_COLORS, DEFAULT_AVATAR_COLOR]);
 
-const pickRandomAvatarColor = () => {
+export const pickRandomAvatarColor = () => {
   if (!Array.isArray(AVATAR_COLORS) || AVATAR_COLORS.length === 0) {
     return DEFAULT_AVATAR_COLOR;
   }
@@ -27,7 +27,7 @@ const pickRandomAvatarColor = () => {
   return AVATAR_COLORS[index] ?? DEFAULT_AVATAR_COLOR;
 };
 
-const normalizeAvatarColor = (value) => {
+export const normalizeAvatarColor = (value) => {
   if (!value) return null;
   const candidate = String(value).trim();
   return AVATAR_COLOR_SET.has(candidate) ? candidate : null;

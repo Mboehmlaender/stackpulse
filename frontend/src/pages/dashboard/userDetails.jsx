@@ -9,18 +9,13 @@ import {
     Button,
     Spinner,
     CardFooter,
-    Tabs,
-    TabsHeader,
-    Tab,
     Switch,
     Tooltip,
     Avatar,
-    Checkbox
+    Select,
+    Option
 } from "@material-tailwind/react";
 import {
-    HomeIcon,
-    ChatBubbleLeftEllipsisIcon,
-    Cog6ToothIcon,
     PencilIcon,
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
@@ -28,22 +23,9 @@ import { Link } from "react-router-dom";
 import { useToast } from "@/components/ToastProvider.jsx";
 import { ProfileInfoCard } from "@/widgets/cards";
 import { platformSettingsData, projectsData } from "@/data";
+import { AVATAR_COLORS } from "@/data/avatarColors.js";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 
-const DEFAULT_AVATAR = { background: "bg-blue-gray-500", text: "text-white" };
-
-const AVATAR_COLORS = [
-    'bg-arcticBlue-600',
-    'bg-copperRust-500',
-    'bg-sunsetCoral-600',
-    'bg-mintTea-400',
-    'bg-lavenderSmoke-500',
-    'bg-emeraldMist-500',
-    'bg-roseQuartz-500',
-    'bg-auroraTeal-500',
-    'bg-citrusPunch-500',
-    'bg-mossGreen-400'
-];
 const _ = AVATAR_COLORS.join(" ");
 
 
@@ -97,8 +79,8 @@ export function UserDetails() {
     const [availableGroups, setAvailableGroups] = useState([]);
     const [groupsLoading, setGroupsLoading] = useState(false);
     const [groupsError, setGroupsError] = useState("");
-    const [selectedGroupIds, setSelectedGroupIds] = useState([]);
-    const [savingGroups, setSavingGroups] = useState(false);
+    const [selectedGroupId, setSelectedGroupId] = useState(null);
+    const [savingGroup, setSavingGroup] = useState(false);
 
     const maintenanceActive = Boolean(maintenance?.active);
 
@@ -203,109 +185,95 @@ export function UserDetails() {
         fetchAvailableGroups();
     }, [fetchAvailableGroups]);
 
-    const originalGroupIds = useMemo(() => {
-        if (!user || !Array.isArray(user.groups)) {
-            return [];
+    const originalGroupId = useMemo(() => {
+        if (!user || !Array.isArray(user.groups) || user.groups.length === 0) {
+            return null;
         }
-        return user.groups
+        const firstValid = user.groups
             .map((group) => Number(group.id))
-            .filter((id) => Number.isFinite(id) && id > 0);
+            .find((id) => Number.isFinite(id) && id > 0);
+        return Number.isFinite(firstValid) ? firstValid : null;
     }, [user]);
 
     useEffect(() => {
-        setSelectedGroupIds([...originalGroupIds]);
-    }, [originalGroupIds]);
+        setSelectedGroupId(originalGroupId);
+    }, [originalGroupId]);
 
     const hasGroupChanges = useMemo(() => {
-        const normalize = (ids) =>
-            Array.from(
-                new Set(
-                    ids
-                        .map((id) => Number(id))
-                        .filter((id) => Number.isFinite(id) && id > 0)
-                )
-            ).sort((a, b) => a - b);
-
-        const next = normalize(selectedGroupIds);
-        const baseline = normalize(originalGroupIds);
-
-        if (next.length !== baseline.length) {
-            return true;
+        if (!hasLoaded) {
+            return false;
         }
+        return originalGroupId !== selectedGroupId;
+    }, [originalGroupId, selectedGroupId, hasLoaded]);
 
-        return next.some((value, index) => value !== baseline[index]);
-    }, [selectedGroupIds, originalGroupIds]);
-
-    const handleToggleGroup = useCallback((groupId) => {
-        const numeric = Number(groupId);
-        if (!Number.isFinite(numeric) || numeric <= 0) {
+    const handleGroupChange = useCallback((value) => {
+        if (!value) {
+            setSelectedGroupId(null);
             return;
         }
-        setSelectedGroupIds((prev) => {
-            if (prev.includes(numeric)) {
-                return prev.filter((id) => id !== numeric);
-            }
-            return [...prev, numeric];
-        });
+        const numeric = Number(value);
+        setSelectedGroupId(Number.isFinite(numeric) && numeric > 0 ? numeric : null);
     }, []);
 
-    const handleResetGroups = useCallback(() => {
-        setSelectedGroupIds([...originalGroupIds]);
-    }, [originalGroupIds]);
+    const handleResetGroup = useCallback(() => {
+        setSelectedGroupId(originalGroupId);
+    }, [originalGroupId]);
 
-    const handleSaveGroups = useCallback(async () => {
-        if (!user) {
+    const handleSaveGroup = useCallback(async () => {
+        if (!user || !hasGroupChanges) {
             return;
         }
 
-        const payloadGroups = Array.from(
-            new Set(
-                selectedGroupIds
-                    .map((id) => Number(id))
-                    .filter((id) => Number.isFinite(id) && id > 0)
-            )
-        );
+        const payloadGroups = selectedGroupId ? [selectedGroupId] : [];
 
-        setSavingGroups(true);
+        setSavingGroup(true);
         setGroupsError("");
         try {
             const response = await axios.put(`/api/users/${user.id}/groups`, { groupIds: payloadGroups });
             const updatedUser = mapUser(response.data?.item || response.data?.user);
             setUser(updatedUser);
-            setSelectedGroupIds(
-                Array.isArray(updatedUser.groups)
-                    ? updatedUser.groups
-                        .map((group) => Number(group.id))
-                        .filter((id) => Number.isFinite(id) && id > 0)
-                    : []
-            );
+            const nextGroupId = Array.isArray(updatedUser.groups) && updatedUser.groups.length > 0
+                ? Number(updatedUser.groups[0].id)
+                : null;
+            setSelectedGroupId(Number.isFinite(nextGroupId) && nextGroupId > 0 ? nextGroupId : null);
             showToast({
                 variant: "success",
-                title: "Benutzergruppen aktualisiert",
+                title: "Globale Rolle aktualisiert",
                 description: "Die Gruppenzuordnung wurde gespeichert."
             });
         } catch (err) {
             const serverError = err.response?.data?.error;
-            let message = err.message || "Benutzergruppen konnten nicht aktualisiert werden.";
+            let message = err.message || "Die globale Rolle konnte nicht aktualisiert werden.";
             if (serverError === "INVALID_USER_ID") {
                 message = "Die Benutzer-ID ist ungültig.";
             } else if (serverError === "USER_NOT_FOUND") {
                 message = "Der Benutzer konnte nicht gefunden werden.";
             } else if (serverError === "GROUP_NOT_FOUND") {
-                message = "Mindestens eine ausgewählte Gruppe existiert nicht mehr.";
+                message = "Die ausgewählte Gruppe existiert nicht mehr.";
             } else if (typeof serverError === "string" && serverError.length > 0) {
                 message = serverError;
             }
             setGroupsError(message);
             showToast({
                 variant: "error",
-                title: "Benutzergruppen",
+                title: "Globale Rolle",
                 description: message
             });
         } finally {
-            setSavingGroups(false);
+            setSavingGroup(false);
         }
-    }, [user, selectedGroupIds, showToast]);
+    }, [user, selectedGroupId, hasGroupChanges, showToast]);
+
+    const selectedGroupLabel = useMemo(() => {
+        if (!selectedGroupId) {
+            return null;
+        }
+        const match = availableGroups.find((group) => group.id === selectedGroupId);
+        return match ? match.name : null;
+    }, [availableGroups, selectedGroupId]);
+
+    const selectValue = selectedGroupId ? String(selectedGroupId) : "";
+    const selectDisabled = maintenanceActive || savingGroup || !user || groupsLoading;
 
     const avatarLabel = useMemo(() => {
         const source = (user?.username || user?.email || "").trim();
@@ -406,7 +374,7 @@ export function UserDetails() {
                         <div id="platform" className="flex flex-col gap-4">
                             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                 <Typography variant="h6" color="blue-gray">
-                                    Benutzergruppen
+                                    Globale Rolle
                                 </Typography>
                                 <div className="flex items-center gap-2">
                                     <Button
@@ -414,8 +382,8 @@ export function UserDetails() {
                                         size="sm"
                                         color="blue-gray"
                                         className="normal-case"
-                                        onClick={handleResetGroups}
-                                        disabled={!hasGroupChanges || savingGroups || !user}
+                                        onClick={handleResetGroup}
+                                        disabled={!hasGroupChanges || savingGroup || !user}
                                     >
                                         Änderungen verwerfen
                                     </Button>
@@ -423,10 +391,10 @@ export function UserDetails() {
                                         size="sm"
                                         color="green"
                                         className="normal-case"
-                                        onClick={handleSaveGroups}
-                                        disabled={maintenanceActive || savingGroups || !hasGroupChanges || !user}
+                                        onClick={handleSaveGroup}
+                                        disabled={maintenanceActive || savingGroup || !hasGroupChanges || !user}
                                     >
-                                        {savingGroups ? "Speichert ..." : "Speichern"}
+                                        {savingGroup ? "Speichert ..." : "Speichern"}
                                     </Button>
                                 </div>
                             </div>
@@ -450,42 +418,30 @@ export function UserDetails() {
                                     Es sind noch keine Benutzergruppen vorhanden.
                                 </Typography>
                             ) : (
-                                <div className="flex flex-col gap-3">
-                                    {availableGroups.map((group) => {
-                                        const checked = selectedGroupIds.includes(group.id);
-                                        return (
-                                            <label
-                                                key={group.id}
-                                                className={`flex items-start justify-between gap-3 rounded-lg border px-4 py-3 transition ${
-                                                    checked ? "border-auroraTeal-500 bg-auroraTeal-500/10" : "border-blue-gray-100 bg-white"
-                                                } ${maintenanceActive ? "opacity-70" : ""}`}
-                                            >
-                                                <div className="flex items-start gap-3">
-                                                    <Checkbox
-                                                        ripple={false}
-                                                        className="mt-1"
-                                                        checked={checked}
-                                                        onChange={() => handleToggleGroup(group.id)}
-                                                        disabled={maintenanceActive || savingGroups || !user}
-                                                    />
-                                                    <div>
-                                                        <Typography variant="small" className="font-semibold text-blue-gray-900">
-                                                            {group.name}
-                                                        </Typography>
-                                                        {group.description && (
-                                                            <Typography variant="small" className="text-xs text-stormGrey-500">
-                                                                {group.description}
-                                                            </Typography>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <Typography variant="small" className="text-xs font-medium text-stormGrey-500">
-                                                    Mitglieder: {group.memberCount}
-                                                </Typography>
-                                            </label>
-                                        );
-                                    })}
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                                    <div className="sm:flex-1">
+                                        <Select
+                                            label="Benutzergruppe wählen"
+                                            value={selectValue}
+                                            onChange={handleGroupChange}
+                                            disabled={selectDisabled}
+                                            variant="outlined"
+                                        >
+                                            {availableGroups.map((group) => (
+                                                <Option key={group.id} value={String(group.id)}>
+                                                    {group.name}
+                                                </Option>
+                                            ))}
+                                        </Select>
+                                    </div>
                                 </div>
+                            )}
+                            {!(groupsLoading && availableGroups.length === 0) && (
+                                <Typography variant="small" className="text-sm text-stormGrey-500">
+                                    {selectedGroupLabel
+                                        ? `Aktuell zugewiesene Gruppe: ${selectedGroupLabel}`
+                                        : "Dem Benutzer ist aktuell keine Gruppe zugewiesen."}
+                                </Typography>
                             )}
                         </div>
                     </div>

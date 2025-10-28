@@ -9,8 +9,7 @@ import {
   Button,
   Select,
   Option,
-  Input,
-  useSelect
+  Input
 } from "@material-tailwind/react";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
@@ -21,6 +20,10 @@ export function Usergroups() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupDescription, setNewGroupDescription] = useState("");
+  const [createGroupError, setCreateGroupError] = useState("");
+  const [creatingGroup, setCreatingGroup] = useState(false);
 
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
@@ -171,6 +174,65 @@ export function Usergroups() {
     }).format(parsed);
   }, []);
 
+  const resetNewGroupForm = useCallback(() => {
+    setNewGroupName("");
+    setNewGroupDescription("");
+    setCreateGroupError("");
+  }, []);
+
+  const handleCreateGroup = useCallback(async () => {
+    if (maintenanceActive) {
+      return;
+    }
+    const trimmedName = newGroupName.trim();
+    if (!trimmedName) {
+      setCreateGroupError("Gruppenname ist erforderlich.");
+      return;
+    }
+    setCreatingGroup(true);
+    setCreateGroupError("");
+    try {
+      const payload = { name: trimmedName };
+      const trimmedDescription = newGroupDescription.trim();
+      if (trimmedDescription) {
+        payload.description = trimmedDescription;
+      }
+      const response = await axios.post("/api/groups", payload);
+      showToast({
+        variant: "success",
+        title: "Gruppe angelegt",
+        description: `Die Benutzergruppe "${response.data?.item?.name ?? trimmedName}" wurde erstellt.`
+      });
+      resetNewGroupForm();
+      fetchGroups();
+    } catch (err) {
+      const errorCode = err.response?.data?.error;
+      let message = "Benutzergruppe konnte nicht angelegt werden.";
+      if (errorCode === "GROUP_NAME_REQUIRED") {
+        message = "Gruppenname ist erforderlich.";
+      } else if (errorCode === "GROUP_NAME_TAKEN") {
+        message = "Der Gruppenname wird bereits verwendet.";
+      }
+      setCreateGroupError(message);
+      showToast({
+        variant: "error",
+        title: "Erstellen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setCreatingGroup(false);
+    }
+  }, [
+    maintenanceActive,
+    newGroupName,
+    newGroupDescription,
+    showToast,
+    resetNewGroupForm,
+    fetchGroups
+  ]);
+
+  const createGroupDisabled = maintenanceActive || creatingGroup;
+
   return (
     <div className="mt-12">
       <Card className="border border-blue-gray-100 shadow-sm">
@@ -189,6 +251,44 @@ export function Usergroups() {
               Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
             </div>
           )}
+
+          <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
+            <Typography variant="h6" color="blue-gray" className="mb-2">
+              Neue Benutzergruppe anlegen
+            </Typography>
+            <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
+              Der Gruppenname ist Pflicht, die Beschreibung optional.
+            </Typography>
+            {createGroupError && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {createGroupError}
+              </div>
+            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <Input
+                label="Gruppenname"
+                value={newGroupName}
+                onChange={(event) => setNewGroupName(event.target.value)}
+                disabled={createGroupDisabled}
+                crossOrigin=""
+              />
+              <Input
+                label="Beschreibung (optional)"
+                value={newGroupDescription}
+                onChange={(event) => setNewGroupDescription(event.target.value)}
+                disabled={createGroupDisabled}
+                crossOrigin=""
+              />
+            </div>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Button color="green" onClick={handleCreateGroup} disabled={createGroupDisabled}>
+                {creatingGroup ? "Speichert ..." : "Gruppe anlegen"}
+              </Button>
+              <Button variant="text" color="blue-gray" onClick={resetNewGroupForm} disabled={creatingGroup}>
+                Formular zurücksetzen
+              </Button>
+            </div>
+          </div>
 
           <div className="mb-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

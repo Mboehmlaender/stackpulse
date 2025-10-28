@@ -1,4 +1,10 @@
 import { db } from '../db/index.js';
+import {
+  hashPassword,
+  normalizeAvatarColor,
+  pickRandomAvatarColor,
+  DEFAULT_AVATAR_COLOR
+} from '../auth/superuser.js';
 
 const selectUsersWithGroups = db.prepare(`
   SELECT
@@ -36,6 +42,9 @@ const selectUserWithGroupsById = db.prepare(`
   GROUP BY u.id
 `);
 
+const selectUserByUsername = db.prepare('SELECT id FROM users WHERE username = ?');
+const selectUserByEmail = db.prepare('SELECT id FROM users WHERE email = ?');
+
 const deleteMembershipsByUser = db.prepare(`
   DELETE FROM user_group_memberships
   WHERE user_id = ?
@@ -47,6 +56,11 @@ const insertMembershipForUser = db.prepare(`
 `);
 
 const selectGroupById = db.prepare('SELECT id, name FROM user_groups WHERE id = ?');
+
+const insertUserStatement = db.prepare(`
+  INSERT INTO users (username, email, password_hash, password_salt, avatar_color, is_active, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+`);
 
 const parseGroupPairs = (rawPairs) => {
   if (!rawPairs) {
@@ -72,7 +86,7 @@ const parseGroupPairs = (rawPairs) => {
 const sanitizeUserRecord = (row) => ({
   id: row.id,
   username: row.username,
-  email: row.email,
+  email: row.email || null,
   isActive: Boolean(row.is_active),
   avatarColor: row.avatar_color || null,
   lastLogin: row.last_login || null,
@@ -97,6 +111,97 @@ const applyUserGroupAssignments = db.transaction((userId, groupIds) => {
     insertMembershipForUser.run(userId, groupId);
   });
 });
+
+const insertUserWithGroups = db.transaction(({ username, email, passwordHash, passwordSalt, avatarColor, groupId }) => {
+  const result = insertUserStatement.run(username, email, passwordHash, passwordSalt, avatarColor);
+  const userId = Number(result.lastInsertRowid);
+  applyUserGroupAssignments(userId, [groupId]);
+  return userId;
+});
+
+const normalizeEmail = (value) => {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.toLowerCase();
+};
+
+export function createUser({ username, email, password, groupId, avatarColor }) {
+  const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+  if (!normalizedUsername) {
+    const error = new Error('USERNAME_REQUIRED');
+    error.code = 'USERNAME_REQUIRED';
+    throw error;
+  }
+
+  const numericGroupId = Number(groupId);
+  if (!Number.isFinite(numericGroupId) || numericGroupId <= 0) {
+    const error = new Error('INVALID_GROUP_ID');
+    error.code = 'INVALID_GROUP_ID';
+    throw error;
+  }
+
+  const groupRow = selectGroupById.get(numericGroupId);
+  if (!groupRow) {
+    const error = new Error('GROUP_NOT_FOUND');
+    error.code = 'GROUP_NOT_FOUND';
+    throw error;
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  if (normalizedEmail && !normalizedEmail.includes('@')) {
+    const error = new Error('INVALID_EMAIL');
+    error.code = 'INVALID_EMAIL';
+    throw error;
+  }
+
+  const existingUsername = selectUserByUsername.get(normalizedUsername);
+  if (existingUsername) {
+    const error = new Error('USERNAME_TAKEN');
+    error.code = 'USERNAME_TAKEN';
+    throw error;
+  }
+
+  if (normalizedEmail) {
+    const existingEmail = selectUserByEmail.get(normalizedEmail);
+    if (existingEmail) {
+      const error = new Error('EMAIL_TAKEN');
+      error.code = 'EMAIL_TAKEN';
+      throw error;
+    }
+  }
+
+  let passwordHash;
+  let passwordSalt;
+  try {
+    const hashed = hashPassword(password);
+    passwordHash = hashed.hash;
+    passwordSalt = hashed.salt;
+  } catch (err) {
+    if (err && err.code) {
+      throw err;
+    }
+    const error = new Error('INVALID_PASSWORD');
+    error.code = 'INVALID_PASSWORD';
+    throw error;
+  }
+
+  const normalizedAvatarColor = normalizeAvatarColor(avatarColor);
+  const avatarColorToPersist = normalizedAvatarColor || pickRandomAvatarColor() || DEFAULT_AVATAR_COLOR;
+
+  const userId = insertUserWithGroups({
+    username: normalizedUsername,
+    email: normalizedEmail,
+    passwordHash,
+    passwordSalt,
+    avatarColor: avatarColorToPersist,
+    groupId: numericGroupId
+  });
+
+  return getUserById(userId);
+}
 
 export function updateUserGroups(userId, groupIds) {
   const numericUserId = Number(userId);

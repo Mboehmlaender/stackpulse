@@ -27,7 +27,7 @@ const createUsersTable = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
-  email TEXT NOT NULL UNIQUE,
+  email TEXT UNIQUE,
   password_hash TEXT NOT NULL,
   password_salt TEXT,
   avatar_color TEXT,
@@ -59,6 +59,28 @@ CREATE TABLE IF NOT EXISTS user_group_memberships (
 );
 `;
 
+const createPermissionsTable = `
+CREATE TABLE IF NOT EXISTS permissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  description TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+const createUserGroupPermissionsTable = `
+CREATE TABLE IF NOT EXISTS user_group_permissions (
+  group_id INTEGER NOT NULL,
+  permission_id INTEGER NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, permission_id),
+  FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+`;
+
 
 const createServersTable = `
 CREATE TABLE IF NOT EXISTS servers (
@@ -82,6 +104,46 @@ CREATE TABLE IF NOT EXISTS endpoints (
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
   UNIQUE (server_id, external_id)
 );
+`;
+
+const createUserServerPermissionOverridesTable = `
+CREATE TABLE IF NOT EXISTS user_server_permission_overrides (
+  user_id INTEGER NOT NULL,
+  server_id INTEGER NOT NULL,
+  permission_id INTEGER NOT NULL,
+  change_type TEXT NOT NULL CHECK (change_type IN ('ADD', 'REMOVE')),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (user_id, server_id, permission_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+  FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+`;
+
+const createUserEndpointPermissionOverridesTable = `
+CREATE TABLE IF NOT EXISTS user_endpoint_permission_overrides (
+  user_id INTEGER NOT NULL,
+  endpoint_id INTEGER NOT NULL,
+  permission_id INTEGER NOT NULL,
+  change_type TEXT NOT NULL CHECK (change_type IN ('ADD', 'REMOVE')),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (user_id, endpoint_id, permission_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE,
+  FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+`;
+
+const createUserServerPermissionOverridesIndex = `
+CREATE INDEX IF NOT EXISTS idx_user_server_permission_overrides_user_server
+ON user_server_permission_overrides (user_id, server_id);
+`;
+
+const createUserEndpointPermissionOverridesIndex = `
+CREATE INDEX IF NOT EXISTS idx_user_endpoint_permission_overrides_user_endpoint
+ON user_endpoint_permission_overrides (user_id, endpoint_id);
 `;
 
 
@@ -138,6 +200,44 @@ try {
     db.exec('ALTER TABLE users ADD COLUMN avatar_color TEXT');
     console.log('ℹ️ avatar_color column hinzugefügt');
   }
+  const emailColumn = userColumns.find((column) => column.name === 'email');
+  if (emailColumn && emailColumn.notnull === 1) {
+    try {
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.exec('DROP TABLE IF EXISTS users_backup;');
+      db.exec('ALTER TABLE users RENAME TO users_backup;');
+      db.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL UNIQUE,
+          email TEXT UNIQUE,
+          password_hash TEXT NOT NULL,
+          password_salt TEXT,
+          avatar_color TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          last_login DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      db.exec(`
+        INSERT INTO users (id, username, email, password_hash, password_salt, avatar_color, is_active, last_login, created_at, updated_at)
+        SELECT id, username, email, password_hash, password_salt, avatar_color, is_active, last_login, created_at, updated_at
+        FROM users_backup;
+      `);
+      db.exec('DROP TABLE IF EXISTS users_backup;');
+      console.log('ℹ️ users.email Spalte erlaubt jetzt NULL-Werte');
+    } catch (migrationError) {
+      console.error('⚠️ Umbau der users Tabelle fehlgeschlagen:', migrationError.message);
+      try {
+        db.exec('ALTER TABLE users_backup RENAME TO users;');
+      } catch (restoreError) {
+        console.error('⚠️ Konnte ursprüngliche users Tabelle nicht wiederherstellen:', restoreError.message);
+      }
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON;');
+    }
+  }
 } catch (err) {
   console.error('⚠️ Konnte avatar_color Spalte nicht prüfen/erstellen:', err.message);
 }
@@ -148,11 +248,26 @@ console.log('✅ user_groups table ready');
 db.exec(createUserGroupMembershipsTable);
 console.log('✅ user_group_memberships table ready');
 
+db.exec(createPermissionsTable);
+console.log('✅ permissions table ready');
+
+db.exec(createUserGroupPermissionsTable);
+console.log('✅ user_group_permissions table ready');
+
 db.exec(createServersTable);
 console.log('✅ servers table ready');
 
 db.exec(createEndpointsTable);
 console.log('✅ endpoints table ready');
+
+db.exec(createUserServerPermissionOverridesTable);
+console.log('✅ user_server_permission_overrides table ready');
+
+db.exec(createUserEndpointPermissionOverridesTable);
+console.log('✅ user_endpoint_permission_overrides table ready');
+
+db.exec(createUserServerPermissionOverridesIndex);
+db.exec(createUserEndpointPermissionOverridesIndex);
 
 db.exec(createServerApiKeysTable);
 console.log('✅ server_api_keys table ready');

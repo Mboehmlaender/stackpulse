@@ -45,8 +45,8 @@ import {
   removeServer,
   setServerApiKey
 } from './setup/index.js';
-import { listUsers, getUserById, updateUserGroups } from './users/index.js';
-import { listGroups } from './groups/index.js';
+import { listUsers, getUserById, updateUserGroups, createUser } from './users/index.js';
+import { listGroups, createGroup } from './groups/index.js';
 
 dotenv.config();
 
@@ -1684,6 +1684,33 @@ app.get('/api/users', (req, res) => {
   }
 });
 
+app.post('/api/users', (req, res) => {
+  const { username, email, password, groupId, avatarColor } = req.body ?? {};
+
+  try {
+    const user = createUser({ username, email, password, groupId, avatarColor });
+    res.status(201).json({ item: user });
+  } catch (error) {
+    if (error.code === 'USERNAME_REQUIRED' || error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'INVALID_EMAIL') {
+      return res.status(400).json({ error: 'INVALID_EMAIL' });
+    }
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USERNAME_TAKEN' || error.code === 'EMAIL_TAKEN') {
+      return res.status(409).json({ error: error.code });
+    }
+    console.error('⚠️ [Users] Anlegen eines Benutzers fehlgeschlagen:', error);
+    res.status(500).json({ error: 'USER_CREATE_FAILED' });
+  }
+});
+
 app.get('/api/users/:userId', (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
@@ -1738,6 +1765,23 @@ app.get('/api/groups', (req, res) => {
   } catch (error) {
     console.error('⚠️ [Groups] Abruf der Benutzergruppenliste fehlgeschlagen:', error);
     res.status(500).json({ error: 'GROUPS_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/groups', (req, res) => {
+  const { name, description } = req.body ?? {};
+  try {
+    const group = createGroup({ name, description });
+    res.status(201).json({ item: group });
+  } catch (error) {
+    if (error.code === 'GROUP_NAME_REQUIRED') {
+      return res.status(400).json({ error: 'GROUP_NAME_REQUIRED' });
+    }
+    if (error.code === 'GROUP_NAME_TAKEN') {
+      return res.status(409).json({ error: 'GROUP_NAME_TAKEN' });
+    }
+    console.error('⚠️ [Groups] Anlegen der Benutzergruppe fehlgeschlagen:', error);
+    res.status(500).json({ error: 'GROUP_CREATE_FAILED' });
   }
 });
 

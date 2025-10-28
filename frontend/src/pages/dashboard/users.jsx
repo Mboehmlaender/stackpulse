@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
+import { AVATAR_COLORS } from "@/data/avatarColors.js";
 
 const normalizeUserGroups = (rawGroups) => {
   if (!Array.isArray(rawGroups)) {
@@ -47,6 +48,16 @@ export function Users() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [availableGroups, setAvailableGroups] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [groupsError, setGroupsError] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newGroupId, setNewGroupId] = useState("");
+  const [newAvatarColor, setNewAvatarColor] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [creatingUser, setCreatingUser] = useState(false);
 
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
@@ -100,13 +111,45 @@ export function Users() {
     }
   }, [showToast]);
 
+  const fetchGroups = useCallback(async () => {
+    setGroupsLoading(true);
+    setGroupsError("");
+    try {
+      const response = await axios.get("/api/groups");
+      const items = Array.isArray(response.data?.items) ? response.data.items : [];
+      const normalized = items
+        .map((item) => ({
+          id: Number(item.id),
+          name: item.name || ""
+        }))
+        .filter((group) => Number.isFinite(group.id) && group.id > 0 && group.name)
+        .sort((a, b) => a.name.localeCompare(b.name, "de-DE"));
+      setAvailableGroups(normalized);
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Benutzergruppen konnten nicht geladen werden.";
+      setGroupsError(message);
+      showToast({
+        variant: "error",
+        title: "Benutzergruppen",
+        description: message
+      });
+    } finally {
+      setGroupsLoading(false);
+    }
+  }, [showToast]);
+
   useEffect(() => {
     fetchUsers();
   }, [fetchUsers]);
 
+  useEffect(() => {
+    fetchGroups();
+  }, [fetchGroups]);
+
   const handleRefresh = useCallback(() => {
     fetchUsers();
-  }, [fetchUsers]);
+    fetchGroups();
+  }, [fetchUsers, fetchGroups]);
 
   const handleSearchChange = useCallback((event) => {
     setSearchQuery(event.target.value);
@@ -195,6 +238,140 @@ export function Users() {
     }).format(parsed);
   }, []);
 
+  const resetNewUserForm = useCallback(() => {
+    setNewUsername("");
+    setNewEmail("");
+    setNewPassword("");
+    setNewGroupId("");
+    setNewAvatarColor("");
+    setCreateError("");
+  }, []);
+
+  const handleCreateUser = useCallback(async () => {
+    if (maintenanceActive) {
+      return;
+    }
+    const trimmedUsername = newUsername.trim();
+    if (!trimmedUsername) {
+      setCreateError("Benutzername ist erforderlich.");
+      return;
+    }
+    const sanitizedPassword = typeof newPassword === "string" ? newPassword.trim() : "";
+    if (sanitizedPassword.length < 8) {
+      setCreateError("Passwort muss mindestens 8 Zeichen enthalten.");
+      return;
+    }
+    if (!newGroupId) {
+      setCreateError("Bitte eine globale Rolle auswählen.");
+      return;
+    }
+    setCreatingUser(true);
+    setCreateError("");
+    try {
+      const payload = {
+        username: trimmedUsername,
+        password: sanitizedPassword,
+        groupId: Number(newGroupId)
+      };
+      const trimmedEmail = newEmail.trim();
+      if (trimmedEmail) {
+        payload.email = trimmedEmail;
+      }
+      if (newAvatarColor) {
+        payload.avatarColor = newAvatarColor;
+      }
+      const response = await axios.post("/api/users", payload);
+      resetNewUserForm();
+      fetchUsers();
+      showToast({
+        variant: "success",
+        title: "Benutzer angelegt",
+        description: `Der Benutzer "${response.data?.item?.username ?? trimmedUsername}" wurde erstellt.`
+      });
+    } catch (err) {
+      const errorCode = err.response?.data?.error;
+      let message = "Benutzer konnte nicht angelegt werden.";
+      switch (errorCode) {
+        case "USERNAME_REQUIRED":
+          message = "Benutzername ist erforderlich.";
+          break;
+        case "INVALID_EMAIL":
+          message = "Bitte eine gültige E-Mail-Adresse angeben.";
+          break;
+        case "INVALID_PASSWORD":
+        case "PASSWORD_TOO_SHORT":
+          message = "Passwort muss mindestens 8 Zeichen enthalten.";
+          break;
+        case "INVALID_GROUP_ID":
+        case "GROUP_NOT_FOUND":
+          message = "Bitte eine gültige globale Rolle auswählen.";
+          break;
+        case "USERNAME_TAKEN":
+          message = "Benutzername wird bereits verwendet.";
+          break;
+        case "EMAIL_TAKEN":
+          message = "E-Mail-Adresse wird bereits verwendet.";
+          break;
+        default:
+          break;
+      }
+      setCreateError(message);
+      showToast({
+        variant: "error",
+        title: "Erstellen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setCreatingUser(false);
+    }
+  }, [
+    maintenanceActive,
+    newUsername,
+    newEmail,
+    newPassword,
+    newGroupId,
+    newAvatarColor,
+    showToast,
+    resetNewUserForm,
+    fetchUsers
+  ]);
+
+  const createDisabled = maintenanceActive || creatingUser || groupsLoading || availableGroups.length === 0;
+  const groupSelectDisabled = maintenanceActive || creatingUser || groupsLoading || availableGroups.length === 0;
+  const avatarSelectDisabled = maintenanceActive || creatingUser;
+
+  const renderSelectedGroup = useCallback(
+    (element) => {
+      if (element && element.props && element.props.children) {
+        return element.props.children;
+      }
+      if (!newGroupId) {
+        return "Bitte auswählen";
+      }
+      const selected = availableGroups.find((group) => String(group.id) === newGroupId);
+      return selected ? selected.name : "Bitte auswählen";
+    },
+    [availableGroups, newGroupId]
+  );
+
+  const renderSelectedAvatar = useCallback(
+    (element) => {
+      if (element && element.props && element.props.children) {
+        return element.props.children;
+      }
+      if (!newAvatarColor) {
+        return "Automatisch (zufällig)";
+      }
+      return (
+        <span className="flex items-center gap-2">
+          <span className={`h-4 w-4 rounded border border-blue-gray-100 ${newAvatarColor}`} />
+          <span className="text-xs">{newAvatarColor}</span>
+        </span>
+      );
+    },
+    [newAvatarColor]
+  );
+
   return (
     <div className="mt-12">
       <Card>
@@ -212,6 +389,97 @@ export function Users() {
               Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
             </div>
           )}
+
+          <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
+            <Typography variant="h6" color="blue-gray" className="mb-2">
+              Neuen Benutzer anlegen
+            </Typography>
+            <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
+              Benutzername, Passwort (mindestens 8 Zeichen) und eine globale Rolle sind Pflichtfelder.
+            </Typography>
+            {createError && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {createError}
+              </div>
+            )}
+            {groupsError && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {groupsError}
+              </div>
+            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <Input
+                label="Benutzername"
+                value={newUsername}
+                onChange={(event) => setNewUsername(event.target.value)}
+                disabled={maintenanceActive || creatingUser}
+                crossOrigin=""
+              />
+              <Input
+                label="E-Mail (optional)"
+                value={newEmail}
+                onChange={(event) => setNewEmail(event.target.value)}
+                disabled={maintenanceActive || creatingUser}
+                crossOrigin=""
+              />
+              <Input
+                type="password"
+                label="Passwort"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                disabled={maintenanceActive || creatingUser}
+                crossOrigin=""
+              />
+              <Select
+                label="Globale Rolle"
+                variant="outlined"
+                value={newGroupId}
+                onChange={setNewGroupId}
+                disabled={groupSelectDisabled}
+                selected={renderSelectedGroup}
+              >
+                <Option value="">Bitte auswählen</Option>
+                {availableGroups.map((group) => (
+                  <Option key={group.id} value={String(group.id)}>
+                    {group.name}
+                  </Option>
+                ))}
+              </Select>
+              <Select
+                label="Avatar-Farbe"
+                variant="outlined"
+                value={newAvatarColor}
+                onChange={setNewAvatarColor}
+                disabled={avatarSelectDisabled}
+                selected={renderSelectedAvatar}
+              >
+                <Option value="">Automatisch (zufällig)</Option>
+                {AVATAR_COLORS.map((color) => (
+                  <Option key={color} value={color}>
+                    <span className="flex items-center gap-2">
+                      <span className={`h-4 w-4 rounded border border-blue-gray-100 ${color}`} />
+                      <span className="text-xs">{color}</span>
+                    </span>
+                  </Option>
+                ))}
+              </Select>
+            </div>
+            <div className="mt-4 text-sm text-stormGrey-500">
+              {groupsLoading
+                ? "Benutzergruppen werden geladen ..."
+                : availableGroups.length === 0
+                  ? "Noch keine Benutzergruppen vorhanden. Bitte legen Sie zuerst eine globale Rolle an."
+                  : ""}
+            </div>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
+                {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
+              </Button>
+              <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
+                Formular zurücksetzen
+              </Button>
+            </div>
+          </div>
 
           <div className="mb-8">
 
