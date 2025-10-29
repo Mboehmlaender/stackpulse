@@ -23,12 +23,12 @@ import {
   verifyPassword
 } from './auth/superuser.js';
 import {
-  logRedeployEvent,
-  buildLogFilter,
-  deleteLogById,
-  deleteLogsByFilters,
-  exportLogsByFilters
-} from './db/redeployLogs.js';
+  logEvent,
+  buildEventLogFilter,
+  deleteEventLogById,
+  deleteEventLogsByFilters,
+  exportEventLogsByFilters
+} from './logging/eventLogs.js';
 import { getSetting, setSetting, deleteSetting } from './db/settings.js';
 import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
 import {
@@ -45,8 +45,8 @@ import {
   removeServer,
   setServerApiKey
 } from './setup/index.js';
-import { listUsers, getUserById, updateUserGroups, createUser } from './users/index.js';
-import { listGroups, createGroup } from './groups/index.js';
+import { listUsers, getUserById, updateUserGroups, createUser, updateUserDetails, deleteUser, updateUserActiveStatus } from './users/index.js';
+import { listGroups, createGroup, getGroupById, updateGroupDetails, deleteGroup } from './groups/index.js';
 
 dotenv.config();
 
@@ -299,6 +299,53 @@ const REDEPLOY_TYPES = {
   ALL: 'Alle',
   SELECTION: 'Auswahl',
   MAINTENANCE: 'Wartung'
+};
+
+const logStackEvent = ({
+  stackId,
+  stackName,
+  status,
+  message,
+  redeployType = null,
+  endpointId = null,
+  metadata = {}
+}) => {
+  const metadataPayload = {
+    ...metadata
+  };
+
+  if (redeployType) {
+    metadataPayload.redeployType = redeployType;
+  }
+
+  if (endpointId !== undefined && endpointId !== null) {
+    metadataPayload.endpointId = String(endpointId);
+  }
+
+  const hasMetadata = Object.keys(metadataPayload).length > 0;
+
+  logEvent({
+    category: 'stack',
+    eventType: redeployType ?? null,
+    action: 'redeploy',
+    status: status ?? null,
+    entityType: 'stack',
+    entityId: stackId !== undefined && stackId !== null ? String(stackId) : null,
+    entityName: stackName ?? null,
+    contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
+    contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
+    message: message ?? null,
+    metadata: hasMetadata ? metadataPayload : null
+  });
+};
+
+const parseJsonColumn = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 };
 
 const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
@@ -942,22 +989,40 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     });
     maintenanceActivated = true;
 
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'started',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'gestartet',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message: `Portainer Update gestartet (Ziel: ${targetVersion ?? 'unbekannt'})`,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        targetVersion: targetVersion ?? null,
+        scriptSource
+      },
+      source: 'system'
     });
 
-    logRedeployEvent({
-      stackId: 'maintenance',
-      stackName: 'StackPulse Wartung',
-      status: 'started',
+    logEvent({
+      category: 'wartung',
+      eventType: 'Wartungsmodus',
+      action: 'aktivieren',
+      status: 'gestartet',
+      entityType: 'system',
+      entityId: 'wartung',
+      entityName: 'StackPulse Wartung',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message: 'Wartungsmodus aktiviert (Portainer Update)',
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        reason: 'portainer-update',
+        scriptSource
+      },
+      source: 'system'
     });
 
     updatePortainerState({
@@ -981,13 +1046,21 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     const statusAfter = await fetchPortainerStatusSummary().catch(() => null);
     const finalVersion = statusAfter?.currentVersion ?? null;
 
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'success',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'erfolgreich',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message: `Portainer Update abgeschlossen (Version: ${finalVersion ?? 'unbekannt'})`,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        resultVersion: finalVersion ?? null
+      },
+      source: 'system'
     });
 
     updatePortainerState({
@@ -1005,24 +1078,37 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     if (maintenanceActivated || maintenanceState?.active) {
       deactivateMaintenanceMode({ message: 'Portainer Update abgeschlossen' });
       maintenanceActivated = false;
-      logRedeployEvent({
-        stackId: 'maintenance',
-        stackName: 'StackPulse Wartung',
-        status: 'success',
+      logEvent({
+        category: 'wartung',
+        eventType: 'Wartungsmodus',
+        action: 'deaktivieren',
+        status: 'erfolgreich',
+        entityType: 'system',
+        entityId: 'wartung',
+        entityName: 'StackPulse Wartung',
+        contextType: 'endpoint',
+        contextId: String(endpointId),
         message: 'Wartungsmodus deaktiviert',
-        endpoint: endpointId,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+        metadata: {
+          reason: 'portainer-update'
+        },
+        source: 'system'
       });
     }
   } catch (err) {
     const message = err?.message || 'Portainer Update fehlgeschlagen';
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'error',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'fehler',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      source: 'system'
     });
 
     updatePortainerState({
@@ -1038,13 +1124,21 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
 
     if (maintenanceActivated || isMaintenanceModeActive()) {
       deactivateMaintenanceMode({ message: 'Portainer Update fehlgeschlagen' });
-      logRedeployEvent({
-        stackId: 'maintenance',
-        stackName: 'StackPulse Wartung',
-        status: 'error',
+      logEvent({
+        category: 'wartung',
+        eventType: 'Wartungsmodus',
+        action: 'deaktivieren',
+        status: 'fehler',
+        entityType: 'system',
+        entityId: 'wartung',
+        entityName: 'StackPulse Wartung',
+        contextType: 'endpoint',
+        contextId: String(endpointId),
         message: 'Wartungsmodus deaktiviert (Fehler)',
-        endpoint: endpointId,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+        metadata: {
+          reason: 'portainer-update'
+        },
+        source: 'system'
       });
     }
   } finally {
@@ -1191,12 +1285,12 @@ const redeployStackById = async (stackId, redeployType) => {
       phase: REDEPLOY_PHASES.STARTED
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: targetId,
       stackName: targetName,
       status: 'started',
       message: messages.started,
-      endpoint: stack.EndpointId,
+      endpointId: stack.EndpointId,
       redeployType
     });
 
@@ -1271,12 +1365,12 @@ const redeployStackById = async (stackId, redeployType) => {
       phase: REDEPLOY_PHASES.SUCCESS
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: targetId,
       stackName: targetName,
       status: 'success',
       message: messages.success,
-      endpoint: stack.EndpointId,
+      endpointId: stack.EndpointId,
       redeployType
     });
 
@@ -1293,12 +1387,12 @@ const redeployStackById = async (stackId, redeployType) => {
       message: errorMessage
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: fallbackId,
       stackName: fallbackName,
       status: 'error',
       message: errorMessage,
-      endpoint: stack?.EndpointId || endpointId,
+      endpointId: stack?.EndpointId || endpointId,
       redeployType
     });
 
@@ -1621,8 +1715,12 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const user = findUserByIdentifier(identifier);
-  if (!user || !user.is_active) {
+  if (!user) {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
+
+  if (!user.is_active) {
+    return res.status(403).json({ error: 'USER_INACTIVE' });
   }
 
   const passwordValid = verifyPassword(password, user.password_hash, user.password_salt);
@@ -1731,6 +1829,63 @@ app.get('/api/users/:userId', (req, res) => {
   }
 });
 
+app.put('/api/users/:userId', (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  const { username, email, password, avatarColor, groupId, groupIds } = req.body ?? {};
+
+  try {
+    const updatedUser = updateUserDetails(numericId, {
+      username,
+      email,
+      password,
+      avatarColor,
+      groupId,
+      groupIds
+    });
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USERNAME_REQUIRED') {
+      return res.status(400).json({ error: 'USERNAME_REQUIRED' });
+    }
+    if (error.code === 'INVALID_EMAIL') {
+      return res.status(400).json({ error: 'INVALID_EMAIL' });
+    }
+    if (error.code === 'USERNAME_TAKEN') {
+      return res.status(409).json({ error: 'USERNAME_TAKEN' });
+    }
+    if (error.code === 'EMAIL_TAKEN') {
+      return res.status(409).json({ error: 'EMAIL_TAKEN' });
+    }
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'INVALID_AVATAR_COLOR') {
+      return res.status(400).json({ error: 'INVALID_AVATAR_COLOR' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND', details: error.missingGroupIds || [] });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Aktualisierung der Benutzerdaten fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_UPDATE_FAILED' });
+  }
+});
+
 app.put('/api/users/:userId/groups', (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
@@ -1758,6 +1913,61 @@ app.put('/api/users/:userId/groups', (req, res) => {
   }
 });
 
+app.delete('/api/users/:userId', (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    deleteUser(numericId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USER_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'USER_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Löschen fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_DELETE_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId/active', (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+  const { isActive } = req.body ?? {};
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const updatedUser = updateUserActiveStatus(numericId, Boolean(isActive));
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USER_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'USER_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Aktualisierung des Aktivstatus fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_STATUS_UPDATE_FAILED' });
+  }
+});
+
 app.get('/api/groups', (req, res) => {
   try {
     const groups = listGroups();
@@ -1765,6 +1975,26 @@ app.get('/api/groups', (req, res) => {
   } catch (error) {
     console.error('⚠️ [Groups] Abruf der Benutzergruppenliste fehlgeschlagen:', error);
     res.status(500).json({ error: 'GROUPS_FETCH_FAILED' });
+  }
+});
+
+app.get('/api/groups/:groupId', (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    res.json({ item: group });
+  } catch (error) {
+    console.error(`⚠️ [Groups] Abruf der Gruppendetails fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_FETCH_FAILED' });
   }
 });
 
@@ -1782,6 +2012,74 @@ app.post('/api/groups', (req, res) => {
     }
     console.error('⚠️ [Groups] Anlegen der Benutzergruppe fehlgeschlagen:', error);
     res.status(500).json({ error: 'GROUP_CREATE_FAILED' });
+  }
+});
+
+app.put('/api/groups/:groupId', (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  const { name, description, avatarColor } = req.body ?? {};
+
+  try {
+    const updatedGroup = updateGroupDetails(numericId, { name, description, avatarColor });
+    res.json({ item: updatedGroup });
+  } catch (error) {
+    if (error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_NAME_REQUIRED') {
+      return res.status(400).json({ error: 'GROUP_NAME_REQUIRED' });
+    }
+    if (error.code === 'GROUP_NAME_TAKEN') {
+      return res.status(409).json({ error: 'GROUP_NAME_TAKEN' });
+    }
+    if (error.code === 'INVALID_AVATAR_COLOR') {
+      return res.status(400).json({ error: 'INVALID_AVATAR_COLOR' });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Groups] Aktualisierung der Gruppendaten fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_UPDATE_FAILED' });
+  }
+});
+
+app.delete('/api/groups/:groupId', (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    deleteGroup(numericId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_HAS_MEMBERS') {
+      return res.status(409).json({ error: 'GROUP_HAS_MEMBERS', memberCount: error.memberCount || 0 });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Groups] Löschen der Gruppe fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_DELETE_FAILED' });
   }
 });
 
@@ -2198,13 +2496,16 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
       return res.status(400).json({ error: 'Keine passenden Duplikate gefunden' });
     }
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: target.canonical.Id,
       stackName: target.canonical.Name,
       status: 'started',
       message: `Bereinigung doppelter Stacks gestartet (${duplicatesToDelete.length} Einträge)`,
-      endpoint: target.canonical.EndpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      endpointId: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE,
+      metadata: {
+        duplicateIds: duplicateIds
+      }
     });
 
     const results = [];
@@ -2238,13 +2539,16 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
 
     if (errors.length) {
       const failedIds = errors.map((entry) => entry.id).join(', ');
-      logRedeployEvent({
+      logStackEvent({
         stackId: target.canonical.Id,
         stackName: target.canonical.Name,
         status: 'error',
         message: `Bereinigung fehlgeschlagen für IDs: ${failedIds}`,
-        endpoint: target.canonical.EndpointId,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+        endpointId: target.canonical.EndpointId,
+        redeployType: REDEPLOY_TYPES.MAINTENANCE,
+        metadata: {
+          duplicateIds: duplicateIds
+        }
       });
 
       return res.status(500).json({
@@ -2258,13 +2562,16 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
       });
     }
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: target.canonical.Id,
       stackName: target.canonical.Name,
       status: 'success',
       message: `Bereinigung abgeschlossen. Entfernte IDs: ${results.map((entry) => entry.id).join(', ')}`,
-      endpoint: target.canonical.EndpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      endpointId: target.canonical.EndpointId,
+      redeployType: REDEPLOY_TYPES.MAINTENANCE,
+      metadata: {
+        removedDuplicates: results.filter((entry) => entry.status === 'deleted').map((entry) => entry.id)
+      }
     });
 
     res.json({
@@ -2284,7 +2591,7 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
   }
 });
 
-// Redeploy-Logs abrufen
+// Event-Logs abrufen
 app.get('/api/logs', (req, res) => {
   const perPageParam = req.query.perPage ?? req.query.limit;
   const perPage = perPageParam === 'all' ? 'all' : Math.min(parseInt(perPageParam, 10) || 50, 500);
@@ -2293,25 +2600,36 @@ app.get('/api/logs', (req, res) => {
   const limit = perPage === 'all' ? undefined : perPage;
   const offset = perPage === 'all' ? 0 : (page - 1) * perPage;
 
-  const { whereClause, params } = buildLogFilter(req.query);
+  const { whereClause, params } = buildEventLogFilter(req.query);
   const baseQuery = `
     SELECT
       id,
       timestamp,
-      stack_id AS stackId,
-      stack_name AS stackName,
+      category,
+      event_type AS eventType,
+      action,
       status,
+      severity,
+      entity_type AS entityType,
+      entity_id AS entityId,
+      entity_name AS entityName,
+      actor_type AS actorType,
+      actor_id AS actorId,
+      actor_name AS actorName,
+      source,
+      context_type AS contextType,
+      context_id AS contextId,
+      context_label AS contextLabel,
       message,
-      endpoint,
-      redeploy_type AS redeployType
-    FROM redeploy_logs
+      metadata
+    FROM event_logs
     ${whereClause}
     ORDER BY datetime(timestamp) DESC
   `;
 
   const countQuery = `
     SELECT COUNT(*) as total
-    FROM redeploy_logs
+    FROM event_logs
     ${whereClause}
   `;
 
@@ -2326,7 +2644,25 @@ app.get('/api/logs', (req, res) => {
 
   try {
     const stmt = db.prepare(query);
-    const logs = stmt.all(params);
+    const rawLogs = stmt.all(params);
+    const logs = rawLogs.map((row) => {
+      const metadata = parseJsonColumn(row.metadata);
+      const legacyStack = row.entityType === 'stack' ? (row.entityId ?? null) : null;
+      const legacyStackName = row.entityType === 'stack' ? (row.entityName ?? row.entityId ?? null) : null;
+      const legacyEndpoint = row.contextType === 'endpoint' ? (row.contextId ?? null) : null;
+
+      return {
+        ...row,
+        entityId: row.entityId ?? null,
+        actorId: row.actorId ?? null,
+        contextId: row.contextId ?? null,
+        metadata,
+        stackId: legacyStack,
+        stackName: legacyStackName,
+        redeployType: row.eventType ?? null,
+        endpoint: legacyEndpoint
+      };
+    });
     const total = db.prepare(countQuery).get(params)?.total ?? logs.length;
 
     res.json({
@@ -2336,11 +2672,8 @@ app.get('/api/logs', (req, res) => {
       perPage: perPage === 'all' ? 'all' : limit
     });
   } catch (err) {
-    console.error('❌ Fehler beim Abrufen der Redeploy-Logs:', err.message);
-    if (err.message.includes('no such table')) {
-      return res.status(500).json({ error: 'redeploy_logs table nicht gefunden. Bitte Migration ausführen.' });
-    }
-    res.status(500).json({ error: 'Fehler beim Abrufen der Redeploy-Logs' });
+    console.error('❌ Fehler beim Abrufen der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Abrufen der Logs' });
   }
 });
 
@@ -2351,24 +2684,24 @@ app.delete('/api/logs/:id', (req, res) => {
   }
 
   try {
-    const changes = deleteLogById(id);
+    const changes = deleteEventLogById(id);
     if (!changes) {
       return res.status(404).json({ error: 'Eintrag nicht gefunden' });
     }
     res.json({ success: true, deleted: changes });
   } catch (err) {
-    console.error('❌ Fehler beim Löschen des Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Löschen des Redeploy-Logs' });
+    console.error('❌ Fehler beim Löschen des Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen des Logs' });
   }
 });
 
 app.delete('/api/logs', (req, res) => {
   try {
-    const deleted = deleteLogsByFilters(req.query);
+    const deleted = deleteEventLogsByFilters(req.query);
     res.json({ success: true, deleted });
   } catch (err) {
-    console.error('❌ Fehler beim Löschen der Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Löschen der Redeploy-Logs' });
+    console.error('❌ Fehler beim Löschen der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen der Logs' });
   }
 });
 
@@ -2379,13 +2712,13 @@ app.get('/api/logs/export', (req, res) => {
   }
 
   try {
-    const payload = exportLogsByFilters(req.query, format);
+    const payload = exportEventLogsByFilters(req.query, format);
     res.setHeader('Content-Type', payload.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
     res.send(payload.content);
   } catch (err) {
-    console.error('❌ Fehler beim Export der Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Export der Redeploy-Logs' });
+    console.error('❌ Fehler beim Export der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Export der Logs' });
   }
 });
 
@@ -2409,8 +2742,10 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
   console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
 
+  let endpointId;
+
   try {
-    const endpointId = requireActiveEndpointId();
+    endpointId = requireActiveEndpointId();
     const stacksRes = await axiosInstance.get('/api/stacks');
     const filteredStacks = stacksRes.data.filter(stack => String(stack.EndpointId) === String(endpointId));
 
@@ -2427,13 +2762,21 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
 
     const stackSummaryList = eligibleStacks.map((stack) => `${stack.Name} (${stack.Id})`);
     const stackSummary = stackSummaryList.length ? stackSummaryList.join(', ') : 'keine Stacks';
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
-      status: 'started',
-      message: `Redeploy ALL gestartet für: ${stackSummary}`,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.ALL
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
+      status: 'gestartet',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
+      message: `Redeploy ALLE gestartet für: ${stackSummary}`,
+      metadata: {
+        stacks: stackSummaryList
+      },
+      source: 'system'
     });
 
     if (!eligibleStacks.length) {
@@ -2458,27 +2801,40 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       }
     }
 
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
-      status: 'success',
-      message: 'Redeploy ALL abgeschlossen',
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.ALL
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
+      status: 'erfolgreich',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: 'endpoint',
+      contextId: String(endpointId),
+      message: 'Redeploy ALLE abgeschlossen',
+      metadata: {
+        processedStacks: stackSummaryList
+      },
+      source: 'system'
     });
 
     res.json({ success: true, message: 'Redeploy ALL abgeschlossen' });
   } catch (err) {
     const message = err.response?.data?.message || err.message;
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
       status: 'error',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
+      contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
       message,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.ALL
+      source: 'system'
     });
-    console.error('❌ Fehler bei Redeploy ALL:', message);
+    console.error('❌ Fehler bei Redeploy ALLE:', message);
     res.status(500).json({ error: message });
   }
 });
@@ -2493,8 +2849,10 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
     return res.status(400).json({ error: 'stackIds muss eine nicht leere Array sein' });
   }
 
+  let endpointId;
+
   try {
-    const endpointId = requireActiveEndpointId();
+    endpointId = requireActiveEndpointId();
     const normalizedIds = stackIds.map((id) => String(id));
     const { filteredStacks } = await loadStackCollections();
     const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
@@ -2520,23 +2878,40 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
     const summaryList = eligibleStacks.map((stack) => `${stack.Name} (${stack.Id})`);
     const summaryText = summaryList.length ? summaryList.join(', ') : 'keine Stacks';
 
-    logRedeployEvent({
-      stackId: stackIds.join(','),
-      stackName: `Auswahl (${stackIds.length})`,
-      status: 'started',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'gestartet',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${stackIds.length})`,
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message: `Redeploy Auswahl gestartet für: ${summaryText}`,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        requestedStackIds: normalizedIds
+      },
+      source: 'system'
     });
 
     if (!eligibleStacks.length) {
-      logRedeployEvent({
-        stackId: stackIds.join(','),
-        stackName: `Auswahl (${stackIds.length})`,
-        status: 'success',
+      logEvent({
+        category: 'stack',
+        eventType: REDEPLOY_TYPES.SELECTION,
+        action: 'redeploy-auswahl',
+        status: 'erfolgreich',
+        entityType: 'bulk-operation',
+        entityId: 'redeploy-auswahl',
+        entityName: `Redeploy Auswahl (${stackIds.length})`,
+        contextType: 'endpoint',
+        contextId: String(endpointId),
         message: 'Redeploy Auswahl übersprungen: keine veralteten Stacks',
-        endpoint: endpointId,
-        redeployType: REDEPLOY_TYPES.SELECTION
+        metadata: {
+          requestedStackIds: normalizedIds,
+          skipped: true
+        },
+        source: 'system'
       });
       return res.json({ success: true, message: 'Keine veralteten Stacks in der Auswahl' });
     }
@@ -2558,25 +2933,42 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
       }
     }
 
-    logRedeployEvent({
-      stackId: stackIds.join(','),
-      stackName: `Auswahl (${stackIds.length})`,
-      status: 'success',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'erfolgreich',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${stackIds.length})`,
+      contextType: 'endpoint',
+      contextId: String(endpointId),
       message: 'Redeploy Auswahl abgeschlossen',
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        processedStackIds: eligibleStacks.map((stack) => String(stack.Id))
+      },
+      source: 'system'
     });
 
     res.json({ success: true, message: 'Redeploy Auswahl abgeschlossen' });
   } catch (err) {
     const message = err.response?.data?.message || err.message;
-    logRedeployEvent({
-      stackId: Array.isArray(stackIds) ? stackIds.join(',') : String(stackIds ?? ''),
-      stackName: `Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
-      status: 'error',
+    const normalized = Array.isArray(stackIds) ? stackIds.map((id) => String(id)) : [];
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'fehler',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
+      contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
+      contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
       message,
-      endpoint: endpointId,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        requestedStackIds: normalized
+      },
+      source: 'system'
     });
     console.error('❌ Fehler bei Redeploy Auswahl:', message);
     res.status(500).json({ error: message });

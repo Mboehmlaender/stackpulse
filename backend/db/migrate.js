@@ -2,16 +2,27 @@ import { db } from './index.js';
 
 db.exec('PRAGMA foreign_keys = ON;');
 
-const createRedeployLogsTable = `
-CREATE TABLE IF NOT EXISTS redeploy_logs (
+const createEventLogsTable = `
+CREATE TABLE IF NOT EXISTS event_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-  stack_id TEXT NOT NULL,
-  stack_name TEXT NOT NULL,
-  status TEXT NOT NULL,
+  category TEXT NOT NULL,
+  event_type TEXT,
+  action TEXT,
+  status TEXT,
+  severity TEXT,
+  entity_type TEXT,
+  entity_id TEXT,
+  entity_name TEXT,
+  actor_type TEXT,
+  actor_id TEXT,
+  actor_name TEXT,
+  source TEXT,
+  context_type TEXT,
+  context_id TEXT,
+  context_label TEXT,
   message TEXT,
-  endpoint INTEGER,
-  redeploy_type TEXT
+  metadata TEXT
 );
 `;
 
@@ -43,6 +54,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   description TEXT,
+  avatar_color TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -172,20 +184,112 @@ CREATE TABLE IF NOT EXISTS user_settings (
 );
 `;
 
-db.exec(createRedeployLogsTable);
+const tableExists = (tableName) => {
+  return Boolean(
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .get(tableName)
+  );
+};
 
-try {
-  const columns = db.prepare('PRAGMA table_info(redeploy_logs)').all();
-  const hasRedeployType = columns.some((column) => column.name === 'redeploy_type');
-  if (!hasRedeployType) {
-    db.exec('ALTER TABLE redeploy_logs ADD COLUMN redeploy_type TEXT');
-    console.log('ℹ️ redeploy_type column hinzugefügt');
+const serializeMetadata = (payload) => {
+  if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) {
+    return null;
   }
-} catch (err) {
-  console.error('⚠️ Konnte redeploy_type Spalte nicht prüfen/erstellen:', err.message);
-}
+  try {
+    return JSON.stringify(payload);
+  } catch (err) {
+    console.error('⚠️ Konnte Migrations-Metadaten nicht serialisieren:', err.message);
+    return null;
+  }
+};
 
-console.log('✅ redeploy_logs table ready');
+db.exec(createEventLogsTable);
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_logs_timestamp ON event_logs (timestamp DESC);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_logs_category ON event_logs (category);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_logs_event_type ON event_logs (event_type);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_logs_entity ON event_logs (entity_type, entity_id);');
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_logs_context ON event_logs (context_type, context_id);');
+console.log('✅ event_logs table ready');
+
+if (tableExists('redeploy_logs')) {
+  try {
+    const legacyRows = db.prepare(`
+      SELECT id, timestamp, stack_id, stack_name, status, message, endpoint, redeploy_type
+      FROM redeploy_logs
+      ORDER BY id ASC
+    `).all();
+
+    if (legacyRows.length) {
+      const insertEventLog = db.prepare(`
+        INSERT INTO event_logs (
+          id,
+          timestamp,
+          category,
+          event_type,
+          action,
+          status,
+          entity_type,
+          entity_id,
+          entity_name,
+          context_type,
+          context_id,
+          message,
+          metadata
+        ) VALUES (
+          @id,
+          @timestamp,
+          'stack',
+          @eventType,
+          'redeploy',
+          @status,
+          'stack',
+          @entityId,
+          @entityName,
+          @contextType,
+          @contextId,
+          @message,
+          @metadata
+        )
+      `);
+
+      const migrate = db.transaction((rows) => {
+        rows.forEach((row) => {
+          const contextType = row.endpoint !== null && row.endpoint !== undefined ? 'endpoint' : null;
+          const contextId = contextType ? String(row.endpoint) : null;
+          const metadataPayload = {
+            origin: 'redeploy_logs'
+          };
+          if (row.redeploy_type) {
+            metadataPayload.redeployType = row.redeploy_type;
+          }
+          if (contextId) {
+            metadataPayload.endpointId = contextId;
+          }
+          insertEventLog.run({
+            id: row.id,
+            timestamp: row.timestamp,
+            eventType: row.redeploy_type ?? null,
+            status: row.status ?? null,
+            entityId: row.stack_id !== undefined && row.stack_id !== null ? String(row.stack_id) : null,
+            entityName: row.stack_name ?? null,
+            contextType,
+            contextId,
+            message: row.message ?? null,
+            metadata: serializeMetadata(metadataPayload)
+          });
+        });
+      });
+
+      migrate(legacyRows);
+      console.log(`ℹ️ ${legacyRows.length} Einträge aus redeploy_logs migriert`);
+    }
+
+    db.exec('DROP TABLE redeploy_logs;');
+    console.log('ℹ️ Alte Tabelle redeploy_logs entfernt');
+  } catch (err) {
+    console.error('⚠️ Migration von redeploy_logs fehlgeschlagen:', err.message);
+  }
+}
 
 db.exec(createSettingsTable);
 console.log('✅ settings table ready');
@@ -198,7 +302,13 @@ try {
   const hasAvatarColor = userColumns.some((column) => column.name === 'avatar_color');
   if (!hasAvatarColor) {
     db.exec('ALTER TABLE users ADD COLUMN avatar_color TEXT');
-    console.log('ℹ️ avatar_color column hinzugefügt');
+    console.log('ℹ️ avatar_color column in Tabelle users hinzugefügt');
+  }
+  const userGroupColumns = db.prepare('PRAGMA table_info(user_groups)').all();
+  const hasAvatarColorGroup = userGroupColumns.some((column) => column.name === 'avatar_color');
+  if (!hasAvatarColorGroup) {
+    db.exec('ALTER TABLE user_groups ADD COLUMN avatar_color TEXT');
+    console.log('ℹ️ avatar_color column in Tabelle user_groups hinzugefügt');
   }
   const emailColumn = userColumns.find((column) => column.name === 'email');
   if (emailColumn && emailColumn.notnull === 1) {

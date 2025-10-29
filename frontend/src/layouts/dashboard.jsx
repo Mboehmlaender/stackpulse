@@ -10,6 +10,7 @@ import {
 } from "@/widgets/layout";
 import routes from "@/routes";
 import { UserDetails } from "@/pages/dashboard/userDetails.jsx";
+import { UserGroupDetail } from "@/pages/dashboard/userGroupDetail.jsx";
 import { useMaterialTailwindController, setOpenConfigurator } from "@/components";
 
 export function Dashboard() {
@@ -156,6 +157,7 @@ export function Dashboard() {
               ))
           )}
           <Route path="users/:userId" element={<UserDetails />} />
+          <Route path="usergroups/:groupId" element={<UserGroupDetail />} />
         </Routes>
         <div className="text-blue-gray-600">
           <Footer />

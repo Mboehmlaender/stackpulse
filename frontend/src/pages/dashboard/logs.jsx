@@ -5,13 +5,7 @@ import {
   CardHeader,
   CardBody,
   Typography,
-  Avatar,
-  Chip,
-  Tooltip,
-  Progress,
-  Collapse,
   Button,
-  ButtonGroup,
   Select,
   Option,
   Input,
@@ -19,7 +13,6 @@ import {
 } from "@material-tailwind/react";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
-import { useToast } from "@/components/ToastProvider.jsx";
 
 const UPDATE_STAGE_LABELS = {
   initializing: "Vorbereitung",
@@ -78,7 +71,10 @@ const STATUS_COLORS = {
   success: "text-mossGreen-500",
   warning: "text-warmAmberGlow-500",
   error: "text-sunsetCoral-500",
-  started: "text-arcticBlue-500"
+  started: "text-arcticBlue-500",
+  running: "text-arcticBlue-500",
+  info: "text-arcticBlue-500",
+  queued: "text-indigo-500"
 };
 
 const formatTimestamp = (value) => {
@@ -100,27 +96,43 @@ const normalizeDateParam = (value) => {
   return value.replace("T", " ");
 };
 
-const FILTER_STORAGE_KEY = "redeployLogFilters";
+const FILTER_STORAGE_KEY = "eventLogFilters";
 const ALL_OPTION_VALUE = "__all__";
 const ALL_OPTION_LABEL = "- Alle -";
-const REDEPLOY_TYPE_LABELS = {
-  Einzeln: "Einzeln",
-  Alle: "Alle",
-  Auswahl: "Auswahl",
-  single: "Einzeln",
-  all: "Alle",
-  selection: "Auswahl"
-};
-
 const hasActiveFilters = (filters) => Boolean(
-  (filters.stacks && filters.stacks.length) ||
+  (filters.categories && filters.categories.length) ||
+  (filters.eventTypes && filters.eventTypes.length) ||
+  (filters.actions && filters.actions.length) ||
   (filters.statuses && filters.statuses.length) ||
-  (filters.endpoints && filters.endpoints.length) ||
-  (filters.redeployTypes && filters.redeployTypes.length) ||
-  (filters.message && filters.message.trim()) ||
+  (filters.entityTypes && filters.entityTypes.length) ||
+  (filters.contextTypes && filters.contextTypes.length) ||
+  (filters.entityId && filters.entityId.trim()) ||
+  (filters.contextId && filters.contextId.trim()) ||
+  (filters.search && filters.search.trim()) ||
   (filters.from && filters.from.trim()) ||
   (filters.to && filters.to.trim())
 );
+
+const formatMetadataValue = (value) => {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return "[Objekt]";
+    }
+  }
+  return String(value);
+};
+
+const summarizeMetadata = (metadata) => {
+  if (!metadata || typeof metadata !== "object") return "";
+  const entries = Object.entries(metadata);
+  if (!entries.length) return "";
+  return entries
+    .map(([key, value]) => `${key}: ${formatMetadataValue(value)}`)
+    .join(" • ");
+};
 
 
 export function Logs() {
@@ -130,16 +142,22 @@ export function Logs() {
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
-  const [stackOptions, setStackOptions] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+  const [eventTypeOptions, setEventTypeOptions] = useState([]);
+  const [actionOptions, setActionOptions] = useState([]);
   const [statusOptions, setStatusOptions] = useState([]);
-  const [endpointOptions, setEndpointOptions] = useState([]);
-  const [redeployTypeOptions, setRedeployTypeOptions] = useState([]);
+  const [entityTypeOptions, setEntityTypeOptions] = useState([]);
+  const [contextTypeOptions, setContextTypeOptions] = useState([]);
 
-  const [selectedStacks, setSelectedStacks] = useState([]);
+  const [selectedCategories, setSelectedCategories] = useState([]);
+  const [selectedEventTypes, setSelectedEventTypes] = useState([]);
+  const [selectedActions, setSelectedActions] = useState([]);
   const [selectedStatuses, setSelectedStatuses] = useState([]);
-  const [selectedEndpoints, setSelectedEndpoints] = useState([]);
-  const [selectedRedeployTypes, setSelectedRedeployTypes] = useState([]);
-  const [messageQuery, setMessageQuery] = useState("");
+  const [selectedEntityTypes, setSelectedEntityTypes] = useState([]);
+  const [selectedContextTypes, setSelectedContextTypes] = useState([]);
+  const [entityIdQuery, setEntityIdQuery] = useState("");
+  const [contextIdQuery, setContextIdQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
 
@@ -148,12 +166,9 @@ export function Logs() {
   const [optionsInitialized, setOptionsInitialized] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
-  const { showToast } = useToast();
   const {
     maintenance: maintenanceMeta,
-    update: updateState,
-    script: scriptConfig,
-    ssh: sshConfig,
+    update: updateState
   } = useMaintenance();
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
@@ -182,59 +197,54 @@ export function Logs() {
   const updateFilterOptions = useCallback((payload) => {
     const logsPayload = Array.isArray(payload) ? payload : payload?.items ?? [];
 
-    const stackMap = new Map();
+    const categorySet = new Set();
+    const eventTypeSet = new Set();
+    const actionSet = new Set();
     const statusSet = new Set();
-    const endpointSet = new Set();
-    const redeployTypeSet = new Set();
+    const entityTypeSet = new Set();
+    const contextTypeSet = new Set();
 
     logsPayload.forEach((log) => {
-      if (log.stackId) {
-        const value = String(log.stackId);
-        const label = log.stackName || `Stack ${value}`;
-        stackMap.set(value, label);
-      }
-
-      if (log.status) {
-        statusSet.add(log.status);
-      }
-
-      if (log.endpoint !== null && log.endpoint !== undefined && log.endpoint !== "") {
-        endpointSet.add(String(log.endpoint));
-      }
-
-      if (log.redeployType) {
-        redeployTypeSet.add(log.redeployType);
-      }
+      if (log.category) categorySet.add(log.category);
+      if (log.eventType) eventTypeSet.add(log.eventType);
+      if (log.action) actionSet.add(log.action);
+      if (log.status) statusSet.add(log.status);
+      if (log.entityType) entityTypeSet.add(log.entityType);
+      if (log.contextType) contextTypeSet.add(log.contextType);
     });
 
-    setStackOptions(Array.from(stackMap.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label)));
-
+    setCategoryOptions(Array.from(categorySet).sort());
+    setEventTypeOptions(Array.from(eventTypeSet).sort());
+    setActionOptions(Array.from(actionSet).sort());
     setStatusOptions(Array.from(statusSet).sort());
-
-    setEndpointOptions(Array.from(endpointSet)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
-
-    setRedeployTypeOptions(Array.from(redeployTypeSet).sort());
+    setEntityTypeOptions(Array.from(entityTypeSet).sort());
+    setContextTypeOptions(Array.from(contextTypeSet).sort());
     setOptionsInitialized(true);
   }, []);
 
-  const stackLabelMap = useMemo(() => {
-    const map = new Map();
-    stackOptions.forEach((option) => {
-      map.set(option.value, option.label);
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedCategories((prev) => {
+      const valid = prev.filter((value) => categoryOptions.includes(value));
+      return valid.length === prev.length ? prev : valid;
     });
-    return map;
-  }, [stackOptions]);
+  }, [optionsInitialized, categoryOptions]);
 
   useEffect(() => {
     if (!optionsInitialized) return;
-    setSelectedStacks((prev) => {
-      const valid = prev.filter((value) => stackOptions.some((option) => option.value === value));
+    setSelectedEventTypes((prev) => {
+      const valid = prev.filter((value) => eventTypeOptions.includes(value));
       return valid.length === prev.length ? prev : valid;
     });
-  }, [optionsInitialized, stackOptions]);
+  }, [optionsInitialized, eventTypeOptions]);
+
+  useEffect(() => {
+    if (!optionsInitialized) return;
+    setSelectedActions((prev) => {
+      const valid = prev.filter((value) => actionOptions.includes(value));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [optionsInitialized, actionOptions]);
 
   useEffect(() => {
     if (!optionsInitialized) return;
@@ -246,19 +256,19 @@ export function Logs() {
 
   useEffect(() => {
     if (!optionsInitialized) return;
-    setSelectedEndpoints((prev) => {
-      const valid = prev.filter((value) => endpointOptions.includes(value));
+    setSelectedEntityTypes((prev) => {
+      const valid = prev.filter((value) => entityTypeOptions.includes(value));
       return valid.length === prev.length ? prev : valid;
     });
-  }, [optionsInitialized, endpointOptions]);
+  }, [optionsInitialized, entityTypeOptions]);
 
   useEffect(() => {
     if (!optionsInitialized) return;
-    setSelectedRedeployTypes((prev) => {
-      const valid = prev.filter((value) => redeployTypeOptions.includes(value));
+    setSelectedContextTypes((prev) => {
+      const valid = prev.filter((value) => contextTypeOptions.includes(value));
       return valid.length === prev.length ? prev : valid;
     });
-  }, [optionsInitialized, redeployTypeOptions]);
+  }, [optionsInitialized, contextTypeOptions]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -273,11 +283,15 @@ export function Logs() {
         const storedFilters = parsed?.filters ?? parsed ?? {};
         const storedPagination = parsed?.pagination ?? {};
 
-        setSelectedStacks(storedFilters.stacks || []);
+        setSelectedCategories(storedFilters.categories || []);
+        setSelectedEventTypes(storedFilters.eventTypes || []);
+        setSelectedActions(storedFilters.actions || []);
         setSelectedStatuses(storedFilters.statuses || []);
-        setSelectedEndpoints(storedFilters.endpoints || []);
-        setSelectedRedeployTypes(storedFilters.redeployTypes || []);
-        setMessageQuery(storedFilters.message || "");
+        setSelectedEntityTypes(storedFilters.entityTypes || []);
+        setSelectedContextTypes(storedFilters.contextTypes || []);
+        setEntityIdQuery(storedFilters.entityId || "");
+        setContextIdQuery(storedFilters.contextId || "");
+        setSearchQuery(storedFilters.search || "");
         setFromDate(storedFilters.from || "");
         setToDate(storedFilters.to || "");
         setFiltersOpen(hasActiveFilters(storedFilters));
@@ -305,24 +319,40 @@ export function Logs() {
   const buildFilterParams = useCallback(() => {
     const params = {};
 
-    if (selectedStacks.length) {
-      params.stackIds = selectedStacks.join(",");
+    if (selectedCategories.length) {
+      params.categories = selectedCategories.join(",");
+    }
+
+    if (selectedEventTypes.length) {
+      params.eventTypes = selectedEventTypes.join(",");
+    }
+
+    if (selectedActions.length) {
+      params.actions = selectedActions.join(",");
     }
 
     if (selectedStatuses.length) {
       params.statuses = selectedStatuses.join(",");
     }
 
-    if (selectedEndpoints.length) {
-      params.endpoints = selectedEndpoints.join(",");
+    if (selectedEntityTypes.length) {
+      params.entityTypes = selectedEntityTypes.join(",");
     }
 
-    if (selectedRedeployTypes.length) {
-      params.redeployTypes = selectedRedeployTypes.join(",");
+    if (selectedContextTypes.length) {
+      params.contextTypes = selectedContextTypes.join(",");
     }
 
-    if (messageQuery.trim()) {
-      params.message = messageQuery.trim();
+    if (entityIdQuery.trim()) {
+      params.entityId = entityIdQuery.trim();
+    }
+
+    if (contextIdQuery.trim()) {
+      params.contextId = contextIdQuery.trim();
+    }
+
+    if (searchQuery.trim()) {
+      params.search = searchQuery.trim();
     }
 
     const fromParam = normalizeDateParam(fromDate);
@@ -336,7 +366,19 @@ export function Logs() {
     }
 
     return params;
-  }, [selectedStacks, selectedStatuses, selectedEndpoints, selectedRedeployTypes, messageQuery, fromDate, toDate]);
+  }, [
+    selectedCategories,
+    selectedEventTypes,
+    selectedActions,
+    selectedStatuses,
+    selectedEntityTypes,
+    selectedContextTypes,
+    entityIdQuery,
+    contextIdQuery,
+    searchQuery,
+    fromDate,
+    toDate
+  ]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -358,14 +400,30 @@ export function Logs() {
   }, [filtersReady, updateFilterOptions, refreshSignal]);
 
   const currentFilters = useMemo(() => ({
-    stacks: selectedStacks,
+    categories: selectedCategories,
+    eventTypes: selectedEventTypes,
+    actions: selectedActions,
     statuses: selectedStatuses,
-    endpoints: selectedEndpoints,
-    redeployTypes: selectedRedeployTypes,
-    message: messageQuery,
+    entityTypes: selectedEntityTypes,
+    contextTypes: selectedContextTypes,
+    entityId: entityIdQuery,
+    contextId: contextIdQuery,
+    search: searchQuery,
     from: fromDate,
     to: toDate
-  }), [selectedStacks, selectedStatuses, selectedEndpoints, selectedRedeployTypes, messageQuery, fromDate, toDate]);
+  }), [
+    selectedCategories,
+    selectedEventTypes,
+    selectedActions,
+    selectedStatuses,
+    selectedEntityTypes,
+    selectedContextTypes,
+    entityIdQuery,
+    contextIdQuery,
+    searchQuery,
+    fromDate,
+    toDate
+  ]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -406,7 +464,7 @@ export function Logs() {
       .catch((err) => {
         if (cancelled) return;
         console.error("❌ Fehler beim Laden der Logs:", err);
-        setError("Fehler beim Laden der Redeploy-Logs");
+        setError("Fehler beim Laden der Logs");
       })
       .finally(() => {
         if (cancelled) return;
@@ -474,10 +532,12 @@ export function Logs() {
     setPage(1);
   }, [setPage]);
 
-  const selectStacks = useMemo(() => handleMultiSelectChange(setSelectedStacks), [handleMultiSelectChange, setSelectedStacks]);
-  const selectStatuses = useMemo(() => handleMultiSelectChange(setSelectedStatuses), [handleMultiSelectChange, setSelectedStatuses]);
-  const selectRedeployTypes = useMemo(() => handleMultiSelectChange(setSelectedRedeployTypes), [handleMultiSelectChange, setSelectedRedeployTypes]);
-  const selectEndpoints = useMemo(() => handleMultiSelectChange(setSelectedEndpoints), [handleMultiSelectChange, setSelectedEndpoints]);
+  const selectCategories = useMemo(() => handleMultiSelectChange(setSelectedCategories), [handleMultiSelectChange]);
+  const selectEventTypes = useMemo(() => handleMultiSelectChange(setSelectedEventTypes), [handleMultiSelectChange]);
+  const selectActions = useMemo(() => handleMultiSelectChange(setSelectedActions), [handleMultiSelectChange]);
+  const selectStatuses = useMemo(() => handleMultiSelectChange(setSelectedStatuses), [handleMultiSelectChange]);
+  const selectEntityTypes = useMemo(() => handleMultiSelectChange(setSelectedEntityTypes), [handleMultiSelectChange]);
+  const selectContextTypes = useMemo(() => handleMultiSelectChange(setSelectedContextTypes), [handleMultiSelectChange]);
 
   const removeFilterValue = (setter, value) => {
     setter((prev) => prev.filter((entry) => entry !== value));
@@ -485,11 +545,15 @@ export function Logs() {
   };
 
   const handleResetFilters = () => {
-    setSelectedStacks([]);
+    setSelectedCategories([]);
+    setSelectedEventTypes([]);
+    setSelectedActions([]);
     setSelectedStatuses([]);
-    setSelectedEndpoints([]);
-    setSelectedRedeployTypes([]);
-    setMessageQuery("");
+    setSelectedEntityTypes([]);
+    setSelectedContextTypes([]);
+    setEntityIdQuery("");
+    setContextIdQuery("");
+    setSearchQuery("");
     setFromDate("");
     setToDate("");
     setFiltersOpen(false);
@@ -500,55 +564,47 @@ export function Logs() {
     setFiltersOpen((prev) => !prev);
   };
 
-  const stackSelectOptions = useMemo(() => {
-    const entries = stackOptions.filter((option) => option.value !== ALL_OPTION_VALUE);
-    return [
-      { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
-      ...entries
-    ];
-  }, [stackOptions]);
+  const createSelectOptions = useCallback((values) => ([
+    { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
+    ...values
+      .filter((value) => value !== ALL_OPTION_VALUE)
+      .map((value) => ({ value, label: value }))
+  ]), []);
 
-  const statusSelectOptions = useMemo(() => {
-    const entries = statusOptions
-      .filter((status) => status !== ALL_OPTION_VALUE)
-      .map((status) => ({ value: status, label: status }));
-    return [
-      { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
-      ...entries
-    ];
-  }, [statusOptions]);
-
-  const endpointSelectOptions = useMemo(() => {
-    const entries = endpointOptions
-      .filter((endpoint) => endpoint !== ALL_OPTION_VALUE)
-      .map((endpoint) => ({ value: endpoint, label: endpoint }));
-    return [
-      { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
-      ...entries
-    ];
-  }, [endpointOptions]);
-
-  const redeployTypeSelectOptions = useMemo(() => {
-    const entries = redeployTypeOptions
-      .filter((type) => type !== ALL_OPTION_VALUE)
-      .map((type) => ({ value: type, label: REDEPLOY_TYPE_LABELS[type] ?? type }));
-    return [
-      { value: ALL_OPTION_VALUE, label: ALL_OPTION_LABEL },
-      ...entries
-    ];
-  }, [redeployTypeOptions]);
+  const categorySelectOptions = useMemo(() => createSelectOptions(categoryOptions), [createSelectOptions, categoryOptions]);
+  const eventTypeSelectOptions = useMemo(() => createSelectOptions(eventTypeOptions), [createSelectOptions, eventTypeOptions]);
+  const actionSelectOptions = useMemo(() => createSelectOptions(actionOptions), [createSelectOptions, actionOptions]);
+  const statusSelectOptions = useMemo(() => createSelectOptions(statusOptions), [createSelectOptions, statusOptions]);
+  const entityTypeSelectOptions = useMemo(() => createSelectOptions(entityTypeOptions), [createSelectOptions, entityTypeOptions]);
+  const contextTypeSelectOptions = useMemo(() => createSelectOptions(contextTypeOptions), [createSelectOptions, contextTypeOptions]);
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
-    if (selectedStacks.length) count += selectedStacks.length;
+    if (selectedCategories.length) count += selectedCategories.length;
+    if (selectedEventTypes.length) count += selectedEventTypes.length;
+    if (selectedActions.length) count += selectedActions.length;
     if (selectedStatuses.length) count += selectedStatuses.length;
-    if (selectedEndpoints.length) count += selectedEndpoints.length;
-    if (selectedRedeployTypes.length) count += selectedRedeployTypes.length;
-    if (messageQuery.trim()) count += 1;
+    if (selectedEntityTypes.length) count += selectedEntityTypes.length;
+    if (selectedContextTypes.length) count += selectedContextTypes.length;
+    if (entityIdQuery.trim()) count += 1;
+    if (contextIdQuery.trim()) count += 1;
+    if (searchQuery.trim()) count += 1;
     if (fromDate) count += 1;
     if (toDate) count += 1;
     return count;
-  }, [selectedStacks, selectedStatuses, selectedEndpoints, messageQuery, fromDate, toDate]);
+  }, [
+    selectedCategories,
+    selectedEventTypes,
+    selectedActions,
+    selectedStatuses,
+    selectedEntityTypes,
+    selectedContextTypes,
+    entityIdQuery,
+    contextIdQuery,
+    searchQuery,
+    fromDate,
+    toDate
+  ]);
 
   const handleDeleteLog = async (id) => {
     if (!window.confirm("Diesen Log-Eintrag dauerhaft löschen?")) return;
@@ -559,7 +615,7 @@ export function Logs() {
       setRefreshSignal((prev) => prev + 1);
     } catch (err) {
       console.error("❌ Fehler beim Löschen des Logs:", err);
-      setError("Fehler beim Löschen des Redeploy-Logs");
+      setError("Fehler beim Löschen des Logs");
     } finally {
       setActionLoading(false);
     }
@@ -597,7 +653,7 @@ export function Logs() {
       const contentType = response.headers["content-type"] || (format === "sql" ? "application/sql" : "text/plain");
       const disposition = response.headers["content-disposition"] || "";
       const match = disposition.match(/filename="?([^";]+)"?/i);
-      const filename = match?.[1] || `redeploy-logs.${format}`;
+      const filename = match?.[1] || `event-logs.${format}`;
 
       const blob = new Blob([response.data], { type: contentType });
       const url = window.URL.createObjectURL(blob);
@@ -610,7 +666,7 @@ export function Logs() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error("❌ Fehler beim Export der Logs:", err);
-      setError("Fehler beim Export der Redeploy-Logs");
+      setError("Fehler beim Export der Logs");
     } finally {
       setActionLoading(false);
     }
@@ -620,7 +676,7 @@ export function Logs() {
   const [open, setOpen] = React.useState(false);
   const toggleOpen = () => setOpen((cur) => !cur);
   return (
-    <div className="mt-12 mb-8">
+    <div className="mt-12 mb-8 flex flex-col gap-12">
       {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
         <div className="flex flex-col gap-1">
           <span>
@@ -678,267 +734,395 @@ export function Logs() {
                   Angezeigte löschen</Button>
               </div>
 
-              <div className="flex flex-wrap gap-2 mt-10">
-                <div className="grid gap-4 flex-1">
-                  <Select
-                    multiple
-                    onChange={noop}
-                    className="text-stormGrey-500"
-                    variant="static"
-                    dismiss={{ itemPress: false }}
-                    label="Stacks"
-                  >
-                    {stackSelectOptions.map(({ value, label }) => (
-                      <StickyOption
-                        key={value}
-                        value={value}
-                        onClick={() => selectStacks(value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            selectStacks(value);
-                          }
-                        }}
-                        className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
-                      >
-                        {label}
-                      </StickyOption>
-                    ))}
-                  </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
-                    {selectedStacks.length === 0 ? (
-                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white ">
-                        Alle Stacks
-                      </span>
-                    ) : (
-                      <span>
-                        {selectedStacks.map((stackId) => (
-                          <button
-                            key={stackId}
-                            type="button"
-                            onClick={() => removeFilterValue(setSelectedStacks, stackId)}
-                            className="rounded-full bg-lavenderSmoke-600/80 px-2 py-0.5 text-white transition hover:bg-lavenderSmoke-600/90 focus:outline-none focus:ring-2 focus:ring-lavenderSmoke-400 cursor-pointer"
-                            title="Filter entfernen"
-                          >
-                            {stackLabelMap.get(stackId) ?? `Stack ${stackId}`}
-                          </button>
-                        ))}
-                      </span>
-                    )}
+              <div className="grid gap-6 mt-10">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Kategorien"
+                    >
+                      {categorySelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectCategories(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectCategories(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedCategories.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Kategorien
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedCategories.map((category) => (
+                            <button
+                              key={category}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedCategories, category)}
+                              className="rounded-full bg-lavenderSmoke-600/80 px-2 py-0.5 text-white transition hover:bg-lavenderSmoke-600/90 focus:outline-none focus:ring-2 focus:ring-lavenderSmoke-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {category}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Event-Typen"
+                    >
+                      {eventTypeSelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectEventTypes(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectEventTypes(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedEventTypes.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Event-Typen
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedEventTypes.map((eventType) => (
+                            <button
+                              key={eventType}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedEventTypes, eventType)}
+                              className="rounded-full bg-citrusPunch-600/80 px-2 py-0.5 text-white transition hover:bg-citrusPunch-600/90 focus:outline-none focus:ring-2 focus:ring-citrusPunch-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {eventType}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="grid gap-4 flex-1">
-                  <Select
-                    multiple
-                    onChange={noop}
-                    className="text-stormGrey-500"
-                    variant="static"
-                    dismiss={{ itemPress: false }}
-                    label="Status"
-                  >
-                    {statusSelectOptions.map(({ value, label }) => (
-                      <StickyOption
-                        key={value}
-                        value={value}
-                        onClick={() => selectStatuses(value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            selectStatuses(value);
-                          }
-                        }}
-                        className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
-                      >
-                        {label}
-                      </StickyOption>
-                    ))}
-                  </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
-                    {selectedStatuses.length === 0 ? (
-                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
-                        Alle Status
-                      </span>
-                    ) : (
-                      <span>
-                        {selectedStatuses.map((status) => (
-                          <button
-                            key={status}
-                            type="button"
-                            onClick={() => removeFilterValue(setSelectedStatuses, status)}
-                            className="rounded-full bg-copperRust-600/80 px-2 py-0.5 text-white transition hover:bg-copperRust-600/90 focus:outline-none focus:ring-2 focus:ring-copperRust-400 cursor-pointer"
-                            title="Filter entfernen"
-                          >
-                            {status}
-                          </button>
-                        ))}
-                      </span>
-                    )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Aktionen"
+                    >
+                      {actionSelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectActions(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectActions(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedActions.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Aktionen
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedActions.map((action) => (
+                            <button
+                              key={action}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedActions, action)}
+                              className="rounded-full bg-emeraldMist-500/80 px-2 py-0.5 text-white transition hover:bg-emeraldMist-500/90 focus:outline-none focus:ring-2 focus:ring-emeraldMist-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {action}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Status"
+                    >
+                      {statusSelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectStatuses(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectStatuses(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedStatuses.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Status
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedStatuses.map((status) => (
+                            <button
+                              key={status}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedStatuses, status)}
+                              className="rounded-full bg-copperRust-600/80 px-2 py-0.5 text-white transition hover:bg-copperRust-600/90 focus:outline-none focus:ring-2 focus:ring-copperRust-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {status}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="grid gap-4 flex-1">
-                  <Select
-                    multiple
-                    onChange={noop}
-                    className="text-stormGrey-500"
-                    variant="static"
-                    dismiss={{ itemPress: false }}
-                    label="Redeploy-Typ"
-                  >
-                    {redeployTypeSelectOptions.map(({ value, label }) => (
-                      <StickyOption
-                        key={value}
-                        value={value}
-                        onClick={() => selectRedeployTypes(value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            selectRedeployTypes(value);
-                          }
-                        }}
-                        className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
-                      >
-                        {label}
-                      </StickyOption>
-
-                    ))}
-                  </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
-                    {selectedRedeployTypes.length === 0 ? (
-                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
-                        Alle Typen
-                      </span>
-                    ) : (
-                      <span>
-                        {selectedRedeployTypes.map((type) => (
-                          <button
-                            key={type}
-                            type="button"
-                            onClick={() => removeFilterValue(setSelectedRedeployTypes, type)}
-                            className="rounded-full bg-citrusPunch-600/80 px-2 py-0.5 text-white transition hover:bg-citrusPunch-600/90 focus:outline-none focus:ring-2 focus:ring-citrusPunch-400 cursor-pointer"
-                            title="Filter entfernen"
-                          >
-                            {REDEPLOY_TYPE_LABELS[type] ?? type}
-                          </button>
-                        ))}
-                      </span>
-                    )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Entitäts-Typen"
+                    >
+                      {entityTypeSelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectEntityTypes(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectEntityTypes(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedEntityTypes.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Entitäten
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedEntityTypes.map((entityType) => (
+                            <button
+                              key={entityType}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedEntityTypes, entityType)}
+                              className="rounded-full bg-indigo-600/80 px-2 py-0.5 text-white transition hover:bg-indigo-600/90 focus:outline-none focus:ring-2 focus:ring-indigo-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {entityType}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid gap-3">
+                    <Select
+                      multiple
+                      onChange={noop}
+                      className="text-stormGrey-500"
+                      variant="static"
+                      dismiss={{ itemPress: false }}
+                      label="Kontext"
+                    >
+                      {contextTypeSelectOptions.map(({ value, label }) => (
+                        <StickyOption
+                          key={value}
+                          value={value}
+                          onClick={() => selectContextTypes(value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              selectContextTypes(value);
+                            }
+                          }}
+                          className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
+                        >
+                          {label}
+                        </StickyOption>
+                      ))}
+                    </Select>
+                    <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
+                      {selectedContextTypes.length === 0 ? (
+                        <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
+                          Alle Kontexte
+                        </span>
+                      ) : (
+                        <span>
+                          {selectedContextTypes.map((contextType) => (
+                            <button
+                              key={contextType}
+                              type="button"
+                              onClick={() => removeFilterValue(setSelectedContextTypes, contextType)}
+                              className="rounded-full bg-sunsetCoral-600/80 px-2 py-0.5 text-white transition hover:bg-sunsetCoral-600/90 focus:outline-none focus:ring-2 focus:ring-sunsetCoral-400 cursor-pointer"
+                              title="Filter entfernen"
+                            >
+                              {contextType}
+                            </button>
+                          ))}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="grid gap-4 flex-1">
-                  <Select
-                    multiple
-                    onChange={noop}
-                    className="text-stormGrey-500"
-                    variant="static"
-                    dismiss={{ itemPress: false }}
-                    label="Endpoints"
-                  >
-                    {endpointSelectOptions.map(({ value, label }) => (
-                      <StickyOption
-                        key={value}
-                        value={value}
-                        onClick={() => selectEndpoints(value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            selectEndpoints(value);
-                          }
-                        }}
-                        className={`text-black-600 ${value === ALL_OPTION_VALUE ? 'font-semibold text-black-800' : ''}`}
-                      >
-                        {label}
-                      </StickyOption>
-                    ))}
-                  </Select>
-                  <div className="mt-2 mb-2 min-h-[1.5rem] text-xs text-stormGrey-400">
-                    {selectedEndpoints.length === 0 ? (
-                      <span className="rounded-full bg-stormGrey-700/60 px-2 py-0.5 text-white">
-                        Alle Endpoints
-                      </span>
-                    ) : (
-                      <span>
-                        {selectedEndpoints.map((endpoint) => (
-                          <button
-                            key={endpoint}
-                            type="button"
-                            onClick={() => removeFilterValue(setSelectedEndpoints, endpoint)}
-                            className="rounded-full bg-emeraldMist-500/80 px-2 py-0.5 text-white transition hover:bg-emeraldMist-500/90 focus:outline-none focus:ring-2 focus:ring-emeraldMist-400 cursor-pointer"
-                            title="Filter entfernen"
-                          >
-                            Endpoint {endpoint}
-                          </button>
-                        ))}
-                      </span>
-                    )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="md:flex-1">
+                    <Input
+                      value={entityIdQuery}
+                      onChange={(event) => {
+                        setEntityIdQuery(event.target.value);
+                        setPage(1);
+                      }}
+                      variant="static"
+                      label="Entitäts-ID"
+                      placeholder="z. B. Stack-ID"
+                    />
+                  </div>
+                  <div className="md:flex-1">
+                    <Input
+                      value={contextIdQuery}
+                      onChange={(event) => {
+                        setContextIdQuery(event.target.value);
+                        setPage(1);
+                      }}
+                      variant="static"
+                      label="Kontext-ID"
+                      placeholder="z. B. Endpoint-ID"
+                    />
                   </div>
                 </div>
-              </div>
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
-                <div className="md:flex-1">
-                  <Input
-                    value={messageQuery}
-                    onChange={(event) => {
-                      setMessageQuery(event.target.value);
-                      setPage(1);
-                    }}
-                    variant="static"
-                    label="Nachricht (Freitext)"
-                    placeholder="Suche" />
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div className="md:flex-1">
+                    <Input
+                      value={searchQuery}
+                      onChange={(event) => {
+                        setSearchQuery(event.target.value);
+                        setPage(1);
+                      }}
+                      variant="static"
+                      label="Suche (Nachricht & Details)"
+                      placeholder="Freitext"
+                    />
+                  </div>
+                  <div className="md:mt-0 mt-8 md:flex-1">
+                    <Select
+                      variant="static"
+                      label="Einträge pro Seite"
+                      onChange={noop}
+                      value={perPage}
+                    >
+                      {perPageOptions.map(({ value, label }) => (
+                        <Option
+                          key={value}
+                          value={value}
+                          onClick={() => handlePerPageChange(value)}
+                        >
+                          {label}
+                        </Option>
+                      ))}
+                    </Select>
+                  </div>
                 </div>
-                <div className="md:mt-0 mt-8 md:flex-1">
-                  <Select
-                    variant="static"
-                    label="Einträge pro Seite"
-                    onChange={noop}
-                    value={perPage}
-                  >
-                    {perPageOptions.map(({ value, label }) => (
-                      <Option
-                        key={value}
-                        value={value}
-                        onClick={() => handlePerPageChange(value)}
-                      >
-                        {label}
-                      </Option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-              <div className="flex flex-col md:flex-row flex-wrap gap-4 mt-8">
-                <div className="flex-1">
-                  <Input
-                    type="datetime-local"
-                    variant="static"
-                    label="Von"
-                    value={fromDate}
-                    onChange={(event) => {
-                      setFromDate(event.target.value);
-                      setPage(1);
-                    }}
-                    className="w-full"
-                  />
-                </div>
-                <div className="flex-1">
-                  <Input
-                    type="datetime-local"
-                    variant="static"
-                    label="Bis"
-                    value={toDate}
-                    onChange={(event) => {
-                      setToDate(event.target.value);
-                      setPage(1);
-                    }}
-                    className="w-full"
-                  />
-                </div>
-                <div className="flex-1">
-                  <Button
-                    onClick={handleResetFilters}
-                    disabled={actionLoading || loading}
-                    className="w-full"
-                  >
-                    Zurücksetzen
-                  </Button>
+                <div className="flex flex-col md:flex-row flex-wrap gap-4">
+                  <div className="flex-1 min-w-[200px]">
+                    <Input
+                      type="datetime-local"
+                      variant="static"
+                      label="Von"
+                      value={fromDate}
+                      onChange={(event) => {
+                        setFromDate(event.target.value);
+                        setPage(1);
+                      }}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-[200px]">
+                    <Input
+                      type="datetime-local"
+                      variant="static"
+                      label="Bis"
+                      value={toDate}
+                      onChange={(event) => {
+                        setToDate(event.target.value);
+                        setPage(1);
+                      }}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-[180px]">
+                    <Button
+                      onClick={handleResetFilters}
+                      disabled={actionLoading || loading}
+                      className="w-full"
+                    >
+                      Zurücksetzen
+                    </Button>
+                  </div>
                 </div>
               </div>
 
@@ -946,10 +1130,10 @@ export function Logs() {
 
           )}
           <div className="overflow-x-auto rounded-lg border border-blue-gray-50">
-            <table className="w-full min-w-[720px] table-auto text-left">
+            <table className="w-full min-w-[860px] table-auto text-left">
               <thead>
                 <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-stormGrey-400">
-                  {["Zeitpunkt", "Stack", "Art", "Status", "Nachricht", "Endpoint", "Aktionen"].map((el) => (
+                  {["Zeitpunkt", "Kategorie", "Status", "Entität", "Kontext", "Nachricht", "Details", "Aktionen"].map((el) => (
                     <th key={el} className="px-6 py-4 font-semibold">
                       {el}
                     </th>
@@ -959,73 +1143,139 @@ export function Logs() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-stormGrey-400">
+                    <td colSpan={8} className="px-6 py-8 text-center text-stormGrey-400">
                       Logs werden geladen ...
                     </td>
                   </tr>
                 ) : logs.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-stormGrey-400">
+                    <td colSpan={8} className="px-6 py-8 text-center text-stormGrey-400">
                       Keine Logs gefunden.
                     </td>
                   </tr>
                 ) : (
                   logs.map((log, index) => {
                     const statusClass = STATUS_COLORS[log.status] || "text-blue-300";
-                    const stackDisplayName = log.stackName || "Unbekannt";
-                    const showStackId = stackDisplayName !== '---' && log.stackId !== undefined && log.stackId !== null;
-                    const redeployTypeLabel = log.redeployType
-                      ? (REDEPLOY_TYPE_LABELS[log.redeployType] ?? log.redeployType)
-                      : '---';
                     const rowClass = index === logs.length - 1 ? "" : "border-b border-blue-gray-50";
+                    const categoryLabel = log.category || "-";
+                    const entityPrimary = log.entityName || log.entityId || "-";
+                    const entityDetails = [];
+                    if (log.entityName && log.entityId) {
+                      entityDetails.push(`ID: ${log.entityId}`);
+                    } else if (!log.entityName && log.entityId) {
+                      entityDetails.push(`ID: ${log.entityId}`);
+                    }
+                    if (log.entityType) {
+                      entityDetails.push(log.entityType);
+                    }
+                    const contextPrimary = log.contextLabel || log.contextType || (log.contextId ? `#${log.contextId}` : "-");
+                    const contextDetails = [];
+                    if (log.contextType) {
+                      contextDetails.push(log.contextType);
+                    }
+                    if (log.contextId) {
+                      contextDetails.push(`#${log.contextId}`);
+                    }
+                    const metadataSummary = summarizeMetadata(log.metadata);
+                    const detailSegments = [];
+                    if (log.actorName || log.actorId) {
+                      const actorLabel = log.actorName ? log.actorName : `#${log.actorId}`;
+                      const suffix = log.actorName && log.actorId ? ` (#${log.actorId})` : "";
+                      detailSegments.push(`Akteur: ${actorLabel}${suffix}`);
+                    }
+                    if (log.source) {
+                      detailSegments.push(`Quelle: ${log.source}`);
+                    }
+                    if (metadataSummary) {
+                      detailSegments.push(metadataSummary);
+                    }
+                    if (!detailSegments.length) {
+                      detailSegments.push("-");
+                    }
+
                     return (
                       <tr key={log.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
-                        <td className="px-6 py-4">
+                        <td className="px-6 py-4 align-top">
                           <Typography
                             variant="small"
-                            className="mb-1 block text-xs font-medium text-stormGrey-600">
+                            className="block text-xs font-medium text-stormGrey-600"
+                          >
                             {formatTimestamp(log.timestamp)}
                           </Typography>
                         </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col">
-                            <span className="font-medium">{stackDisplayName}</span>
-                            <Typography variant="small">
-                              {showStackId && (
-                                <span className="text-xs text-stormGrey-400">ID: {log.stackId}</span>
+                        <td className="px-6 py-4 align-top">
+                          <div className="flex flex-col gap-2">
+                            <span className="font-medium">{categoryLabel}</span>
+                            <div className="flex flex-wrap gap-2 text-xs text-stormGrey-400">
+                              {log.eventType && (
+                                <span className="rounded-full bg-citrusPunch-600/80 px-2 py-0.5 text-white">
+                                  {log.eventType}
+                                </span>
                               )}
-                            </Typography>
+                              {log.action && (
+                                <span className="rounded-full bg-emeraldMist-500/80 px-2 py-0.5 text-white">
+                                  {log.action}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4">
-                          <Typography variant="small">
-                            {redeployTypeLabel}
-                          </Typography>
-                        </td>
-                        <td className="px-6 py-4">
+                        <td className="px-6 py-4 align-top">
                           <Typography
                             variant="small"
                             className={`font-semibold ${statusClass}`}
                           >
-                            {log.status}
+                            {log.status || "-"}
                           </Typography>
+                          {log.severity && (
+                            <Typography variant="small" className="text-xs text-stormGrey-400">
+                              {log.severity}
+                            </Typography>
+                          )}
                         </td>
-                        <td className="px-6 py-4">
-                          <Typography variant="small">
+                        <td className="px-6 py-4 align-top">
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium break-words">{entityPrimary}</span>
+                            {entityDetails.length > 0 && (
+                              <div className="flex flex-col text-xs text-stormGrey-400">
+                                {entityDetails.map((entry) => (
+                                  <span key={entry} className="break-words">{entry}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 align-top">
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium break-words">{contextPrimary}</span>
+                            {contextDetails.length > 0 && (
+                              <div className="flex flex-col text-xs text-stormGrey-400">
+                                {contextDetails.map((entry) => (
+                                  <span key={entry} className="break-words">{entry}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 align-top">
+                          <Typography variant="small" className="break-words">
                             {log.message || "-"}
                           </Typography>
                         </td>
-                        <td className="px-6 py-4">
-                          <Typography variant="small">
-                            {log.endpoint ?? "-"}
-                          </Typography>
+                        <td className="px-6 py-4 align-top">
+                          <div className="flex flex-col gap-1 text-xs text-stormGrey-500">
+                            {detailSegments.map((entry, idx) => (
+                              <span key={idx} className="break-words">{entry}</span>
+                            ))}
+                          </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-6 py-4 align-top">
                           <Typography variant="small">
                             <button
                               onClick={() => handleDeleteLog(log.id)}
                               disabled={actionLoading}
-                              className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60">
+                              className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60"
+                            >
                               Löschen
                             </button>
                           </Typography>

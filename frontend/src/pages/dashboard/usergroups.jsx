@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import {
   Card,
   CardHeader,
@@ -24,10 +25,12 @@ export function Usergroups() {
   const [newGroupDescription, setNewGroupDescription] = useState("");
   const [createGroupError, setCreateGroupError] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [deletingGroupId, setDeletingGroupId] = useState(null);
 
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
   const maintenanceActive = Boolean(maintenance?.active);
+  const navigate = useNavigate();
 
   const {
     page,
@@ -54,6 +57,7 @@ export function Usergroups() {
           id: item.id,
           name: item.name || "",
           description: item.description || "",
+          avatarColor: item.avatarColor || null,
           memberCount: Number(item.memberCount) || 0,
           members: Array.isArray(item.members)
             ? item.members.map((member) => ({
@@ -233,8 +237,86 @@ export function Usergroups() {
 
   const createGroupDisabled = maintenanceActive || creatingGroup;
 
+  const handleDeleteGroup = useCallback(async (group) => {
+    if (maintenanceActive || !group?.id) {
+      return;
+    }
+
+    const isSuperuserGroup = (group?.name || "").toLowerCase() === "superuser";
+    if (isSuperuserGroup) {
+      showToast({
+        variant: "error",
+        title: "Löschen nicht möglich",
+        description: "Die Superuser-Gruppe kann nicht gelöscht werden."
+      });
+      return;
+    }
+
+    const memberCount = Number(group.memberCount) || 0;
+    if (memberCount > 0) {
+      showToast({
+        variant: "error",
+        title: "Löschen nicht möglich",
+        description: "Die Gruppe enthält noch Benutzer. Bitte entfernen Sie diese zuerst."
+      });
+      return;
+    }
+
+    const confirmation = window.confirm(`Benutzergruppe "${group.name}" wirklich löschen?`);
+    if (!confirmation) {
+      return;
+    }
+
+    const numericId = Number(group.id);
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+      showToast({
+        variant: "error",
+        title: "Löschen fehlgeschlagen",
+        description: "Ungültige Gruppen-ID."
+      });
+      return;
+    }
+
+    setDeletingGroupId(numericId);
+    try {
+      await axios.delete(`/api/groups/${numericId}`);
+      showToast({
+        variant: "success",
+        title: "Gruppe gelöscht",
+        description: `Die Benutzergruppe "${group.name}" wurde entfernt.`
+      });
+      fetchGroups();
+    } catch (err) {
+      const serverError = err.response?.data?.error;
+      let message = "Die Benutzergruppe konnte nicht gelöscht werden.";
+
+      if (serverError === "INVALID_GROUP_ID") {
+        message = "Die Gruppen-ID ist ungültig.";
+      } else if (serverError === "GROUP_NOT_FOUND") {
+        message = "Die Benutzergruppe wurde bereits entfernt.";
+      } else if (serverError === "GROUP_HAS_MEMBERS") {
+        message = "Die Gruppe enthält noch Benutzer. Bitte entfernen Sie diese zuerst.";
+      } else if (serverError === "GROUP_SUPERUSER_PROTECTED") {
+        message = "Die Superuser-Gruppe kann nicht gelöscht werden.";
+      }
+
+      showToast({
+        variant: "error",
+        title: "Löschen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setDeletingGroupId(null);
+    }
+  }, [maintenanceActive, showToast, fetchGroups]);
+
   return (
-    <div className="mt-12">
+    <div className="mt-12 mb-8 flex flex-col gap-12">
+      {maintenanceActive && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
+        </div>
+      )}
       <Card className="border border-blue-gray-100 shadow-sm">
         <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
           <Typography
@@ -245,13 +327,6 @@ export function Usergroups() {
           </Typography>
         </CardHeader>
         <CardBody className="pt-0">
-
-          {maintenanceActive && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
-            </div>
-          )}
-
           <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
             <Typography variant="h6" color="blue-gray" className="mb-2">
               Neue Benutzergruppe anlegen
@@ -335,7 +410,6 @@ export function Usergroups() {
                   <th className="px-6 py-4 font-semibold">Gruppenname</th>
                   <th className="px-6 py-4 font-semibold">Beschreibung</th>
                   <th className="px-6 py-4 font-semibold">Mitglieder</th>
-                  <th className="px-6 py-4 font-semibold">Anzahl</th>
                   <th className="px-6 py-4 font-semibold">Erstellt am</th>
                   <th className="px-6 py-4 font-semibold">Zuletzt aktualisiert</th>
                   <th className="px-6 py-4 font-semibold">Aktionen</th>
@@ -358,6 +432,7 @@ export function Usergroups() {
                 ) : (
                   paginatedGroups.map((group, index) => {
                     const rowClass = index === paginatedGroups.length - 1 ? "" : "border-b border-blue-gray-50";
+                    const isSuperuserGroup = (group?.name || "").toLowerCase() === "superuser";
                     return (
                       <tr key={group.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
                         <td className="px-6 py-4">
@@ -375,29 +450,10 @@ export function Usergroups() {
                           </Typography>
                         </td>
                         <td className="px-6 py-4">
-                          {group.members.length > 0 ? (
-                            <div className="flex flex-wrap gap-2">
-                              {group.members.map((member) => (
-                                <Chip
-                                  key={`${group.id}-${member.id}-${member.username}`}
-                                  value={member.username}
-                                  size="sm"
-                                  color="blue-gray"
-                                  variant="ghost"
-                                />
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-stormGrey-400">Keine Mitglieder</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          <Chip
-                            value={group.memberCount.toLocaleString("de-DE")}
-                            size="sm"
-                            color={group.memberCount > 0 ? "green" : "blue-gray"}
-                            variant="ghost"
-                          />
+                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
+                            {group.memberCount.toLocaleString("de-DE")}
+                          </Typography>
+
                         </td>
                         <td className="px-6 py-4">
                           <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
@@ -410,9 +466,34 @@ export function Usergroups() {
                           </Typography>
                         </td>
                         <td className="px-6 py-4">
-                          <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
-                            Aktionen
-                          </Typography>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
+                            <Button
+                              size="sm"
+                              variant="outlined"
+                              color="blue-gray"
+                              onClick={() => navigate(`/dashboard/usergroups/${group.id}`)}
+                            >
+                              Details
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="text"
+                              color="red"
+                              onClick={() => handleDeleteGroup(group)}
+                              disabled={
+                                maintenanceActive ||
+                                deletingGroupId === group.id ||
+                                Number(group.memberCount) > 0 ||
+                                isSuperuserGroup
+                              }
+                            >
+                              {isSuperuserGroup
+                                ? ""
+                                : deletingGroupId === group.id
+                                  ? "Löscht ..."
+                                  : "Löschen"}
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );

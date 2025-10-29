@@ -90,27 +90,24 @@ export function SignIn() {
           body: JSON.stringify({ identifier: trimmedIdentifier, password: trimmedPassword }),
         });
 
-        if (response.status === 403) {
-          navigate("/setup", { replace: true });
-          return;
-        }
+        const payload = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
           if (response.status === 401 || payload.error === "INVALID_CREDENTIALS") {
             setError("Ungültige Zugangsdaten.");
           } else if (payload.error === "MISSING_CREDENTIALS") {
             setError("Bitte fülle beide Felder aus.");
-          } else if (payload.error === "SETUP_REQUIRED") {
+          } else if (payload.error === "SETUP_REQUIRED" || payload.error === "SUPERUSER_REQUIRED") {
             navigate("/setup", { replace: true });
             return;
+          } else if (payload.error === "USER_INACTIVE") {
+            setError("Dieses Konto ist deaktiviert. Bitte wende dich an einen Administrator.");
           } else {
             setError("Anmeldung fehlgeschlagen. Bitte versuche es erneut.");
           }
           return;
         }
 
-        await response.json().catch(() => ({}));
         navigate("/dashboard/stacks", { replace: true });
       } catch (err) {
         console.error("⚠️ [Auth] Anmeldung fehlgeschlagen:", err);

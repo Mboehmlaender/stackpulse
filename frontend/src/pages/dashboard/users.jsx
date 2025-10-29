@@ -15,7 +15,6 @@ import { useNavigate } from "react-router-dom";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
-import { AVATAR_COLORS } from "@/data/avatarColors.js";
 
 const normalizeUserGroups = (rawGroups) => {
   if (!Array.isArray(rawGroups)) {
@@ -55,9 +54,10 @@ export function Users() {
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newGroupId, setNewGroupId] = useState("");
-  const [newAvatarColor, setNewAvatarColor] = useState("");
   const [createError, setCreateError] = useState("");
   const [creatingUser, setCreatingUser] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState(null);
+  const [togglingUserId, setTogglingUserId] = useState(null);
 
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
@@ -123,6 +123,7 @@ export function Users() {
           name: item.name || ""
         }))
         .filter((group) => Number.isFinite(group.id) && group.id > 0 && group.name)
+        .filter((group) => group.name.toLowerCase() !== "superuser")
         .sort((a, b) => a.name.localeCompare(b.name, "de-DE"));
       setAvailableGroups(normalized);
     } catch (err) {
@@ -243,9 +244,139 @@ export function Users() {
     setNewEmail("");
     setNewPassword("");
     setNewGroupId("");
-    setNewAvatarColor("");
     setCreateError("");
   }, []);
+
+  const handleDeleteUser = useCallback(async (user) => {
+    if (maintenanceActive || !user?.id) {
+      return;
+    }
+
+    const isSuperuserUser = Array.isArray(user?.groups)
+      ? user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser")
+      : false;
+    if (isSuperuserUser) {
+      showToast({
+        variant: "error",
+        title: "Löschen nicht möglich",
+        description: "Der Superuser kann nicht gelöscht werden."
+      });
+      return;
+    }
+    const confirmation = window.confirm(`Benutzer "${user.username}" wirklich löschen?`);
+    if (!confirmation) {
+      return;
+    }
+
+    const numericId = Number(user.id);
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+      showToast({
+        variant: "error",
+        title: "Löschen fehlgeschlagen",
+        description: "Ungültige Benutzer-ID."
+      });
+      return;
+    }
+
+    setDeletingUserId(numericId);
+    try {
+      await axios.delete(`/api/users/${numericId}`);
+      showToast({
+        variant: "success",
+        title: "Benutzer gelöscht",
+        description: `Der Benutzer "${user.username}" wurde entfernt.`
+      });
+      fetchUsers();
+    } catch (err) {
+      const serverError = err.response?.data?.error;
+      let message = "Der Benutzer konnte nicht gelöscht werden.";
+
+      if (serverError === "INVALID_USER_ID") {
+        message = "Die Benutzer-ID ist ungültig.";
+      } else if (serverError === "USER_NOT_FOUND") {
+        message = "Der Benutzer wurde bereits entfernt.";
+      } else if (serverError === "USER_SUPERUSER_PROTECTED") {
+        message = "Der Superuser kann nicht gelöscht werden.";
+      }
+
+      showToast({
+        variant: "error",
+        title: "Löschen fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setDeletingUserId(null);
+    }
+  }, [maintenanceActive, showToast, fetchUsers]);
+
+  const handleToggleUserStatus = useCallback(async (user) => {
+    if (!user?.id) {
+      return;
+    }
+    if (maintenanceActive) {
+      showToast({
+        variant: "error",
+        title: "Aktion nicht möglich",
+        description: "Im Wartungsmodus können keine Statusänderungen durchgeführt werden."
+      });
+      return;
+    }
+
+    const isSuperuserUser = Array.isArray(user?.groups)
+      ? user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser")
+      : false;
+
+    if (isSuperuserUser && user.isActive) {
+      showToast({
+        variant: "error",
+        title: "Änderung nicht möglich",
+        description: "Der Superuser kann nicht deaktiviert werden."
+      });
+      return;
+    }
+
+    const numericId = Number(user.id);
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+      showToast({
+        variant: "error",
+        title: "Statusänderung fehlgeschlagen",
+        description: "Ungültige Benutzer-ID."
+      });
+      return;
+    }
+
+    const nextActive = !user.isActive;
+    setTogglingUserId(numericId);
+
+    try {
+      await axios.put(`/api/users/${numericId}/active`, { isActive: nextActive });
+      fetchUsers();
+      showToast({
+        variant: "success",
+        title: "Status aktualisiert",
+        description: `Der Benutzer wurde ${nextActive ? "aktiviert" : "deaktiviert"}.`
+      });
+    } catch (err) {
+      const serverError = err.response?.data?.error;
+      let message = "Der Benutzerstatus konnte nicht geändert werden.";
+
+      if (serverError === "INVALID_USER_ID") {
+        message = "Die Benutzer-ID ist ungültig.";
+      } else if (serverError === "USER_NOT_FOUND") {
+        message = "Der Benutzer wurde nicht gefunden.";
+      } else if (serverError === "USER_SUPERUSER_PROTECTED") {
+        message = "Der Superuser kann nicht deaktiviert werden.";
+      }
+
+      showToast({
+        variant: "error",
+        title: "Statusänderung fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setTogglingUserId(null);
+    }
+  }, [maintenanceActive, showToast, fetchUsers]);
 
   const handleCreateUser = useCallback(async () => {
     if (maintenanceActive) {
@@ -276,9 +407,6 @@ export function Users() {
       const trimmedEmail = newEmail.trim();
       if (trimmedEmail) {
         payload.email = trimmedEmail;
-      }
-      if (newAvatarColor) {
-        payload.avatarColor = newAvatarColor;
       }
       const response = await axios.post("/api/users", payload);
       resetNewUserForm();
@@ -330,16 +458,14 @@ export function Users() {
     newEmail,
     newPassword,
     newGroupId,
-    newAvatarColor,
     showToast,
     resetNewUserForm,
     fetchUsers
   ]);
 
-  const createDisabled = maintenanceActive || creatingUser || groupsLoading || availableGroups.length === 0;
-  const groupSelectDisabled = maintenanceActive || creatingUser || groupsLoading || availableGroups.length === 0;
-  const avatarSelectDisabled = maintenanceActive || creatingUser;
-
+  const hasSelectableGroups = availableGroups.length > 0;
+  const createDisabled = maintenanceActive || creatingUser || groupsLoading || !hasSelectableGroups;
+  const groupSelectDisabled = maintenanceActive || creatingUser || groupsLoading || !hasSelectableGroups;
   const renderSelectedGroup = useCallback(
     (element) => {
       if (element && element.props && element.props.children) {
@@ -354,26 +480,13 @@ export function Users() {
     [availableGroups, newGroupId]
   );
 
-  const renderSelectedAvatar = useCallback(
-    (element) => {
-      if (element && element.props && element.props.children) {
-        return element.props.children;
-      }
-      if (!newAvatarColor) {
-        return "Automatisch (zufällig)";
-      }
-      return (
-        <span className="flex items-center gap-2">
-          <span className={`h-4 w-4 rounded border border-blue-gray-100 ${newAvatarColor}`} />
-          <span className="text-xs">{newAvatarColor}</span>
-        </span>
-      );
-    },
-    [newAvatarColor]
-  );
-
   return (
-    <div className="mt-12">
+    <div className="mt-12 mb-8 flex flex-col gap-12">
+      {maintenanceActive && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
+        </div>
+      )}
       <Card>
         <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
           <Typography
@@ -384,177 +497,111 @@ export function Users() {
           </Typography>
         </CardHeader>
         <CardBody className="pt-0">
-          {maintenanceActive && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
-            </div>
-          )}
+
 
           <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
             <Typography variant="h6" color="blue-gray" className="mb-2">
               Neuen Benutzer anlegen
             </Typography>
-            <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
-              Benutzername, Passwort (mindestens 8 Zeichen) und eine globale Rolle sind Pflichtfelder.
-            </Typography>
-            {createError && (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                {createError}
-              </div>
-            )}
-            {groupsError && (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                {groupsError}
-              </div>
-            )}
-            <div className="grid gap-4 md:grid-cols-2">
-              <Input
-                label="Benutzername"
-                value={newUsername}
-                onChange={(event) => setNewUsername(event.target.value)}
-                disabled={maintenanceActive || creatingUser}
-                crossOrigin=""
-              />
-              <Input
-                label="E-Mail (optional)"
-                value={newEmail}
-                onChange={(event) => setNewEmail(event.target.value)}
-                disabled={maintenanceActive || creatingUser}
-                crossOrigin=""
-              />
-              <Input
-                type="password"
-                label="Passwort"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                disabled={maintenanceActive || creatingUser}
-                crossOrigin=""
-              />
-              <Select
-                label="Globale Rolle"
-                variant="outlined"
-                value={newGroupId}
-                onChange={setNewGroupId}
-                disabled={groupSelectDisabled}
-                selected={renderSelectedGroup}
-              >
-                <Option value="">Bitte auswählen</Option>
-                {availableGroups.map((group) => (
-                  <Option key={group.id} value={String(group.id)}>
-                    {group.name}
-                  </Option>
-                ))}
-              </Select>
-              <Select
-                label="Avatar-Farbe"
-                variant="outlined"
-                value={newAvatarColor}
-                onChange={setNewAvatarColor}
-                disabled={avatarSelectDisabled}
-                selected={renderSelectedAvatar}
-              >
-                <Option value="">Automatisch (zufällig)</Option>
-                {AVATAR_COLORS.map((color) => (
-                  <Option key={color} value={color}>
-                    <span className="flex items-center gap-2">
-                      <span className={`h-4 w-4 rounded border border-blue-gray-100 ${color}`} />
-                      <span className="text-xs">{color}</span>
-                    </span>
-                  </Option>
-                ))}
-              </Select>
-            </div>
-            <div className="mt-4 text-sm text-stormGrey-500">
-              {groupsLoading
-                ? "Benutzergruppen werden geladen ..."
-                : availableGroups.length === 0
-                  ? "Noch keine Benutzergruppen vorhanden. Bitte legen Sie zuerst eine globale Rolle an."
-                  : ""}
-            </div>
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
-                {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
-              </Button>
-              <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
-                Formular zurücksetzen
-              </Button>
-            </div>
-          </div>
-
-          <div className="mb-8">
-
-            <div className="flex flex-wrap gap-2">            {/* <div className="flex flex-col items-stretch gap-3 md:flex-row md:items-center">
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-gray-400">
-                  Einträge pro Seite
-                </label>
-                <select
-                  value={perPage}
-                  onChange={handlePerPageChange}
-                  className="w-full rounded-lg border border-blue-gray-100 px-3 py-2 text-sm text-blue-gray-700 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 md:w-40"
-                >
-                  {perPageOptions.map(({ value, label }) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <Button
-                variant="outlined"
-                color="blue"
-                onClick={handleRefresh}
-                disabled={loading}
-                className="whitespace-nowrap"
-              >
-                {loading ? "Lädt ..." : "Aktualisieren"}
-              </Button>
-            </div> */}
-              {/* <div className="w-full md:max-w-md">
-              <Input
-                label="Suchen nach Name, E-Mail oder Gruppe"
-                value={searchQuery}
-                onChange={handleSearchChange}
-                disabled={loading && !users.length}
-                crossOrigin=""
-              />
-            </div> */}
-              {/* {searchQuery && (
-              <Button
-                variant="text"
-                color="blue-gray"
-                onClick={handleClearSearch}
-                className="w-full md:w-auto"
-              >
-                Suche zurücksetzen
-              </Button>
-            )} */}
-
-
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
-                <div className="md:flex-1">
+            {hasSelectableGroups ? (
+              <>
+                <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
+                  Benutzername, Passwort (mindestens 8 Zeichen) und eine globale Rolle sind Pflichtfelder.
+                </Typography>
+                {createError && (
+                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                    {createError}
+                  </div>
+                )}
+                {groupsError && (
+                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                    {groupsError}
+                  </div>
+                )}
+                <div className="grid gap-4 md:grid-cols-2">
                   <Input
-                    label="Suchen nach Name, E-Mail oder Gruppe"
-                    value={searchQuery}
-                    onChange={handleSearchChange}
-                    disabled={loading && !users.length}
+                    label="Benutzername"
+                    value={newUsername}
+                    onChange={(event) => setNewUsername(event.target.value)}
+                    disabled={maintenanceActive || creatingUser}
                     crossOrigin=""
                   />
-                </div>
-                <div className="md:mt-0 mt-8 md:flex-1">
+                  <Input
+                    label="E-Mail (optional)"
+                    value={newEmail}
+                    onChange={(event) => setNewEmail(event.target.value)}
+                    disabled={maintenanceActive || creatingUser}
+                    crossOrigin=""
+                  />
+                  <Input
+                    type="password"
+                    label="Passwort"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    disabled={maintenanceActive || creatingUser}
+                    crossOrigin=""
+                  />
                   <Select
-                    variant="static"
-                    label="Einträge pro Seite"
-                    onChange={noop}
-                    value={perPage}
+                    label="Globale Rolle"
+                    variant="outlined"
+                    value={newGroupId}
+                    onChange={setNewGroupId}
+                    disabled={groupSelectDisabled}
+                    selected={renderSelectedGroup}
                   >
-                    {perPageOptions.map(({ value, label }) => (
-                      <Option key={value} value={value}>
-                        {label}
+                    <Option value="">Bitte auswählen</Option>
+                    {availableGroups.map((group) => (
+                      <Option key={group.id} value={String(group.id)}>
+                        {group.name}
                       </Option>
                     ))}
                   </Select>
                 </div>
+                <div className="mt-4 text-sm text-stormGrey-500">
+                  {groupsLoading
+                    ? "Benutzergruppen werden geladen ..."
+                    : ""}
+                </div>
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
+                    {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
+                  </Button>
+                  <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
+                    Formular zurücksetzen
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Es existiert keine verfügbare Benutzergruppe. Bitte lege zuerst eine Gruppe an.
+              </div>
+            )}
+          </div>
+
+          <div className="mb-8">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
+              <div className="md:flex-1">
+                <Input
+                  label="Suchen nach Name, E-Mail oder Gruppe"
+                  value={searchQuery}
+                  onChange={handleSearchChange}
+                  disabled={loading && !users.length}
+                  crossOrigin=""
+                />
+              </div>
+              <div className="md:mt-0 mt-8 md:flex-1">
+                <Select
+                  variant="static"
+                  label="Einträge pro Seite"
+                  onChange={noop}
+                  value={perPage}
+                >
+                  {perPageOptions.map(({ value, label }) => (
+                    <Option key={value} value={value}>
+                      {label}
+                    </Option>
+                  ))}
+                </Select>
               </div>
             </div>
           </div>
@@ -594,6 +641,9 @@ export function Users() {
                 ) : (
                   paginatedUsers.map((user, index) => {
                     const rowClass = index === paginatedUsers.length - 1 ? "" : "border-b border-blue-gray-50";
+                    const isSuperuserUser = Array.isArray(user?.groups)
+                      ? user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser")
+                      : false;
                     return (
                       <tr key={user.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
                         <td className="px-6 py-4">
@@ -624,12 +674,20 @@ export function Users() {
                           )}
                         </td>
                         <td className="px-6 py-4">
-                          <Chip
-                            value={user.isActive ? "Aktiv" : "Deaktiviert"}
-                            size="sm"
-                            color={user.isActive ? "green" : "red"}
-                            variant="ghost"
-                          />
+                          <button
+                            type="button"
+                            className={`inline-flex items-center rounded-full px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${maintenanceActive ? "cursor-not-allowed" : "cursor-pointer"}`}
+                            onClick={() => handleToggleUserStatus(user)}
+                            disabled={maintenanceActive || togglingUserId === user.id || (Array.isArray(user.groups) && user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser" && user.isActive))}
+                          >
+                            <Chip
+                              value={togglingUserId === user.id ? "Wechselt ..." : user.isActive ? "Aktiv" : "Deaktiviert"}
+                              size="sm"
+                              color={user.isActive ? "green" : "red"}
+                              variant="ghost"
+                              className="pointer-events-none"
+                            />
+                          </button>
                         </td>
                         <td className="px-6 py-4">
                           <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
@@ -642,14 +700,29 @@ export function Users() {
                           </Typography>
                         </td>
                         <td className="px-6 py-4">
-                          <Button
-                            size="sm"
-                            variant="outlined"
-                            color="blue-gray"
-                            onClick={() => navigate(`/dashboard/users/${user.id}`)}
-                          >
-                            Details
-                          </Button>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
+                            <Button
+                              size="sm"
+                              variant="outlined"
+                              color="blue-gray"
+                              onClick={() => navigate(`/dashboard/users/${user.id}`)}
+                            >
+                              Details
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="text"
+                              color="red"
+                              onClick={() => handleDeleteUser(user)}
+                              disabled={maintenanceActive || deletingUserId === user.id || isSuperuserUser}
+                            >
+                              {isSuperuserUser
+                                ? ""
+                                : deletingUserId === user.id
+                                  ? "Löscht ..."
+                                  : "Löschen"}
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
