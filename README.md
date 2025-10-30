@@ -86,15 +86,40 @@ Ziel:
 </details>
 
 <details open>
-  <summary>🔮 Geplante Features (v0.5+)</summary>
+  <summary>🟡 v0.5 – In Entwicklung</summary>
 
-- Notifications (z. B. via Webhooks oder Mail)  
-- Authentifizierung & Benutzerverwaltung  
-- Monitoring (Status, CPU/RAM)  
-- Export/Import von Scheduler-Jobs (z. B. JSON)  
-- Integration Community Edition
+### Backend
+- [x] Neue API-Endpunkte für Logging, Benutzer- und Gruppenverwaltung und Superuser-Registrierung 
+- [x] Authentifizierung und Log-In
+- [x] erweitertes Logging
+- [x] Datenbank erweitert und Migration erweitert
+- [ ] Feinsteuerung der globalen Userrechte am Benutzer 
+
+
+### Frontend
+- [x] Log-In-Seite 
+- [ ] Benutzer- und Gruppenverwaltung
+- [x] Erweiterte Log-Ausgabe
+- [x] Konsolidierung der Ansichten und Filter im Frontend
+- [ ] Benutzerverwaltung mit granularer Steuerung von Einzelrechten 
+
+### Features
+- [ ] Authentifizierungssystem und Benutzerverwaltung mit Gruppenrechten
+- [x] Erweiterung der Logs auf alle Bereiche
+- [x] Speichern der Server- und Superusereinstellungen in die Datenbank
 
 </details>
+
+<details open>
+  <summary>🔮 Geplante Features (v0.6+)</summary>
+
+- Notifications (z. B. via Webhooks oder Mail)  
+- Monitoring (Status, CPU/RAM)  
+- Verbesserte UI/UX  
+- Erweiterte Filterungen udn Sortierungen
+- Multi-Server/Endpoint Verwaltung
+- Integration Community Edition
+- Integration Community Edition
 
 </details>
 
