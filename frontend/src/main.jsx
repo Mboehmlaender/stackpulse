@@ -20,23 +20,26 @@ import "./tailwind.css";
 import ToastProvider from "@/components/ToastProvider.jsx";
 import MaintenanceProvider from "@/components/MaintenanceProvider.jsx";
 import PageProvider from "@/components/PageProvider.jsx";
+import { AuthProvider } from "@/components/AuthProvider.jsx";
 
 axios.defaults.withCredentials = true;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
-      <MaintenanceProvider>
-        <ToastProvider>
-          <PageProvider>
-            <ThemeProvider>
-              <MaterialTailwindControllerProvider>
-                <App />
-              </MaterialTailwindControllerProvider>
-            </ThemeProvider>
-          </PageProvider>
-        </ToastProvider>
-      </MaintenanceProvider>
+      <AuthProvider>
+        <MaintenanceProvider>
+          <ToastProvider>
+            <PageProvider>
+              <ThemeProvider>
+                <MaterialTailwindControllerProvider>
+                  <App />
+                </MaterialTailwindControllerProvider>
+              </ThemeProvider>
+            </PageProvider>
+          </ToastProvider>
+        </MaintenanceProvider>
+      </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>
 );

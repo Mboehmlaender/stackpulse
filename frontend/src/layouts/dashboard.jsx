@@ -11,7 +11,10 @@ import {
 import routes from "@/routes";
 import { UserDetails } from "@/pages/dashboard/userDetails.jsx";
 import { UserGroupDetail } from "@/pages/dashboard/userGroupDetail.jsx";
+import { SecurityPhrase } from "@/pages/dashboard/securityPhrase.jsx";
 import { useMaterialTailwindController, setOpenConfigurator } from "@/components";
+import { useAuth } from "@/components/AuthProvider.jsx";
+import PermissionGate from "@/components/PermissionGate.jsx";
 
 export function Dashboard() {
   const [controller, dispatch] = useMaterialTailwindController();
@@ -20,8 +23,13 @@ export function Dashboard() {
   const navigate = useNavigate();
   const [setupChecked, setSetupChecked] = useState(false);
   const [setupIncomplete, setSetupIncomplete] = useState(true);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const {
+    initialized: authInitialized,
+    loading: authLoading,
+    isAuthenticated,
+    refreshSession,
+    user
+  } = useAuth();
 
   const checkSetupStatus = useCallback(async () => {
     setSetupChecked(false);
@@ -40,37 +48,15 @@ export function Dashboard() {
     }
   }, []);
 
-  const checkSession = useCallback(async () => {
-    setAuthChecked(false);
-    try {
-      const response = await fetch("/api/auth/session", { credentials: "include" });
-      if (response.status === 403) {
-        setSetupIncomplete(true);
-        setIsAuthenticated(false);
-        return;
-      }
-      if (!response.ok) {
-        setIsAuthenticated(false);
-        return;
-      }
-      const data = await response.json();
-      setIsAuthenticated(Boolean(data?.user));
-    } catch (error) {
-      console.error("⚠️ [Auth] Sessionprüfung fehlgeschlagen:", error);
-      setIsAuthenticated(false);
-    } finally {
-      setAuthChecked(true);
-    }
-  }, [setSetupIncomplete, setIsAuthenticated, setAuthChecked]);
-
   useEffect(() => {
     checkSetupStatus();
   }, [checkSetupStatus]);
 
   useEffect(() => {
     if (!setupChecked || setupIncomplete) return;
-    checkSession();
-  }, [setupChecked, setupIncomplete, checkSession]);
+    if (authInitialized || authLoading) return;
+    refreshSession();
+  }, [setupChecked, setupIncomplete, authInitialized, authLoading, refreshSession]);
 
   useEffect(() => {
     if (!setupChecked) return;
@@ -82,7 +68,7 @@ export function Dashboard() {
       return;
     }
 
-    if (!authChecked) return;
+    if (!authInitialized) return;
 
     if (!isAuthenticated) {
       if (location.pathname !== "/auth/sign-in") {
@@ -91,10 +77,53 @@ export function Dashboard() {
       return;
     }
 
-    if (location.pathname === "/setup" || location.pathname.startsWith("/auth/")) {
+    const requiresSecurityPhrase = Boolean(user?.requiresSecurityPhraseDownload);
+    const isSecurityPhrasePath = location.pathname === "/dashboard/security-phrase";
+
+    if (requiresSecurityPhrase && !isSecurityPhrasePath) {
+      navigate("/dashboard/security-phrase", { replace: true });
+      return;
+    }
+
+    if (!requiresSecurityPhrase && isSecurityPhrasePath) {
       navigate("/dashboard/stacks", { replace: true });
     }
-  }, [setupChecked, setupIncomplete, authChecked, isAuthenticated, location.pathname, navigate]);
+  }, [
+    setupChecked,
+    setupIncomplete,
+    authInitialized,
+    isAuthenticated,
+    location.pathname,
+    navigate,
+    user?.requiresSecurityPhraseDownload
+  ]);
+
+  useEffect(() => {
+    if (!setupChecked || setupIncomplete) return;
+    if (!authInitialized || authLoading) return;
+
+    if (!isAuthenticated) {
+      if (location.pathname !== "/auth/sign-in") {
+        navigate("/auth/sign-in", { replace: true });
+      }
+      return;
+    }
+
+    const isAuthPath = location.pathname.startsWith("/auth/");
+    const isLogoutPath = location.pathname === "/auth/logout";
+
+    if (location.pathname === "/setup" || (isAuthPath && !isLogoutPath)) {
+      navigate("/dashboard/stacks", { replace: true });
+    }
+  }, [
+    setupChecked,
+    setupIncomplete,
+    authInitialized,
+    authLoading,
+    isAuthenticated,
+    location.pathname,
+    navigate
+  ]);
 
   if (!setupChecked) {
     return (
@@ -112,7 +141,7 @@ export function Dashboard() {
     );
   }
 
-  if (!authChecked) {
+  if (!authInitialized || authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-blue-gray-50/50">
         <span className="text-blue-gray-500">Pruefe Anmeldung ...</span>
@@ -128,26 +157,34 @@ export function Dashboard() {
     );
   }
 
+  const isSecurityPhraseRoute = location.pathname === "/dashboard/security-phrase";
+
   return (
     <div className="min-h-screen bg-blue-gray-50/50">
-      <Sidenav
-        routes={routes}
-        brandImg={
-          sidenavType === "dark" ? "/img/logo-ct.png" : "/img/logo-ct-dark.png"
-        }
-      />
-      <div className="p-4 xl:ml-80">
-        <DashboardNavbar />
-        <Configurator />
-        <IconButton
-          size="lg"
-          color="white"
-          className="fixed bottom-8 right-8 z-40 rounded-full shadow-blue-gray-900/10 xl:hidden"
-          ripple={false}
-          onClick={() => setOpenConfigurator(dispatch, true)}
-        >
-          <Cog6ToothIcon className="h-5 w-5" />
-        </IconButton>
+      {!isSecurityPhraseRoute && (
+        <Sidenav
+          routes={routes}
+          brandImg={
+            sidenavType === "dark" ? "/img/logo-ct.png" : "/img/logo-ct-dark.png"
+          }
+        />
+      )}
+      <div className={isSecurityPhraseRoute ? "" : "p-4 xl:ml-80"}>
+        {!isSecurityPhraseRoute && (
+          <>
+            <DashboardNavbar />
+            <Configurator />
+            <IconButton
+              size="lg"
+              color="white"
+              className="fixed bottom-8 right-8 z-40 rounded-full shadow-blue-gray-900/10 xl:hidden"
+              ripple={false}
+              onClick={() => setOpenConfigurator(dispatch, true)}
+            >
+              <Cog6ToothIcon className="h-5 w-5" />
+            </IconButton>
+          </>
+        )}
         <Routes>
           {routes.map(
             ({ layout, pages }) =>
@@ -156,12 +193,29 @@ export function Dashboard() {
                 <Route exact path={path} element={element} />
               ))
           )}
-          <Route path="users/:userId" element={<UserDetails />} />
-          <Route path="usergroups/:groupId" element={<UserGroupDetail />} />
+          <Route path="security-phrase" element={<SecurityPhrase />} />
+          <Route
+            path="users/:userId"
+            element={
+              <PermissionGate permission="users-access" requiredLevel="read">
+                <UserDetails />
+              </PermissionGate>
+            }
+          />
+          <Route
+            path="usergroups/:groupId"
+            element={
+              <PermissionGate permission="user-groups-access" requiredLevel="read">
+                <UserGroupDetail />
+              </PermissionGate>
+            }
+          />
         </Routes>
-        <div className="text-blue-gray-600">
-          <Footer />
-        </div>
+        {!isSecurityPhraseRoute && (
+          <div className="text-blue-gray-600">
+            <Footer />
+          </div>
+        )}
       </div>
     </div>
   );

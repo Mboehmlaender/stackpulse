@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 const normalizeUserGroups = (rawGroups) => {
   if (!Array.isArray(rawGroups)) {
@@ -64,6 +65,10 @@ export function Users() {
   const maintenanceActive = Boolean(maintenance?.active);
   const navigate = useNavigate();
   const noop = useCallback(() => { }, []);
+  const { hasPermission } = useAuth();
+
+  const canManageUsers = hasPermission("users-edit", "full");
+  const canDeleteUsers = hasPermission("users-delete", "full");
 
   const {
     page,
@@ -251,7 +256,9 @@ export function Users() {
     if (maintenanceActive || !user?.id) {
       return;
     }
-
+    if (!canDeleteUsers) {
+      return;
+    }
     const isSuperuserUser = Array.isArray(user?.groups)
       ? user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser")
       : false;
@@ -307,10 +314,13 @@ export function Users() {
     } finally {
       setDeletingUserId(null);
     }
-  }, [maintenanceActive, showToast, fetchUsers]);
+  }, [maintenanceActive, canDeleteUsers, showToast, fetchUsers]);
 
   const handleToggleUserStatus = useCallback(async (user) => {
     if (!user?.id) {
+      return;
+    }
+    if (!canManageUsers) {
       return;
     }
     if (maintenanceActive) {
@@ -376,10 +386,14 @@ export function Users() {
     } finally {
       setTogglingUserId(null);
     }
-  }, [maintenanceActive, showToast, fetchUsers]);
+  }, [maintenanceActive, canManageUsers, showToast, fetchUsers]);
 
   const handleCreateUser = useCallback(async () => {
     if (maintenanceActive) {
+      return;
+    }
+    if (!canManageUsers) {
+      setCreateError("Du verfügst nicht über die Berechtigung zum Anlegen von Benutzern.");
       return;
     }
     const trimmedUsername = newUsername.trim();
@@ -454,6 +468,7 @@ export function Users() {
     }
   }, [
     maintenanceActive,
+    canManageUsers,
     newUsername,
     newEmail,
     newPassword,
@@ -499,84 +514,86 @@ export function Users() {
         <CardBody className="pt-0">
 
 
-          <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
-            <Typography variant="h6" color="blue-gray" className="mb-2">
-              Neuen Benutzer anlegen
-            </Typography>
-            {hasSelectableGroups ? (
-              <>
-                <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
-                  Benutzername, Passwort (mindestens 8 Zeichen) und eine globale Rolle sind Pflichtfelder.
-                </Typography>
-                {createError && (
-                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                    {createError}
+          {canManageUsers && (
+            <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
+              <Typography variant="h6" color="blue-gray" className="mb-2">
+                Neuen Benutzer anlegen
+              </Typography>
+              {hasSelectableGroups ? (
+                <>
+                  <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
+                    Benutzername, Passwort (mindestens 8 Zeichen) und eine globale Rolle sind Pflichtfelder.
+                  </Typography>
+                  {createError && (
+                    <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                      {createError}
+                    </div>
+                  )}
+                  {groupsError && (
+                    <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                      {groupsError}
+                    </div>
+                  )}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Input
+                      label="Benutzername"
+                      value={newUsername}
+                      onChange={(event) => setNewUsername(event.target.value)}
+                      disabled={maintenanceActive || creatingUser}
+                      crossOrigin=""
+                    />
+                    <Input
+                      label="E-Mail (optional)"
+                      value={newEmail}
+                      onChange={(event) => setNewEmail(event.target.value)}
+                      disabled={maintenanceActive || creatingUser}
+                      crossOrigin=""
+                    />
+                    <Input
+                      type="password"
+                      label="Passwort"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      disabled={maintenanceActive || creatingUser}
+                      crossOrigin=""
+                    />
+                    <Select
+                      label="Globale Rolle"
+                      variant="outlined"
+                      value={newGroupId}
+                      onChange={setNewGroupId}
+                      disabled={groupSelectDisabled}
+                      selected={renderSelectedGroup}
+                    >
+                      <Option value="">Bitte auswählen</Option>
+                      {availableGroups.map((group) => (
+                        <Option key={group.id} value={String(group.id)}>
+                          {group.name}
+                        </Option>
+                      ))}
+                    </Select>
                   </div>
-                )}
-                {groupsError && (
-                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                    {groupsError}
+                  <div className="mt-4 text-sm text-stormGrey-500">
+                    {groupsLoading
+                      ? "Benutzergruppen werden geladen ..."
+                      : ""}
                   </div>
-                )}
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Input
-                    label="Benutzername"
-                    value={newUsername}
-                    onChange={(event) => setNewUsername(event.target.value)}
-                    disabled={maintenanceActive || creatingUser}
-                    crossOrigin=""
-                  />
-                  <Input
-                    label="E-Mail (optional)"
-                    value={newEmail}
-                    onChange={(event) => setNewEmail(event.target.value)}
-                    disabled={maintenanceActive || creatingUser}
-                    crossOrigin=""
-                  />
-                  <Input
-                    type="password"
-                    label="Passwort"
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                    disabled={maintenanceActive || creatingUser}
-                    crossOrigin=""
-                  />
-                  <Select
-                    label="Globale Rolle"
-                    variant="outlined"
-                    value={newGroupId}
-                    onChange={setNewGroupId}
-                    disabled={groupSelectDisabled}
-                    selected={renderSelectedGroup}
-                  >
-                    <Option value="">Bitte auswählen</Option>
-                    {availableGroups.map((group) => (
-                      <Option key={group.id} value={String(group.id)}>
-                        {group.name}
-                      </Option>
-                    ))}
-                  </Select>
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
+                      {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
+                    </Button>
+                    <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
+                      Formular zurücksetzen
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Es existiert keine verfügbare Benutzergruppe. Bitte lege zuerst eine Gruppe an.
                 </div>
-                <div className="mt-4 text-sm text-stormGrey-500">
-                  {groupsLoading
-                    ? "Benutzergruppen werden geladen ..."
-                    : ""}
-                </div>
-                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
-                    {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
-                  </Button>
-                  <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
-                    Formular zurücksetzen
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Es existiert keine verfügbare Benutzergruppe. Bitte lege zuerst eine Gruppe an.
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           <div className="mb-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mt-8">
@@ -674,20 +691,34 @@ export function Users() {
                           )}
                         </td>
                         <td className="px-6 py-4">
-                          <button
-                            type="button"
-                            className={`inline-flex items-center rounded-full px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${maintenanceActive ? "cursor-not-allowed" : "cursor-pointer"}`}
-                            onClick={() => handleToggleUserStatus(user)}
-                            disabled={maintenanceActive || togglingUserId === user.id || (Array.isArray(user.groups) && user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser" && user.isActive))}
-                          >
+                          {canManageUsers ? (
+                            <button
+                              type="button"
+                              className={`inline-flex items-center rounded-full px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${maintenanceActive ? "cursor-not-allowed" : "cursor-pointer"}`}
+                              onClick={() => handleToggleUserStatus(user)}
+                              disabled={
+                                maintenanceActive ||
+                                togglingUserId === user.id ||
+                                (Array.isArray(user.groups) &&
+                                  user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser" && user.isActive))
+                              }
+                            >
+                              <Chip
+                                value={togglingUserId === user.id ? "Wechselt ..." : user.isActive ? "Aktiv" : "Deaktiviert"}
+                                size="sm"
+                                color={user.isActive ? "green" : "red"}
+                                variant="ghost"
+                                className="pointer-events-none"
+                              />
+                            </button>
+                          ) : (
                             <Chip
-                              value={togglingUserId === user.id ? "Wechselt ..." : user.isActive ? "Aktiv" : "Deaktiviert"}
+                              value={user.isActive ? "Aktiv" : "Deaktiviert"}
                               size="sm"
                               color={user.isActive ? "green" : "red"}
                               variant="ghost"
-                              className="pointer-events-none"
                             />
-                          </button>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           <Typography variant="small" className="antialiased font-sans mb-1 block text-xs font-medium text-stormGrey-600">
@@ -709,19 +740,17 @@ export function Users() {
                             >
                               Details
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="text"
-                              color="red"
-                              onClick={() => handleDeleteUser(user)}
-                              disabled={maintenanceActive || deletingUserId === user.id || isSuperuserUser}
-                            >
-                              {isSuperuserUser
-                                ? ""
-                                : deletingUserId === user.id
-                                  ? "Löscht ..."
-                                  : "Löschen"}
-                            </Button>
+                            {canDeleteUsers && !isSuperuserUser && (
+                              <Button
+                                size="sm"
+                                variant="text"
+                                color="red"
+                                onClick={() => handleDeleteUser(user)}
+                                disabled={maintenanceActive || deletingUserId === user.id}
+                              >
+                                {deletingUserId === user.id ? "Löscht ..." : "Löschen"}
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>

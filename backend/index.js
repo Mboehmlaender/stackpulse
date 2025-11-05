@@ -18,9 +18,9 @@ import {
   registerSuperuser,
   removeSuperuser,
   findUserByIdentifier,
-  findUserById,
   markUserLogin,
-  verifyPassword
+  verifyPassword,
+  SUPERUSER_GROUP_NAME
 } from './auth/superuser.js';
 import {
   logEvent,
@@ -45,13 +45,45 @@ import {
   removeServer,
   setServerApiKey
 } from './setup/index.js';
-import { listUsers, getUserById, updateUserGroups, createUser, updateUserDetails, deleteUser, updateUserActiveStatus } from './users/index.js';
+import {
+  listUsers,
+  getUserById,
+  updateUserGroups,
+  createUser,
+  updateUserDetails,
+  deleteUser,
+  updateUserActiveStatus,
+  getUserSecurityPhrase,
+  renewUserSecurityPhrase,
+  markSecurityPhraseDownloaded,
+  ensureSecurityPhrasesForExistingUsers,
+  verifySecurityPhraseForUsername,
+  setUserPassword
+} from './users/index.js';
 import { listGroups, createGroup, getGroupById, updateGroupDetails, deleteGroup } from './groups/index.js';
+import {
+  getPermissionStructure,
+  getPermissionValuesByGroup,
+  saveGroupPermissionValues,
+  clearGroupPermissionValues,
+  getSuperuserPermissionMap,
+  getEffectivePermissionsForGroups,
+  hasRequiredPermission
+} from './permissions/index.js';
 
 dotenv.config();
 
 ensureSuperuserFromEnv();
 ensureDefaultsFromEnv();
+
+try {
+  const initializedCount = ensureSecurityPhrasesForExistingUsers();
+  if (initializedCount > 0) {
+    console.log(`ℹ️ Sicherheitsschlüssel für ${initializedCount} bestehende Benutzer initialisiert`);
+  }
+} catch (error) {
+  console.error('⚠️ Initialisierung der Sicherheitsschlüssel für bestehende Benutzer fehlgeschlagen:', error);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -131,6 +163,8 @@ const AUTH_COOKIE_OPTIONS = {
 };
 
 const activeSessions = new Map();
+const passwordResetTickets = new Map();
+const PASSWORD_RESET_TTL_MS = 1000 * 60 * 15;
 
 const PUBLIC_API_ROUTES = [
   { method: 'GET', matcher: /^\/api\/auth\/superuser\/status$/ },
@@ -138,6 +172,8 @@ const PUBLIC_API_ROUTES = [
   { method: 'POST', matcher: /^\/api\/auth\/login$/ },
   { method: 'POST', matcher: /^\/api\/auth\/logout$/ },
   { method: 'GET', matcher: /^\/api\/auth\/session$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/recover\/verify$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/recover\/reset$/ },
   { method: 'GET', matcher: /^\/api\/setup\/status$/ },
   { method: 'POST', matcher: /^\/api\/setup\/complete$/ }
 ];
@@ -148,6 +184,40 @@ const sanitizeUser = (user) => ({
   email: user.email,
   avatarColor: user.avatar_color || null
 });
+
+const buildUserSessionPayload = (userId) => {
+  const record = getUserById(userId);
+  if (!record || !record.isActive) {
+    return null;
+  }
+
+  const groups = Array.isArray(record.groups) ? record.groups : [];
+  const groupIds = groups
+    .map((group) => Number(group.id))
+    .filter((groupId) => Number.isFinite(groupId) && groupId > 0);
+
+  const isSuperuser = groups.some(
+    (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
+  );
+
+  const permissions = isSuperuser
+    ? getSuperuserPermissionMap()
+    : getEffectivePermissionsForGroups(groupIds);
+
+  return {
+    user: {
+      id: record.id,
+      username: record.username,
+      email: record.email || null,
+      avatarColor: record.avatarColor || null,
+      groups,
+      isSuperuser,
+      securityPhraseDownloadedAt: record.securityPhraseDownloadedAt || null,
+      requiresSecurityPhraseDownload: !record.securityPhraseDownloadedAt
+    },
+    permissions
+  };
+};
 
 const cleanupExpiredSessions = () => {
   const now = Date.now();
@@ -165,6 +235,49 @@ const removeSessionsForUser = (userId) => {
       activeSessions.delete(token);
     }
   }
+};
+
+const cleanupExpiredPasswordResetTickets = () => {
+  const now = Date.now();
+  for (const [token, ticket] of passwordResetTickets.entries()) {
+    if (!ticket || ticket.expiresAt <= now) {
+      passwordResetTickets.delete(token);
+    }
+  }
+};
+
+const removePasswordResetTicketsForUser = (userId) => {
+  if (!userId) return;
+  for (const [token, ticket] of passwordResetTickets.entries()) {
+    if (ticket?.userId === userId) {
+      passwordResetTickets.delete(token);
+    }
+  }
+};
+
+const createPasswordResetTicketForUser = (userId) => {
+  cleanupExpiredPasswordResetTickets();
+  removePasswordResetTicketsForUser(userId);
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + PASSWORD_RESET_TTL_MS;
+  passwordResetTickets.set(token, { userId, expiresAt });
+  return { token, expiresAt };
+};
+
+const getPasswordResetTicket = (token) => {
+  if (!token) {
+    return null;
+  }
+  cleanupExpiredPasswordResetTickets();
+  const record = passwordResetTickets.get(token);
+  if (!record) {
+    return null;
+  }
+  if (record.expiresAt <= Date.now()) {
+    passwordResetTickets.delete(token);
+    return null;
+  }
+  return record;
 };
 
 const createSessionForUser = (user) => {
@@ -892,6 +1005,52 @@ const maintenanceGuard = (req, res, next) => {
   });
 };
 
+const requirePermission = (permissionKey, requiredLevel = 'full') => (req, res, next) => {
+  if (!permissionKey) {
+    return next();
+  }
+
+  if (req.user?.isSuperuser) {
+    return next();
+  }
+
+  const permissions = req.userPermissions || {};
+  if (hasRequiredPermission(permissions, permissionKey, requiredLevel)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: 'INSUFFICIENT_PERMISSIONS',
+    permission: permissionKey,
+    requiredLevel
+  });
+};
+
+const requireAnyPermission = (candidates = []) => (req, res, next) => {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return next();
+  }
+
+  if (req.user?.isSuperuser) {
+    return next();
+  }
+
+  const permissions = req.userPermissions || {};
+  const granted = candidates.some(({ key, level }) =>
+    typeof key === 'string' && hasRequiredPermission(permissions, key, level || 'full')
+  );
+
+  if (granted) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: 'INSUFFICIENT_PERMISSIONS',
+    permission: candidates.map((entry) => entry.key).filter(Boolean),
+    requiredLevel: candidates.map((entry) => entry.level || 'full')
+  });
+};
+
 const logScriptOutput = (data, level) => {
   if (!data) return;
   const text = data.toString();
@@ -1425,14 +1584,37 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: 'UNAUTHORIZED' });
   }
 
-  const user = findUserById(session.userId);
-  if (!user || !user.is_active) {
+  const userRecord = getUserById(session.userId);
+  if (!userRecord || !userRecord.isActive) {
     activeSessions.delete(token);
     clearAuthCookie(res);
     return res.status(401).json({ error: 'UNAUTHORIZED' });
   }
 
-  req.user = sanitizeUser(user);
+  const userGroups = Array.isArray(userRecord.groups) ? userRecord.groups : [];
+  const groupIds = userGroups
+    .map((group) => Number(group.id))
+    .filter((groupId) => Number.isFinite(groupId) && groupId > 0);
+
+  const isSuperuser = userGroups.some(
+    (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
+  );
+
+  const permissionsMap = isSuperuser
+    ? getSuperuserPermissionMap()
+    : getEffectivePermissionsForGroups(groupIds);
+
+  req.user = {
+    id: userRecord.id,
+    username: userRecord.username,
+    email: userRecord.email,
+    avatarColor: userRecord.avatarColor || null,
+    groups: userGroups,
+    isSuperuser,
+    securityPhraseDownloadedAt: userRecord.securityPhraseDownloadedAt || null,
+    requiresSecurityPhraseDownload: !userRecord.securityPhraseDownloadedAt
+  };
+  req.userPermissions = permissionsMap;
   req.authToken = token;
   touchSession(token);
   setAuthCookie(res, token);
@@ -1618,7 +1800,7 @@ app.post('/api/setup/complete', (req, res) => {
   }
 });
 
-app.delete('/api/setup/endpoints/:id', (req, res) => {
+app.delete('/api/setup/endpoints/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) {
@@ -1643,7 +1825,7 @@ app.delete('/api/setup/endpoints/:id', (req, res) => {
   }
 });
 
-app.delete('/api/setup/servers/:id', (req, res) => {
+app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) {
@@ -1668,7 +1850,7 @@ app.delete('/api/setup/servers/:id', (req, res) => {
   }
 });
 
-app.put('/api/setup/servers/:id/api-key', (req, res) => {
+app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) {
@@ -1732,7 +1914,12 @@ app.post('/api/auth/login', (req, res) => {
   markUserLogin(user.id);
   setAuthCookie(res, session.token);
 
-  res.json({ user: sanitizeUser(user) });
+  const payload = buildUserSessionPayload(user.id);
+  if (payload) {
+    res.json(payload);
+  } else {
+    res.json({ user: sanitizeUser(user), permissions: {} });
+  }
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -1742,6 +1929,74 @@ app.post('/api/auth/logout', (req, res) => {
   }
   clearAuthCookie(res);
   res.json({ success: true });
+});
+
+app.post('/api/auth/recover/verify', (req, res) => {
+  const { username, phrase, words } = req.body ?? {};
+
+  try {
+    const candidate = typeof phrase === 'string' && phrase.trim() ? phrase : words;
+    const verification = verifySecurityPhraseForUsername(username, candidate);
+    const ticket = createPasswordResetTicketForUser(verification.userId);
+    res.json({ token: ticket.token, expiresIn: PASSWORD_RESET_TTL_MS });
+  } catch (error) {
+    if (error.code === 'USERNAME_REQUIRED' || error.code === 'PHRASE_REQUIRED') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'PHRASE_NOT_INITIALIZED') {
+      return res.status(409).json({ error: 'PHRASE_NOT_INITIALIZED' });
+    }
+    if (error.code === 'PHRASE_MISMATCH') {
+      return res.status(401).json({ error: 'PHRASE_MISMATCH' });
+    }
+    if (error.code === 'INVALID_PASSWORD') {
+      return res.status(400).json({ error: 'INVALID_PASSWORD' });
+    }
+    console.error('⚠️ [Auth] Sicherheitsphrase-Überprüfung fehlgeschlagen:', error);
+    res.status(500).json({ error: 'RECOVERY_VERIFY_FAILED' });
+  }
+});
+
+app.post('/api/auth/recover/reset', (req, res) => {
+  const { token, password, confirmPassword } = req.body ?? {};
+
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    return res.status(400).json({ error: 'TOKEN_REQUIRED' });
+  }
+
+  if (typeof password !== 'string' || !password.trim()) {
+    return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
+  }
+
+  if (typeof confirmPassword === 'string' && password !== confirmPassword) {
+    return res.status(400).json({ error: 'PASSWORD_MISMATCH' });
+  }
+
+  const trimmedToken = token.trim();
+  const ticket = getPasswordResetTicket(trimmedToken);
+  if (!ticket) {
+    return res.status(410).json({ error: 'TOKEN_INVALID_OR_EXPIRED' });
+  }
+
+  try {
+    setUserPassword(ticket.userId, password, { resetMethod: 'security-phrase' });
+    passwordResetTickets.delete(trimmedToken);
+    removeSessionsForUser(ticket.userId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      passwordResetTickets.delete(trimmedToken);
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error('⚠️ [Auth] Passwort-Zurücksetzung fehlgeschlagen:', error);
+    res.status(500).json({ error: 'RECOVERY_RESET_FAILED' });
+  }
 });
 
 app.get('/api/auth/session', (req, res) => {
@@ -1760,8 +2015,8 @@ app.get('/api/auth/session', (req, res) => {
     return res.status(401).json({ error: 'UNAUTHORIZED' });
   }
 
-  const user = findUserById(session.userId);
-  if (!user || !user.is_active) {
+  const payload = buildUserSessionPayload(session.userId);
+  if (!payload) {
     activeSessions.delete(token);
     clearAuthCookie(res);
     return res.status(401).json({ error: 'UNAUTHORIZED' });
@@ -1769,10 +2024,10 @@ app.get('/api/auth/session', (req, res) => {
 
   touchSession(token);
   setAuthCookie(res, token);
-  res.json({ user: sanitizeUser(user) });
+  res.json(payload);
 });
 
-app.get('/api/users', (req, res) => {
+app.get('/api/users', requirePermission('users-access', 'read'), (req, res) => {
   try {
     const users = listUsers();
     res.json({ items: users, total: users.length });
@@ -1782,11 +2037,11 @@ app.get('/api/users', (req, res) => {
   }
 });
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', requirePermission('users-edit', 'full'), (req, res) => {
   const { username, email, password, groupId, avatarColor } = req.body ?? {};
 
   try {
-    const user = createUser({ username, email, password, groupId, avatarColor });
+    const user = createUser({ username, email, password, groupId, avatarColor }, { actor: req.user });
     res.status(201).json({ item: user });
   } catch (error) {
     if (error.code === 'USERNAME_REQUIRED' || error.code === 'INVALID_GROUP_ID') {
@@ -1809,7 +2064,62 @@ app.post('/api/users', (req, res) => {
   }
 });
 
-app.get('/api/users/:userId', (req, res) => {
+app.get('/api/users/me/security-phrase', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  try {
+    const phrase = getUserSecurityPhrase(userId, { actor: req.user });
+    if (phrase.downloadedAt) {
+      return res.status(409).json({
+        error: 'SECURITY_PHRASE_ALREADY_DOWNLOADED',
+        downloadedAt: phrase.downloadedAt
+      });
+    }
+    res.json({
+      item: {
+        userId: phrase.userId,
+        words: phrase.words,
+        downloadedAt: phrase.downloadedAt
+      }
+    });
+  } catch (error) {
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte für Benutzer ${userId} nicht geladen werden:`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/users/me/security-phrase/downloaded', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  try {
+    const result = markSecurityPhraseDownloaded(userId, { actor: req.user });
+    const sessionPayload = buildUserSessionPayload(userId);
+    res.json({
+      item: {
+        userId: result.userId,
+        downloadedAt: result.downloadedAt
+      },
+      session: sessionPayload
+    });
+  } catch (error) {
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheits-Download konnte nicht vermerkt werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_DOWNLOAD_FAILED' });
+  }
+});
+
+app.get('/api/users/:userId', requirePermission('users-access', 'read'), (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
 
@@ -1829,7 +2139,53 @@ app.get('/api/users/:userId', (req, res) => {
   }
 });
 
-app.put('/api/users/:userId', (req, res) => {
+app.get('/api/users/:userId/security-phrase', requirePermission('users-security-phrase', 'read'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const phrase = getUserSecurityPhrase(numericId, { actor: req.user });
+    res.json({ item: phrase });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte nicht geladen werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/users/:userId/security-phrase/renew', requirePermission('users-security-phrase', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const renewed = renewUserSecurityPhrase(numericId, { actor: req.user });
+    res.json({ item: renewed });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte nicht erneuert werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_RENEW_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId', requirePermission('users-edit', 'full'), (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
 
@@ -1886,7 +2242,7 @@ app.put('/api/users/:userId', (req, res) => {
   }
 });
 
-app.put('/api/users/:userId/groups', (req, res) => {
+app.put('/api/users/:userId/groups', requirePermission('users-edit', 'full'), (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
   const { groupIds } = req.body ?? {};
@@ -1913,7 +2269,7 @@ app.put('/api/users/:userId/groups', (req, res) => {
   }
 });
 
-app.delete('/api/users/:userId', (req, res) => {
+app.delete('/api/users/:userId', requirePermission('users-delete', 'full'), (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
 
@@ -1940,7 +2296,7 @@ app.delete('/api/users/:userId', (req, res) => {
   }
 });
 
-app.put('/api/users/:userId/active', (req, res) => {
+app.put('/api/users/:userId/active', requirePermission('users-edit', 'full'), (req, res) => {
   const { userId } = req.params;
   const numericId = Number(userId);
   const { isActive } = req.body ?? {};
@@ -1968,7 +2324,13 @@ app.put('/api/users/:userId/active', (req, res) => {
   }
 });
 
-app.get('/api/groups', (req, res) => {
+app.get(
+  '/api/groups',
+  requireAnyPermission([
+    { key: 'user-groups-access', level: 'read' },
+    { key: 'users-edit', level: 'read' }
+  ]),
+  (req, res) => {
   try {
     const groups = listGroups();
     res.json({ items: groups, total: groups.length });
@@ -1976,9 +2338,16 @@ app.get('/api/groups', (req, res) => {
     console.error('⚠️ [Groups] Abruf der Benutzergruppenliste fehlgeschlagen:', error);
     res.status(500).json({ error: 'GROUPS_FETCH_FAILED' });
   }
-});
+  }
+);
 
-app.get('/api/groups/:groupId', (req, res) => {
+app.get(
+  '/api/groups/:groupId',
+  requireAnyPermission([
+    { key: 'user-groups-access', level: 'read' },
+    { key: 'users-edit', level: 'read' }
+  ]),
+  (req, res) => {
   const { groupId } = req.params;
   const numericId = Number(groupId);
 
@@ -1996,9 +2365,88 @@ app.get('/api/groups/:groupId', (req, res) => {
     console.error(`⚠️ [Groups] Abruf der Gruppendetails fehlgeschlagen (${groupId}):`, error);
     res.status(500).json({ error: 'GROUP_FETCH_FAILED' });
   }
+  }
+);
+
+app.get('/api/groups/:groupId/permissions', requirePermission('user-groups-edit', 'read'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+
+    const sections = getPermissionStructure();
+    const isSuperuser = (group.name || '').toLowerCase() === SUPERUSER_GROUP_NAME;
+    let values = {};
+
+    if (isSuperuser) {
+      clearGroupPermissionValues(numericId);
+    } else {
+      values = getPermissionValuesByGroup(numericId);
+    }
+
+    res.json({ sections, values });
+  } catch (error) {
+    console.error(`⚠️ [Groups] Abruf der Gruppenberechtigungen fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_PERMISSIONS_FETCH_FAILED' });
+  }
 });
 
-app.post('/api/groups', (req, res) => {
+app.put('/api/groups/:groupId/permissions', requirePermission('user-groups-edit', 'full'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+
+    const isSuperuser = (group.name || '').toLowerCase() === SUPERUSER_GROUP_NAME;
+    if (isSuperuser) {
+      clearGroupPermissionValues(numericId);
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    const valuesPayload = req.body?.values ?? {};
+    const savedValues = saveGroupPermissionValues(numericId, valuesPayload);
+
+    res.json({ success: true, values: savedValues });
+  } catch (error) {
+    const serverError = error?.code;
+    if (serverError === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (serverError === 'PERMISSION_INVALID_PAYLOAD') {
+      return res.status(400).json({ error: 'PERMISSION_INVALID_PAYLOAD' });
+    }
+    if (serverError === 'PERMISSION_INVALID_LEVEL') {
+      return res.status(400).json({ error: 'PERMISSION_INVALID_LEVEL', permissionKey: error.permissionKey, level: error.level });
+    }
+    if (serverError === 'PERMISSION_UNKNOWN_KEY') {
+      return res.status(400).json({ error: 'PERMISSION_UNKNOWN_KEY', permissionKey: error.permissionKey });
+    }
+    if (serverError === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+
+    console.error(`⚠️ [Groups] Aktualisierung der Berechtigungen fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_PERMISSIONS_UPDATE_FAILED' });
+  }
+});
+
+app.post('/api/groups', requirePermission('user-groups-edit', 'full'), (req, res) => {
   const { name, description } = req.body ?? {};
   try {
     const group = createGroup({ name, description });
@@ -2015,7 +2463,7 @@ app.post('/api/groups', (req, res) => {
   }
 });
 
-app.put('/api/groups/:groupId', (req, res) => {
+app.put('/api/groups/:groupId', requirePermission('user-groups-edit', 'full'), (req, res) => {
   const { groupId } = req.params;
   const numericId = Number(groupId);
 
@@ -2053,7 +2501,7 @@ app.put('/api/groups/:groupId', (req, res) => {
   }
 });
 
-app.delete('/api/groups/:groupId', (req, res) => {
+app.delete('/api/groups/:groupId', requirePermission('user-groups-delete', 'full'), (req, res) => {
   const { groupId } = req.params;
   const numericId = Number(groupId);
 
@@ -2197,7 +2645,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
   }
 });
 
-app.get('/api/maintenance/portainer-status', async (req, res) => {
+app.get('/api/maintenance/portainer-status', requirePermission('maintenance-portainer', 'read'), async (req, res) => {
   console.log("🧭 [Maintenance] GET /api/maintenance/portainer-status: Prüfung gestartet");
   try {
     const payload = await fetchPortainerStatusSummary();
@@ -2212,7 +2660,7 @@ app.get('/api/maintenance/portainer-status', async (req, res) => {
   }
 });
 
-app.post('/api/maintenance/mode', (req, res) => {
+app.post('/api/maintenance/mode', requirePermission('maintenance-access', 'full'), (req, res) => {
   try {
     const { active, message } = req.body ?? {};
     const normalizedMessage = typeof message === 'string' && message.trim() ? message.trim() : null;
@@ -2231,7 +2679,7 @@ app.post('/api/maintenance/mode', (req, res) => {
   }
 });
 
-app.get('/api/maintenance/config', (req, res) => {
+app.get('/api/maintenance/config', requirePermission('maintenance-server-manage', 'read'), (req, res) => {
   const custom = getCustomPortainerScript();
   const effective = getEffectivePortainerScript();
   const ssh = getPortainerSshConfig();
@@ -2257,7 +2705,7 @@ app.get('/api/maintenance/config', (req, res) => {
   });
 });
 
-app.put('/api/maintenance/ssh-config', (req, res) => {
+app.put('/api/maintenance/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   try {
     const config = savePortainerSshConfig(req.body || {});
     res.json({
@@ -2276,7 +2724,7 @@ app.put('/api/maintenance/ssh-config', (req, res) => {
   }
 });
 
-app.delete('/api/maintenance/ssh-config', (req, res) => {
+app.delete('/api/maintenance/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   const config = deletePortainerSshConfig();
   res.json({
     success: true,
@@ -2290,7 +2738,7 @@ app.delete('/api/maintenance/ssh-config', (req, res) => {
   });
 });
 
-app.post('/api/maintenance/test-ssh', async (req, res) => {
+app.post('/api/maintenance/test-ssh', requirePermission('maintenance-ssh-update', 'full'), async (req, res) => {
   try {
     const override = req.body && Object.keys(req.body).length ? req.body : null;
     const result = await testSshConnection(override);
@@ -2301,7 +2749,7 @@ app.post('/api/maintenance/test-ssh', async (req, res) => {
   }
 });
 
-app.put('/api/maintenance/update-script', (req, res) => {
+app.put('/api/maintenance/update-script', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.',
@@ -2332,7 +2780,7 @@ app.put('/api/maintenance/update-script', (req, res) => {
   });
 });
 
-app.delete('/api/maintenance/update-script', (req, res) => {
+app.delete('/api/maintenance/update-script', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.',
@@ -2356,14 +2804,14 @@ app.delete('/api/maintenance/update-script', (req, res) => {
   });
 });
 
-app.get('/api/maintenance/update-status', (req, res) => {
+app.get('/api/maintenance/update-status', requirePermission('maintenance-update', 'read'), (req, res) => {
   res.json({
     maintenance: getMaintenanceState(),
     update: getPortainerUpdateStatus()
   });
 });
 
-app.post('/api/maintenance/portainer-update', async (req, res) => {
+app.post('/api/maintenance/portainer-update', requirePermission('maintenance-update', 'full'), async (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Ein Portainer-Update läuft bereits.',
@@ -2429,7 +2877,11 @@ app.post('/api/maintenance/portainer-update', async (req, res) => {
   });
 });
 
-app.get('/api/maintenance/duplicates', maintenanceGuard, async (req, res) => {
+app.get(
+  '/api/maintenance/duplicates',
+  maintenanceGuard,
+  requirePermission('maintenance-duplicates', 'read'),
+  async (req, res) => {
   console.log("🧹 [Maintenance] GET /api/maintenance/duplicates: Abruf gestartet");
   try {
     const { duplicates } = await loadStackCollections();
@@ -2464,7 +2916,11 @@ app.get('/api/maintenance/duplicates', maintenanceGuard, async (req, res) => {
   }
 });
 
-app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, res) => {
+app.post(
+  '/api/maintenance/duplicates/cleanup',
+  maintenanceGuard,
+  requirePermission('maintenance-duplicates', 'full'),
+  async (req, res) => {
   const canonicalId = req.body?.canonicalId;
   const duplicateIdsInput = Array.isArray(req.body?.duplicateIds) ? req.body.duplicateIds : [];
   const duplicateIds = duplicateIdsInput
@@ -2592,7 +3048,7 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
 });
 
 // Event-Logs abrufen
-app.get('/api/logs', (req, res) => {
+app.get('/api/logs', requirePermission('logs-access', 'read'), (req, res) => {
   const perPageParam = req.query.perPage ?? req.query.limit;
   const perPage = perPageParam === 'all' ? 'all' : Math.min(parseInt(perPageParam, 10) || 50, 500);
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -2677,7 +3133,7 @@ app.get('/api/logs', (req, res) => {
   }
 });
 
-app.delete('/api/logs/:id', (req, res) => {
+app.delete('/api/logs/:id', requirePermission('logs-delete', 'full'), (req, res) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) {
     return res.status(400).json({ error: 'Ungültige ID' });
@@ -2695,7 +3151,7 @@ app.delete('/api/logs/:id', (req, res) => {
   }
 });
 
-app.delete('/api/logs', (req, res) => {
+app.delete('/api/logs', requirePermission('logs-delete', 'full'), (req, res) => {
   try {
     const deleted = deleteEventLogsByFilters(req.query);
     res.json({ success: true, deleted });
@@ -2705,7 +3161,7 @@ app.delete('/api/logs', (req, res) => {
   }
 });
 
-app.get('/api/logs/export', (req, res) => {
+app.get('/api/logs/export', requirePermission('logs-export', 'full'), (req, res) => {
   const format = (req.query.format || 'txt').toLowerCase();
   if (!['txt', 'sql'].includes(format)) {
     return res.status(400).json({ error: 'Ungültiges Export-Format' });
@@ -2723,7 +3179,7 @@ app.get('/api/logs/export', (req, res) => {
 });
 
 // Einzel-Redeploy
-app.put('/api/stacks/:id/redeploy', async (req, res) => {
+app.put('/api/stacks/:id/redeploy', requirePermission('stacks-redeploy-single', 'full'), async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
@@ -2739,7 +3195,11 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 });
 
 // Redeploy ALL
-app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
+app.put(
+  '/api/stacks/redeploy-all',
+  maintenanceGuard,
+  requirePermission('stacks-redeploy-all', 'full'),
+  async (req, res) => {
   console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
 
   let endpointId;
@@ -2840,7 +3300,11 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
 });
 
 // Redeploy selection
-app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => {
+app.put(
+  '/api/stacks/redeploy-selection',
+  maintenanceGuard,
+  requirePermission('stacks-redeploy-selection', 'full'),
+  async (req, res) => {
   const { stackIds } = req.body || {};
   const totalCount = Array.isArray(stackIds) ? stackIds.length : 0;
   console.log(`🚀 PUT /api/stacks/redeploy-selection: Redeploy Auswahl gestartet (${totalCount} Stacks)`);

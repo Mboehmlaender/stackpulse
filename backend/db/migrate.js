@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS users (
   avatar_color TEXT,
   is_active INTEGER NOT NULL DEFAULT 1,
   last_login DATETIME,
+  security_phrase_content TEXT,
+  security_phrase_iv TEXT,
+  security_phrase_tag TEXT,
+  security_phrase_downloaded_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -90,6 +94,83 @@ CREATE TABLE IF NOT EXISTS user_group_permissions (
   PRIMARY KEY (group_id, permission_id),
   FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
   FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+`;
+
+const createPermissionSectionsTable = `
+CREATE TABLE IF NOT EXISTS permission_sections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  has_navigation_flag INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+const createPermissionGroupsTable = `
+CREATE TABLE IF NOT EXISTS permission_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section_id INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(section_id, key),
+  FOREIGN KEY (section_id) REFERENCES permission_sections(id) ON DELETE CASCADE
+);
+`;
+
+const createPermissionItemsTable = `
+CREATE TABLE IF NOT EXISTS permission_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section_id INTEGER NOT NULL,
+  group_id INTEGER,
+  key TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  default_level TEXT NOT NULL,
+  available_levels TEXT NOT NULL,
+  is_required INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (section_id) REFERENCES permission_sections(id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE SET NULL
+);
+`;
+
+const createPermissionDependenciesTable = `
+CREATE TABLE IF NOT EXISTS permission_dependencies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  permission_id INTEGER NOT NULL,
+  depends_on_permission_id INTEGER NOT NULL,
+  required_level TEXT DEFAULT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (permission_id) REFERENCES permission_items(id) ON DELETE CASCADE,
+  FOREIGN KEY (depends_on_permission_id) REFERENCES permission_items(id) ON DELETE CASCADE,
+  UNIQUE(permission_id, depends_on_permission_id)
+);
+`;
+
+const createPermissionDependenciesIndex = `
+CREATE INDEX IF NOT EXISTS idx_permission_dependencies_required
+ON permission_dependencies (permission_id, depends_on_permission_id);
+`;
+
+const createGroupPermissionValuesTable = `
+CREATE TABLE IF NOT EXISTS group_permission_values (
+  group_id INTEGER NOT NULL,
+  permission_id INTEGER NOT NULL,
+  level TEXT NOT NULL,
+  effective_level TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, permission_id),
+  FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (permission_id) REFERENCES permission_items(id) ON DELETE CASCADE
 );
 `;
 
@@ -363,6 +444,549 @@ console.log('✅ permissions table ready');
 
 db.exec(createUserGroupPermissionsTable);
 console.log('✅ user_group_permissions table ready');
+
+db.exec(createPermissionSectionsTable);
+console.log('✅ permission_sections table ready');
+
+db.exec(createPermissionGroupsTable);
+console.log('✅ permission_groups table ready');
+
+db.exec(createPermissionItemsTable);
+console.log('✅ permission_items table ready');
+
+db.exec(createPermissionDependenciesTable);
+db.exec(createPermissionDependenciesIndex);
+console.log('✅ permission_dependencies table ready');
+
+db.exec(createGroupPermissionValuesTable);
+console.log('✅ group_permission_values table ready');
+
+const permissionsSeeded = () => {
+  try {
+    const row = db.prepare('SELECT COUNT(*) as count FROM permission_sections').get();
+    return row?.count > 0;
+  } catch (err) {
+    return false;
+  }
+};
+
+const seedPermissions = () => {
+  if (permissionsSeeded()) {
+    console.log('ℹ️ permission structure already seeded');
+    return;
+  }
+
+  const insertSection = db.prepare(`
+    INSERT INTO permission_sections (key, title, sort_order, has_navigation_flag)
+    VALUES (@key, @title, @sort_order, @has_navigation_flag)
+  `);
+
+  const insertGroup = db.prepare(`
+    INSERT INTO permission_groups (section_id, key, title, sort_order)
+    VALUES (@section_id, @key, @title, @sort_order)
+  `);
+
+  const insertItem = db.prepare(`
+    INSERT INTO permission_items (
+      section_id,
+      group_id,
+      key,
+      label,
+      sort_order,
+      default_level,
+      available_levels,
+      is_required
+    ) VALUES (
+      @section_id,
+      @group_id,
+      @key,
+      @label,
+      @sort_order,
+      @default_level,
+      @available_levels,
+      @is_required
+    )
+  `);
+
+  const insertDependency = db.prepare(`
+    INSERT INTO permission_dependencies (permission_id, depends_on_permission_id, required_level)
+    VALUES (@permission_id, @depends_on_permission_id, @required_level)
+  `);
+
+  const sections = [
+    {
+      key: 'stacks',
+      title: 'Stacks',
+      sortOrder: 0,
+      hasNavigation: 0,
+      groups: [],
+      items: [
+        {
+          key: 'stacks-redeploy-single',
+          label: 'Redeploy einzeln',
+          sortOrder: 0,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: []
+        },
+        {
+          key: 'stacks-redeploy-selection',
+          label: 'Redeploy Auswahl',
+          sortOrder: 1,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: []
+        },
+        {
+          key: 'stacks-redeploy-all',
+          label: 'Redeploy Alle',
+          sortOrder: 2,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: []
+        }
+      ]
+    },
+    {
+      key: 'logs',
+      title: 'Logs',
+      sortOrder: 1,
+      hasNavigation: 1,
+      groups: [],
+      items: [
+        {
+          key: 'logs-access',
+          label: 'Bereich & Navigation',
+          sortOrder: 0,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 1,
+          dependencies: []
+        },
+        {
+          key: 'logs-export',
+          label: 'Logs Exportieren',
+          sortOrder: 1,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'logs-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        },
+        {
+          key: 'logs-delete',
+          label: 'Logs löschen',
+          sortOrder: 2,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'logs-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        }
+      ]
+    },
+    {
+      key: 'users',
+      title: 'Benutzer',
+      sortOrder: 2,
+      hasNavigation: 1,
+      groups: [],
+      items: [
+        {
+          key: 'users-access',
+          label: 'Bereich & Navigation',
+          sortOrder: 0,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 1,
+          dependencies: []
+        },
+        {
+          key: 'users-edit',
+          label: 'Benutzer bearbeiten',
+          sortOrder: 1,
+          defaultLevel: 'read',
+          levels: ['full', 'read'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'users-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        },
+        {
+          key: 'users-delete',
+          label: 'Benutzer löschen',
+          sortOrder: 2,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'users-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        },
+        {
+          key: 'users-security-phrase',
+          label: 'Sicherheitsschlüssel',
+          sortOrder: 3,
+          defaultLevel: 'none',
+          levels: ['full', 'read', 'none'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'users-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        }
+      ]
+    },
+    {
+      key: 'user-groups',
+      title: 'Benutzergruppen',
+      sortOrder: 3,
+      hasNavigation: 1,
+      groups: [],
+      items: [
+        {
+          key: 'user-groups-access',
+          label: 'Bereich & Navigation',
+          sortOrder: 0,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 1,
+          dependencies: []
+        },
+        {
+          key: 'user-groups-edit',
+          label: 'Benutzergruppen bearbeiten',
+          sortOrder: 1,
+          defaultLevel: 'read',
+          levels: ['full', 'read'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'user-groups-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        },
+        {
+          key: 'user-groups-delete',
+          label: 'Benutzergruppen löschen',
+          sortOrder: 2,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 0,
+          dependencies: [
+            {
+              dependsOnKey: 'user-groups-access',
+              requiredLevel: '!=none'
+            }
+          ]
+        }
+      ]
+    },
+    {
+      key: 'maintenance',
+      title: 'Wartung',
+      sortOrder: 4,
+      hasNavigation: 1,
+      groups: [
+        {
+          key: 'maintenance-server-group',
+          title: 'Server & Endpoints',
+          sortOrder: 0,
+          items: [
+            {
+              key: 'maintenance-server-manage',
+              label: 'Server/Endpoint-Sektion',
+              sortOrder: 0,
+              defaultLevel: 'none',
+              levels: ['full', 'read', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                }
+              ]
+            },
+            {
+              key: 'maintenance-server-delete',
+              label: 'Server/Endpoint löschen',
+              sortOrder: 1,
+              defaultLevel: 'none',
+              levels: ['full', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                },
+                {
+                  dependsOnKey: 'maintenance-server-manage',
+                  requiredLevel: '!=none'
+                }
+              ]
+            }
+          ]
+        },
+        {
+          key: 'maintenance-portainer-group',
+          title: 'Portainer',
+          sortOrder: 1,
+          items: [
+            {
+              key: 'maintenance-portainer',
+              label: 'Portainer-Sektion',
+              sortOrder: 0,
+              defaultLevel: 'none',
+              levels: ['full', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                }
+              ]
+            },
+            {
+              key: 'maintenance-ssh-update',
+              label: 'SSH/Update-Skript',
+              sortOrder: 1,
+              defaultLevel: 'none',
+              levels: ['full', 'read', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                },
+                {
+                  dependsOnKey: 'maintenance-portainer',
+                  requiredLevel: '!=none'
+                }
+              ]
+            },
+            {
+              key: 'maintenance-update',
+              label: 'Update durchführen',
+              sortOrder: 2,
+              defaultLevel: 'none',
+              levels: ['full', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                },
+                {
+                  dependsOnKey: 'maintenance-portainer',
+                  requiredLevel: '!=none'
+                }
+              ]
+            }
+          ]
+        },
+        {
+          key: 'maintenance-duplicates-group',
+          title: 'Doppelte Stacks',
+          sortOrder: 2,
+          items: [
+            {
+              key: 'maintenance-duplicates',
+              label: 'Doppelte Stacks',
+              sortOrder: 0,
+              defaultLevel: 'none',
+              levels: ['full', 'read', 'none'],
+              isRequired: 0,
+              dependencies: [
+                {
+                  dependsOnKey: 'maintenance-access',
+                  requiredLevel: '!=none'
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      items: [
+        {
+          key: 'maintenance-access',
+          label: 'Bereich & Navigation',
+          sortOrder: 0,
+          defaultLevel: 'none',
+          levels: ['full', 'none'],
+          isRequired: 1,
+          dependencies: []
+        }
+      ]
+    }
+  ];
+
+  const itemKeyToId = new Map();
+
+  const insertPermissions = db.transaction(() => {
+    sections.forEach((section) => {
+      const sectionResult = insertSection.run({
+        key: section.key,
+        title: section.title,
+        sort_order: section.sortOrder,
+        has_navigation_flag: section.hasNavigation ? 1 : 0
+      });
+
+      const sectionId = sectionResult.lastInsertRowid;
+
+      const sectionItems = section.items ?? [];
+      sectionItems.forEach((item, index) => {
+        const itemResult = insertItem.run({
+          section_id: sectionId,
+          group_id: null,
+          key: item.key,
+          label: item.label,
+          sort_order: item.sortOrder ?? index,
+          default_level: item.defaultLevel,
+          available_levels: JSON.stringify(item.levels),
+          is_required: item.isRequired ? 1 : 0
+        });
+        itemKeyToId.set(item.key, itemResult.lastInsertRowid);
+      });
+
+      const groups = section.groups ?? [];
+      groups.forEach((group, groupIdx) => {
+        const groupResult = insertGroup.run({
+          section_id: sectionId,
+          key: group.key,
+          title: group.title,
+          sort_order: group.sortOrder ?? groupIdx
+        });
+        const groupId = groupResult.lastInsertRowid;
+        const groupItems = group.items ?? [];
+        groupItems.forEach((item, itemIdx) => {
+          const itemResult = insertItem.run({
+            section_id: sectionId,
+            group_id: groupId,
+            key: item.key,
+            label: item.label,
+            sort_order: item.sortOrder ?? itemIdx,
+            default_level: item.defaultLevel,
+            available_levels: JSON.stringify(item.levels),
+            is_required: item.isRequired ? 1 : 0
+          });
+          itemKeyToId.set(item.key, itemResult.lastInsertRowid);
+        });
+      });
+    });
+
+    sections.forEach((section) => {
+      const collectDependencies = (items = []) => {
+        items.forEach((item) => {
+          if (!item.dependencies || !item.dependencies.length) {
+            return;
+          }
+          const permissionId = itemKeyToId.get(item.key);
+          item.dependencies.forEach((dependency) => {
+            const dependsId = itemKeyToId.get(dependency.dependsOnKey);
+            if (!dependsId) {
+              console.warn(`⚠️ dependency target ${dependency.dependsOnKey} not found for ${item.key}`);
+              return;
+            }
+            insertDependency.run({
+              permission_id: permissionId,
+              depends_on_permission_id: dependsId,
+              required_level: dependency.requiredLevel ?? null
+            });
+          });
+        });
+      };
+
+      collectDependencies(section.items);
+      (section.groups ?? []).forEach((group) => collectDependencies(group.items));
+    });
+  });
+
+  insertPermissions();
+  console.log('✅ permission structure seeded');
+};
+
+seedPermissions();
+
+const ensureUserSecurityPhraseColumns = () => {
+  const columns = db.prepare('PRAGMA table_info(users)').all();
+  const columnNames = new Set(columns.map((column) => column.name));
+
+  const addColumnIfMissing = (name, sql) => {
+    if (!columnNames.has(name)) {
+      db.exec(sql);
+    }
+  };
+
+  addColumnIfMissing('security_phrase_content', 'ALTER TABLE users ADD COLUMN security_phrase_content TEXT');
+  addColumnIfMissing('security_phrase_iv', 'ALTER TABLE users ADD COLUMN security_phrase_iv TEXT');
+  addColumnIfMissing('security_phrase_tag', 'ALTER TABLE users ADD COLUMN security_phrase_tag TEXT');
+  addColumnIfMissing('security_phrase_downloaded_at', 'ALTER TABLE users ADD COLUMN security_phrase_downloaded_at DATETIME');
+};
+
+ensureUserSecurityPhraseColumns();
+
+const ensurePermissionDefaultLevels = () => {
+  const desiredDefaults = [
+    { key: 'stacks-redeploy-single', defaultLevel: 'none' },
+    { key: 'stacks-redeploy-selection', defaultLevel: 'none' },
+    { key: 'stacks-redeploy-all', defaultLevel: 'none' },
+    { key: 'logs-access', defaultLevel: 'none' },
+    { key: 'logs-export', defaultLevel: 'none' },
+    { key: 'logs-delete', defaultLevel: 'none' },
+    { key: 'users-access', defaultLevel: 'none' },
+    { key: 'users-edit', defaultLevel: 'read' },
+    { key: 'users-delete', defaultLevel: 'none' },
+    { key: 'users-security-phrase', defaultLevel: 'none' },
+    { key: 'user-groups-access', defaultLevel: 'none' },
+    { key: 'user-groups-edit', defaultLevel: 'read' },
+    { key: 'user-groups-delete', defaultLevel: 'none' },
+    { key: 'maintenance-access', defaultLevel: 'none' },
+    { key: 'maintenance-server-manage', defaultLevel: 'none' },
+    { key: 'maintenance-server-delete', defaultLevel: 'none' },
+    { key: 'maintenance-portainer', defaultLevel: 'none' },
+    { key: 'maintenance-ssh-update', defaultLevel: 'none' },
+    { key: 'maintenance-update', defaultLevel: 'none' },
+    { key: 'maintenance-duplicates', defaultLevel: 'none' }
+  ];
+
+  const updateDefaultLevel = db.prepare(`
+    UPDATE permission_items
+    SET default_level = @default_level
+    WHERE key = @key AND default_level != @default_level
+  `);
+
+  db.transaction(() => {
+    desiredDefaults.forEach(({ key, defaultLevel }) => {
+      updateDefaultLevel.run({ key, default_level: defaultLevel });
+    });
+  })();
+};
+
+ensurePermissionDefaultLevels();
+
+db.exec(
+  "DELETE FROM group_permission_values WHERE group_id IN (SELECT id FROM user_groups WHERE lower(name) = 'superuser')"
+);
 
 db.exec(createServersTable);
 console.log('✅ servers table ready');

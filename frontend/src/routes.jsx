@@ -4,11 +4,14 @@ import {
   ListBulletIcon,
   ServerStackIcon,
   RectangleStackIcon,
+  ArrowLeftOnRectangleIcon,
   UserIcon,
-  UserGroupIcon
+  UserGroupIcon,
+  KeyIcon
 } from "@heroicons/react/24/solid";
 import { Stacks, Maintenance, Logs, Users, Usergroups } from "@/pages/dashboard";
-import { SignIn, SignUp } from "@/pages/auth";
+import { SignIn, SignUp, SignOut, ForgotPassword } from "@/pages/auth";
+import PermissionGate from "@/components/PermissionGate.jsx";
 
 const icon = {
   className: "w-5 h-5 text-inherit",
@@ -23,30 +26,51 @@ export const routes = [
         name: "stacks",
         path: "/stacks",
         element: <Stacks />,
+        permission: null,
       },
       {
         icon: <WrenchScrewdriverIcon {...icon} />,
         name: "wartung",
         path: "/maintenance",
-        element: <Maintenance />,
+        element: (
+          <PermissionGate permission="maintenance-access" requiredLevel="read">
+            <Maintenance />
+          </PermissionGate>
+        ),
+        permission: { key: "maintenance-access", requiredLevel: "read" },
       },
       {
         icon: <ListBulletIcon {...icon} />,
         name: "logs",
         path: "/logs",
-        element: <Logs />,
+        element: (
+          <PermissionGate permission="logs-access" requiredLevel="full">
+            <Logs />
+          </PermissionGate>
+        ),
+        permission: { key: "logs-access", requiredLevel: "full" },
       },
       {
         icon: <UserIcon {...icon} />,
         name: "benutzer",
         path: "/users",
-        element: <Users />,
+        element: (
+          <PermissionGate permission="users-access" requiredLevel="read">
+            <Users />
+          </PermissionGate>
+        ),
+        permission: { key: "users-access", requiredLevel: "read" },
       },
       {
         icon: <UserGroupIcon {...icon} />,
         name: "rechtegruppen",
         path: "/usergroups",
-        element: <Usergroups />,
+        element: (
+          <PermissionGate permission="user-groups-access" requiredLevel="read">
+            <Usergroups />
+          </PermissionGate>
+        ),
+        permission: { key: "user-groups-access", requiredLevel: "read" },
       },
     ],
   },
@@ -59,6 +83,18 @@ export const routes = [
       name: "sign in",
       path: "/sign-in",
       element: <SignIn />,
+    },
+    {
+      icon: <KeyIcon {...icon} />,
+      name: "passwort vergessen",
+      path: "/forgot-password",
+      element: <ForgotPassword />,
+    },
+    {
+      icon: <ArrowLeftOnRectangleIcon {...icon} />,
+      name: "log out",
+      path: "/logout",
+      element: <SignOut />,
     },
     {
       icon: <RectangleStackIcon {...icon} />,

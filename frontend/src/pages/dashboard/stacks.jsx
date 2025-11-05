@@ -4,6 +4,7 @@ import { io } from "socket.io-client";
 import { useToast } from "@/components/ToastProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 import {
   Typography,
@@ -73,6 +74,10 @@ export function Stacks() {
     script: scriptConfig,
     ssh: sshConfig,
   } = useMaintenance();
+  const { hasPermission } = useAuth();
+  const canRedeploySingle = hasPermission("stacks-redeploy-single", "full");
+  const canRedeploySelection = hasPermission("stacks-redeploy-selection", "full");
+  const canRedeployAll = hasPermission("stacks-redeploy-all", "full");
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
   const maintenanceMessage = maintenanceMeta?.message;
@@ -519,6 +524,7 @@ export function Stacks() {
   }, [filteredStacks.length, perPage, page, setPage]);
 
   const toggleStackSelection = (stackId, disabled) => {
+    if (!canRedeploySelection) return;
     if (disabled) return;
     setSelectedStackIds(prev =>
       prev.includes(stackId)
@@ -527,8 +533,20 @@ export function Stacks() {
     );
   };
 
+  useEffect(() => {
+    if (!canRedeploySelection) {
+      if (selectedStackIds.length) {
+        setSelectedStackIds([]);
+      }
+      if (selectionPromptVisible) {
+        setSelectionPromptVisible(false);
+      }
+    }
+  }, [canRedeploySelection, selectedStackIds.length, selectionPromptVisible]);
+
 
   const applySelectionPreference = (action) => {
+    if (!canRedeploySelection) return;
     const remember = rememberSelectionChoice;
     if (typeof window !== 'undefined') {
       try {
@@ -559,6 +577,7 @@ export function Stacks() {
   };
 
   const clearStoredSelectionPreference = () => {
+    if (!canRedeploySelection) return;
     if (typeof window !== 'undefined') {
       try {
         window.sessionStorage.removeItem(SELECTION_PROMPT_STORAGE_KEY);
@@ -577,15 +596,20 @@ export function Stacks() {
   };
 
   const clearSelection = () => {
+    if (!canRedeploySelection) return;
     setSelectedStackIds([]);
     setSelectionPromptVisible(false);
   };
 
   const handleChipRemove = (stackId) => {
+    if (!canRedeploySelection) return;
     setSelectedStackIds((prev) => prev.filter((id) => id !== stackId));
   };
 
   const handleRedeploy = async (stackId) => {
+    if (!canRedeploySingle) {
+      return;
+    }
     const snapshot = stacksByIdRef.current.get(stackId);
     const phase = snapshot?.redeployPhase;
     if (phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED) return;
@@ -636,6 +660,9 @@ export function Stacks() {
   };
 
   const handleRedeployAll = async () => {
+    if (!canRedeployAll) {
+      return;
+    }
     if (!eligibleFilteredStacks.length) return;
 
     const targetIdList = eligibleFilteredStacks.map((stack) => stack.Id);
@@ -687,6 +714,9 @@ export function Stacks() {
   };
 
   const handleRedeploySelection = async () => {
+    if (!canRedeploySelection) {
+      return;
+    }
     if (!selectedStackIds.length) return;
 
     const eligibleIds = selectedStackIds.filter((id) => {
@@ -747,22 +777,25 @@ export function Stacks() {
     }
   };
 
-  const hasSelection = selectedStackIds.length > 0;
+  const hasSelection = canRedeploySelection && selectedStackIds.length > 0;
   const hasOutdatedStacks = eligibleFilteredStacks.length > 0;
-  const bulkButtonLabel = hasSelection
+  const showBulkButton = (canRedeploySelection && hasSelection) || canRedeployAll;
+  const bulkButtonLabel = canRedeploySelection && hasSelection
     ? `Redeploy Auswahl (${selectedStackIds.length})`
     : 'Redeploy Alle';
 
-  const bulkActionDisabled = maintenanceLocked || (hasSelection
-    ? selectionPromptVisible || selectedStackIds.length === 0 || selectedStackIds.every(id => {
-      const targetStack = stacks.find(stack => stack.Id === id);
-      if (!targetStack) return true;
-      if (targetStack.updateStatus === '✅') return true;
-      if (targetStack.redeployDisabled) return true;
-      const phase = targetStack.redeployPhase;
-      return phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED;
-    })
-    : !hasOutdatedStacks);
+  const bulkActionDisabled = maintenanceLocked || (
+    canRedeploySelection && hasSelection
+      ? selectionPromptVisible || selectedStackIds.every(id => {
+          const targetStack = stacks.find(stack => stack.Id === id);
+          if (!targetStack) return true;
+          if (targetStack.updateStatus === '✅') return true;
+          if (targetStack.redeployDisabled) return true;
+          const phase = targetStack.redeployPhase;
+          return phase === REDEPLOY_PHASES.STARTED || phase === REDEPLOY_PHASES.QUEUED;
+        })
+      : (!canRedeployAll || !hasOutdatedStacks)
+  );
 
   const handleBulkRedeploy = () => {
     if (maintenanceLocked) {
@@ -774,9 +807,9 @@ export function Stacks() {
       return;
     }
 
-    if (hasSelection) {
+    if (canRedeploySelection && hasSelection) {
       handleRedeploySelection();
-    } else {
+    } else if (canRedeployAll) {
       handleRedeployAll();
     }
   };
@@ -868,7 +901,7 @@ export function Stacks() {
                 </div>
               </div>
               <div className="flex items-center justify-end gap-3 mt-5">
-                {selectionPreferenceStored && (
+                {canRedeploySelection && selectionPreferenceStored && (
                   <button
                     onClick={clearStoredSelectionPreference}
                     className="block antialiased font-sans text-sm leading-normal text-inherit text-xs font-medium text-warmAmberGlow-500 underline underline-offset-2 transition hover:text-warmAmberGlow-600"
@@ -881,7 +914,7 @@ export function Stacks() {
             </div>
           )}
 
-          {selectionPromptVisible && (
+          {canRedeploySelection && selectionPromptVisible && (
             <div className="flex flex-col mt-5">
 
               <div className="flex flex-col gap-3 rounded-lg border border-arcticBlue-800 bg-arcticBlue-900/90 px-4 py-3 text-arcticBlue-100 md:flex-row md:items-center md:justify-between">
@@ -921,8 +954,9 @@ export function Stacks() {
 
             </div>
           )}
-          <div id="collect" className="mt-8 flex flex-col gap-4 md:flex-row md:items-start md:gap-6">
-            {selectedStackIds.length > 0 && (
+          {showBulkButton && (
+            <div id="collect" className="mt-8 flex flex-col gap-4 md:flex-row md:items-start md:gap-6">
+            {canRedeploySelection && selectedStackIds.length > 0 && (
               <div className="w-full md:order-first order-last md:w-3/4">
                 <div className="flex flex-col gap-3 text-sm text-gray-300">
                   <div className="flex flex-wrap items-center gap-2">
@@ -963,7 +997,8 @@ export function Stacks() {
               </Button>
             </div>
 
-          </div>
+            </div>
+          )}
         </CardBody>
       </Card>
 
@@ -978,6 +1013,7 @@ export function Stacks() {
           const isCurrent = stack.updateStatus === '✅';
           const isSelfStack = Boolean(stack.redeployDisabled);
           const isSelectable = !isBusy && !isCurrent && !isSelfStack;
+          const canSelectStack = canRedeploySelection && isSelectable;
           return (
 
             <Card key={stack.Id}>
@@ -989,13 +1025,15 @@ export function Stacks() {
                 ${!isSelectable || isBusy ? 'opacity-75 bg-stormGrey-200/20' : ''}`}
               >
                 <div className="flex items-center space-x-4" id="left">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleStackSelection(stack.Id, !isSelectable)}
-                    className={`h-5 w-5 text-purple-500 focus:ring-purple-400 border-gray-600 bg-gray-900 rounded ${!isSelectable ? 'opacity-40 cursor-not-allowed' : ''}`}
-                    disabled={!isSelectable}
-                  />
+                  {canRedeploySelection && (
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleStackSelection(stack.Id, !canSelectStack)}
+                      className={`h-5 w-5 text-purple-500 focus:ring-purple-400 border-gray-600 bg-gray-900 rounded ${!canSelectStack ? 'opacity-40 cursor-not-allowed' : ''}`}
+                      disabled={!canSelectStack}
+                    />
+                  )}
                   <div className={`w-12 h-12 flex items-center justify-center rounded-full
                   ${stack.updateStatus === '✅' ? 'bg-mossGreen-600' :
                       stack.updateStatus === '⚠️' ? 'bg-warmAmberGlow-400' :
@@ -1031,7 +1069,7 @@ export function Stacks() {
                       <span className="antialiased font-sans font-light leading-normal text-xs uppercase tracking-wide text-stormGrey-500">Status</span>
                       <span className="text-mossGreen-600">Aktuell</span>
                     </>
-                  ) : (
+                  ) : (canRedeploySingle ? (
                     <Button
                       onClick={() => handleRedeploy(stack.Id)}
                       disabled={isBusy}
@@ -1039,7 +1077,7 @@ export function Stacks() {
                     >
                       Redeploy
                     </Button>
-                  )}
+                  ) : null)}
                 </div>
 
               </CardBody>

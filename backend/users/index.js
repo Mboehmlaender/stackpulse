@@ -1,6 +1,13 @@
 import { db } from '../db/index.js';
 import { logEvent } from '../logging/eventLogs.js';
 import {
+  generateSecurityPhraseWords,
+  encryptSecurityPhrase,
+  decryptSecurityPhrase,
+  canonicalizeWords,
+  canonicalizePhraseInput
+} from './securityPhrase.js';
+import {
   hashPassword,
   normalizeAvatarColor,
   pickRandomAvatarColor,
@@ -18,6 +25,7 @@ const selectUsersWithGroups = db.prepare(`
     u.last_login,
     u.created_at,
     u.updated_at,
+    u.security_phrase_downloaded_at,
     GROUP_CONCAT(g.id || '::' || g.name, '|||') AS group_pairs
   FROM users u
   LEFT JOIN user_group_memberships m ON m.user_id = u.id
@@ -36,6 +44,10 @@ const selectUserWithGroupsById = db.prepare(`
     u.last_login,
     u.created_at,
     u.updated_at,
+    u.security_phrase_content,
+    u.security_phrase_iv,
+    u.security_phrase_tag,
+    u.security_phrase_downloaded_at,
     GROUP_CONCAT(g.id || '::' || g.name, '|||') AS group_pairs
   FROM users u
   LEFT JOIN user_group_memberships m ON m.user_id = u.id
@@ -63,6 +75,20 @@ const insertMembershipForUser = db.prepare(`
   VALUES (?, ?)
 `);
 
+const selectSecurityPhraseByUsername = db.prepare(`
+  SELECT
+    id,
+    username,
+    is_active,
+    security_phrase_content AS content,
+    security_phrase_iv AS iv,
+    security_phrase_tag AS tag,
+    security_phrase_downloaded_at AS downloaded_at
+  FROM users
+  WHERE lower(username) = lower(?)
+  LIMIT 1
+`);
+
 const selectGroupById = db.prepare('SELECT id, name FROM user_groups WHERE id = ?');
 const selectGroupIdByName = db.prepare('SELECT id FROM user_groups WHERE lower(name) = lower(?) LIMIT 1');
 
@@ -75,8 +101,21 @@ const isUserInGroupStatement = db.prepare(`
 `);
 
 const insertUserStatement = db.prepare(`
-  INSERT INTO users (username, email, password_hash, password_salt, avatar_color, is_active, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  INSERT INTO users (
+    username,
+    email,
+    password_hash,
+    password_salt,
+    avatar_color,
+    is_active,
+    security_phrase_content,
+    security_phrase_iv,
+    security_phrase_tag,
+    security_phrase_downloaded_at,
+    created_at,
+    updated_at
+  )
+  VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 `);
 
 const updateUserCoreStatement = db.prepare(`
@@ -93,6 +132,14 @@ const updateUserCoreStatement = db.prepare(`
 const updateUserActiveStatement = db.prepare(`
   UPDATE users
   SET is_active = ?,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
+const updateUserPasswordStatement = db.prepare(`
+  UPDATE users
+  SET password_hash = ?,
+      password_salt = ?,
       updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
@@ -127,7 +174,8 @@ const sanitizeUserRecord = (row) => ({
   lastLogin: row.last_login || null,
   createdAt: row.created_at || null,
   updatedAt: row.updated_at || null,
-  groups: parseGroupPairs(row.group_pairs)
+  groups: parseGroupPairs(row.group_pairs),
+  securityPhraseDownloadedAt: row.security_phrase_downloaded_at || null
 });
 
 export function listUsers() {
@@ -147,12 +195,75 @@ const applyUserGroupAssignments = db.transaction((userId, groupIds) => {
   });
 });
 
-const insertUserWithGroups = db.transaction(({ username, email, passwordHash, passwordSalt, avatarColor, groupId }) => {
-  const result = insertUserStatement.run(username, email, passwordHash, passwordSalt, avatarColor);
+const insertUserWithGroups = db.transaction(({
+  username,
+  email,
+  passwordHash,
+  passwordSalt,
+  avatarColor,
+  groupId,
+  securityPhrase
+}) => {
+  const phraseToPersist = securityPhrase && typeof securityPhrase === 'object'
+    ? {
+        content: securityPhrase.content ?? null,
+        iv: securityPhrase.iv ?? null,
+        tag: securityPhrase.tag ?? null
+      }
+    : { content: null, iv: null, tag: null };
+
+  const result = insertUserStatement.run(
+    username,
+    email,
+    passwordHash,
+    passwordSalt,
+    avatarColor,
+    phraseToPersist.content,
+    phraseToPersist.iv,
+    phraseToPersist.tag
+  );
   const userId = Number(result.lastInsertRowid);
   applyUserGroupAssignments(userId, [groupId]);
   return userId;
 });
+
+const selectSecurityPhraseByUserId = db.prepare(`
+  SELECT
+    id,
+    username,
+    security_phrase_content AS content,
+    security_phrase_iv AS iv,
+    security_phrase_tag AS tag,
+    security_phrase_downloaded_at AS downloaded_at
+  FROM users
+  WHERE id = ?
+`);
+
+const updateSecurityPhraseStatement = db.prepare(`
+  UPDATE users
+  SET
+    security_phrase_content = ?,
+    security_phrase_iv = ?,
+    security_phrase_tag = ?,
+    security_phrase_downloaded_at = NULL,
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
+const markSecurityPhraseDownloadedStatement = db.prepare(`
+  UPDATE users
+  SET security_phrase_downloaded_at = COALESCE(security_phrase_downloaded_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
+const selectUsersMissingSecurityPhraseStatement = db.prepare(`
+  SELECT id
+  FROM users
+  WHERE security_phrase_content IS NULL
+     OR security_phrase_iv IS NULL
+     OR security_phrase_tag IS NULL
+`);
 
 const resolveActorFields = (actor) => {
   if (!actor || actor.id === undefined || actor.id === null) {
@@ -174,6 +285,265 @@ const normalizeEmail = (value) => {
   }
   return trimmed.toLowerCase();
 };
+
+export function getUserSecurityPhrase(userId, options = {}) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const { actor = null, allowAutoGenerate = true } = options;
+
+  const record = selectSecurityPhraseByUserId.get(numericUserId);
+  if (!record) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  const words = decryptSecurityPhrase(record);
+
+  if (allowAutoGenerate && (!Array.isArray(words) || words.length === 0)) {
+    return renewUserSecurityPhrase(numericUserId, { actor, suppressLog: true });
+  }
+
+  return {
+    userId: numericUserId,
+    username: record.username,
+    words,
+    downloadedAt: record.downloaded_at || null
+  };
+}
+
+export function renewUserSecurityPhrase(userId, options = {}) {
+  const actor = options.actor || null;
+  const suppressLog = Boolean(options.suppressLog);
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const existingUser = selectUserCredentialsById.get(numericUserId);
+  if (!existingUser) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  const previousPhraseRecord = selectSecurityPhraseByUserId.get(numericUserId);
+
+  const words = generateSecurityPhraseWords(8);
+  const { encrypted: encryptedPhrase } = encryptSecurityPhrase(words);
+
+  updateSecurityPhraseStatement.run(
+    encryptedPhrase.content,
+    encryptedPhrase.iv,
+    encryptedPhrase.tag,
+    numericUserId
+  );
+
+  if (!suppressLog) {
+    logEvent({
+      category: 'benutzer',
+      eventType: 'benutzer-sicherheitsschluessel-erneuert',
+      action: 'sicherheitsschluessel-erneuern',
+      status: 'erfolgreich',
+      entityType: 'benutzer',
+      entityId: String(numericUserId),
+      entityName: existingUser.username ?? `ID ${numericUserId}`,
+      message: `Sicherheitsschlüssel für Benutzer "${existingUser.username ?? numericUserId}" erneuert`,
+      metadata: {
+        previousDownloadedAt: previousPhraseRecord?.downloaded_at ?? null
+      },
+      ...resolveActorFields(actor)
+    });
+  }
+
+  return {
+    userId: numericUserId,
+    username: existingUser.username,
+    words,
+    downloadedAt: null
+  };
+}
+
+export function markSecurityPhraseDownloaded(userId, options = {}) {
+  const actor = options.actor || null;
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const record = selectSecurityPhraseByUserId.get(numericUserId);
+  if (!record) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  markSecurityPhraseDownloadedStatement.run(numericUserId);
+
+  const updatedRecord = selectSecurityPhraseByUserId.get(numericUserId) || record;
+  const downloadedAt = updatedRecord?.downloaded_at || null;
+
+  logEvent({
+    category: 'benutzer',
+    eventType: 'benutzer-sicherheitsschluessel-heruntergeladen',
+    action: 'sicherheitsschluessel-herunterladen',
+    status: 'erfolgreich',
+    entityType: 'benutzer',
+    entityId: String(numericUserId),
+    entityName: record.username ?? `ID ${numericUserId}`,
+    message: `Sicherheitsschlüssel für Benutzer "${record.username ?? numericUserId}" heruntergeladen`,
+    metadata: {
+      downloadedAt
+    },
+    ...resolveActorFields(actor)
+  });
+
+  return {
+    userId: numericUserId,
+    username: record.username,
+    downloadedAt
+  };
+}
+
+export function verifySecurityPhraseForUsername(username, phraseInput) {
+  const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+  if (!normalizedUsername) {
+    const error = new Error('USERNAME_REQUIRED');
+    error.code = 'USERNAME_REQUIRED';
+    throw error;
+  }
+
+  const record = selectSecurityPhraseByUsername.get(normalizedUsername);
+  if (!record) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  const candidateCanonical = canonicalizePhraseInput(phraseInput);
+  if (!candidateCanonical) {
+    const error = new Error('PHRASE_REQUIRED');
+    error.code = 'PHRASE_REQUIRED';
+    throw error;
+  }
+
+  const words = decryptSecurityPhrase(record);
+  if (!Array.isArray(words) || words.length === 0) {
+    const error = new Error('PHRASE_NOT_INITIALIZED');
+    error.code = 'PHRASE_NOT_INITIALIZED';
+    throw error;
+  }
+
+  const storedCanonical = canonicalizeWords(words);
+  if (!storedCanonical) {
+    const error = new Error('PHRASE_NOT_INITIALIZED');
+    error.code = 'PHRASE_NOT_INITIALIZED';
+    throw error;
+  }
+
+  if (storedCanonical !== candidateCanonical) {
+    const error = new Error('PHRASE_MISMATCH');
+    error.code = 'PHRASE_MISMATCH';
+    throw error;
+  }
+
+  return {
+    userId: record.id,
+    username: record.username,
+    isActive: Boolean(record.is_active),
+    words
+  };
+}
+
+export function setUserPassword(userId, newPassword, options = {}) {
+  const actor = options.actor || null;
+  const resetMethod = options.resetMethod || 'security-phrase';
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const existingUser = selectUserCredentialsById.get(numericUserId);
+  if (!existingUser) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  let passwordHash;
+  let passwordSalt;
+  try {
+    const hashed = hashPassword(newPassword);
+    passwordHash = hashed.hash;
+    passwordSalt = hashed.salt;
+  } catch (err) {
+    if (err && err.code) {
+      throw err;
+    }
+    const error = new Error('INVALID_PASSWORD');
+    error.code = 'INVALID_PASSWORD';
+    throw error;
+  }
+
+  updateUserPasswordStatement.run(passwordHash, passwordSalt, numericUserId);
+  const updated = getUserById(numericUserId);
+
+  logEvent({
+    category: 'benutzer',
+    eventType: 'benutzer-passwort-zurueckgesetzt',
+    action: 'passwort-zuruecksetzen',
+    status: 'erfolgreich',
+    entityType: 'benutzer',
+    entityId: String(numericUserId),
+    entityName: updated?.username ?? existingUser.username ?? `ID ${numericUserId}`,
+    message: `Passwort für Benutzer "${updated?.username ?? existingUser.username ?? numericUserId}" zurückgesetzt`,
+    metadata: {
+      resetMethod
+    },
+    ...resolveActorFields(actor)
+  });
+
+  return updated;
+}
+
+export function ensureSecurityPhrasesForExistingUsers() {
+  const rows = selectUsersMissingSecurityPhraseStatement.all();
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return 0;
+  }
+
+  let processed = 0;
+  const initialize = db.transaction((users) => {
+    users.forEach((entry) => {
+      if (!entry || entry.id === undefined || entry.id === null) {
+        return;
+      }
+      const words = generateSecurityPhraseWords(8);
+      const { encrypted: encryptedPhrase } = encryptSecurityPhrase(words);
+      updateSecurityPhraseStatement.run(
+        encryptedPhrase.content,
+        encryptedPhrase.iv,
+        encryptedPhrase.tag,
+        entry.id
+      );
+      processed += 1;
+    });
+  });
+
+  initialize(rows);
+  return processed;
+}
 
 export function createUser({ username, email, password, groupId, avatarColor }, options = {}) {
   const actor = options.actor || null;
@@ -245,13 +615,22 @@ export function createUser({ username, email, password, groupId, avatarColor }, 
   const normalizedAvatarColor = normalizeAvatarColor(avatarColor);
   const avatarColorToPersist = normalizedAvatarColor || pickRandomAvatarColor() || DEFAULT_AVATAR_COLOR;
 
+  const securityPhraseWords = generateSecurityPhraseWords(8);
+  const { encrypted: encryptedPhrase } = encryptSecurityPhrase(securityPhraseWords);
+  const securityPhrasePayload = {
+    content: encryptedPhrase.content,
+    iv: encryptedPhrase.iv,
+    tag: encryptedPhrase.tag
+  };
+
   const userId = insertUserWithGroups({
     username: normalizedUsername,
     email: normalizedEmail,
     passwordHash,
     passwordSalt,
     avatarColor: avatarColorToPersist,
-    groupId: numericGroupId
+    groupId: numericGroupId,
+    securityPhrase: securityPhrasePayload
   });
 
   const userRecord = getUserById(userId);

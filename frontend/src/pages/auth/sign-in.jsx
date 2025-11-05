@@ -7,9 +7,11 @@ import {
 } from "@material-tailwind/react";
 import { useNavigate } from "react-router-dom";
 import pattern from "@/assets/images/pattern.png";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 export function SignIn() {
   const navigate = useNavigate();
+  const { setSession, refreshSession } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -42,8 +44,12 @@ export function SignIn() {
 
         if (sessionResponse.ok) {
           const sessionData = await sessionResponse.json();
+          if (sessionData?.user) {
+            setSession(sessionData);
+          }
           if (sessionData?.user && isActive) {
-            navigate("/dashboard/stacks", { replace: true });
+            const requiresSecurityPhrase = Boolean(sessionData.user.requiresSecurityPhraseDownload);
+            navigate(requiresSecurityPhrase ? "/dashboard/security-phrase" : "/dashboard/stacks", { replace: true });
             return;
           }
         }
@@ -64,7 +70,7 @@ export function SignIn() {
       isActive = false;
       controller.abort();
     };
-  }, [navigate]);
+  }, [navigate, setSession]);
 
   const handleSubmit = useCallback(
     async (event) => {
@@ -108,7 +114,20 @@ export function SignIn() {
           return;
         }
 
-        navigate("/dashboard/stacks", { replace: true });
+        let sessionPayload = null;
+
+        if (payload?.user) {
+          setSession(payload);
+          sessionPayload = payload;
+        } else {
+          const refreshed = await refreshSession();
+          if (refreshed?.ok && refreshed?.data?.user) {
+            sessionPayload = refreshed.data;
+          }
+        }
+
+        const requiresSecurityPhrase = Boolean(sessionPayload?.user?.requiresSecurityPhraseDownload);
+        navigate(requiresSecurityPhrase ? "/dashboard/security-phrase" : "/dashboard/stacks", { replace: true });
       } catch (err) {
         console.error("⚠️ [Auth] Anmeldung fehlgeschlagen:", err);
         setError("Netzwerkfehler – bitte erneut versuchen.");
@@ -116,7 +135,7 @@ export function SignIn() {
         setLoading(false);
       }
     },
-    [identifier, password, loading, navigate]
+    [identifier, password, loading, navigate, refreshSession, setSession]
   );
 
   if (!statusChecked) {
@@ -190,6 +209,14 @@ export function SignIn() {
           <Button type="submit" className="mt-6" fullWidth disabled={loading}>
             {loading ? "Anmeldung läuft ..." : "Anmelden"}
           </Button>
+          <Typography
+            as="button"
+            type="button"
+            onClick={() => navigate("/auth/forgot-password")}
+            className="mt-4 text-sm font-medium text-blue-600 transition hover:text-blue-800"
+          >
+            Passwort vergessen?
+          </Typography>
         </form>
       </div>
       <div className="w-2/5 h-full hidden lg:block">

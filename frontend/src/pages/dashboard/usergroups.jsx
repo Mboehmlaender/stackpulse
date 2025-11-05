@@ -15,6 +15,7 @@ import {
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 export function Usergroups() {
   const [groups, setGroups] = useState([]);
@@ -31,6 +32,10 @@ export function Usergroups() {
   const { maintenance } = useMaintenance();
   const maintenanceActive = Boolean(maintenance?.active);
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+
+  const canEditGroups = hasPermission("user-groups-edit", "full");
+  const canDeleteGroups = hasPermission("user-groups-delete", "full");
 
   const {
     page,
@@ -188,6 +193,10 @@ export function Usergroups() {
     if (maintenanceActive) {
       return;
     }
+    if (!canEditGroups) {
+      setCreateGroupError("Du verfügst nicht über die Berechtigung zum Anlegen von Gruppen.");
+      return;
+    }
     const trimmedName = newGroupName.trim();
     if (!trimmedName) {
       setCreateGroupError("Gruppenname ist erforderlich.");
@@ -228,6 +237,7 @@ export function Usergroups() {
     }
   }, [
     maintenanceActive,
+    canEditGroups,
     newGroupName,
     newGroupDescription,
     showToast,
@@ -239,6 +249,10 @@ export function Usergroups() {
 
   const handleDeleteGroup = useCallback(async (group) => {
     if (maintenanceActive || !group?.id) {
+      return;
+    }
+
+    if (!canDeleteGroups) {
       return;
     }
 
@@ -308,7 +322,7 @@ export function Usergroups() {
     } finally {
       setDeletingGroupId(null);
     }
-  }, [maintenanceActive, showToast, fetchGroups]);
+  }, [maintenanceActive, canDeleteGroups, showToast, fetchGroups]);
 
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
@@ -327,43 +341,45 @@ export function Usergroups() {
           </Typography>
         </CardHeader>
         <CardBody className="pt-0">
-          <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
-            <Typography variant="h6" color="blue-gray" className="mb-2">
-              Neue Benutzergruppe anlegen
-            </Typography>
-            <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
-              Der Gruppenname ist Pflicht, die Beschreibung optional.
-            </Typography>
-            {createGroupError && (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                {createGroupError}
+          {canEditGroups && (
+            <div className="mb-8 rounded-lg border border-blue-gray-100 bg-white p-4 shadow-sm">
+              <Typography variant="h6" color="blue-gray" className="mb-2">
+                Neue Benutzergruppe anlegen
+              </Typography>
+              <Typography variant="small" className="text-sm text-stormGrey-500 mb-4">
+                Der Gruppenname ist Pflicht, die Beschreibung optional.
+              </Typography>
+              {createGroupError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                  {createGroupError}
+                </div>
+              )}
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input
+                  label="Gruppenname"
+                  value={newGroupName}
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                  disabled={createGroupDisabled}
+                  crossOrigin=""
+                />
+                <Input
+                  label="Beschreibung (optional)"
+                  value={newGroupDescription}
+                  onChange={(event) => setNewGroupDescription(event.target.value)}
+                  disabled={createGroupDisabled}
+                  crossOrigin=""
+                />
               </div>
-            )}
-            <div className="grid gap-4 md:grid-cols-2">
-              <Input
-                label="Gruppenname"
-                value={newGroupName}
-                onChange={(event) => setNewGroupName(event.target.value)}
-                disabled={createGroupDisabled}
-                crossOrigin=""
-              />
-              <Input
-                label="Beschreibung (optional)"
-                value={newGroupDescription}
-                onChange={(event) => setNewGroupDescription(event.target.value)}
-                disabled={createGroupDisabled}
-                crossOrigin=""
-              />
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <Button color="green" onClick={handleCreateGroup} disabled={createGroupDisabled}>
+                  {creatingGroup ? "Speichert ..." : "Gruppe anlegen"}
+                </Button>
+                <Button variant="text" color="blue-gray" onClick={resetNewGroupForm} disabled={creatingGroup}>
+                  Formular zurücksetzen
+                </Button>
+              </div>
             </div>
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Button color="green" onClick={handleCreateGroup} disabled={createGroupDisabled}>
-                {creatingGroup ? "Speichert ..." : "Gruppe anlegen"}
-              </Button>
-              <Button variant="text" color="blue-gray" onClick={resetNewGroupForm} disabled={creatingGroup}>
-                Formular zurücksetzen
-              </Button>
-            </div>
-          </div>
+          )}
 
           <div className="mb-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -475,24 +491,21 @@ export function Usergroups() {
                             >
                               Details
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="text"
-                              color="red"
-                              onClick={() => handleDeleteGroup(group)}
-                              disabled={
-                                maintenanceActive ||
-                                deletingGroupId === group.id ||
-                                Number(group.memberCount) > 0 ||
-                                isSuperuserGroup
-                              }
-                            >
-                              {isSuperuserGroup
-                                ? ""
-                                : deletingGroupId === group.id
-                                  ? "Löscht ..."
-                                  : "Löschen"}
-                            </Button>
+                            {canDeleteGroups && !isSuperuserGroup && (
+                              <Button
+                                size="sm"
+                                variant="text"
+                                color="red"
+                                onClick={() => handleDeleteGroup(group)}
+                                disabled={
+                                  maintenanceActive ||
+                                  deletingGroupId === group.id ||
+                                  Number(group.memberCount) > 0
+                                }
+                              >
+                                {deletingGroupId === group.id ? "Löscht ..." : "Löschen"}
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>

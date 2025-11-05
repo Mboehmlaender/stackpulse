@@ -17,6 +17,7 @@ import { useToast } from "@/components/ToastProvider.jsx";
 import { platformSettingsData } from "@/data";
 import { AVATAR_COLORS } from "@/data/avatarColors.js";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 const _ = AVATAR_COLORS.join(" ");
 
@@ -55,7 +56,8 @@ const mapUser = (item) => ({
     lastLogin: item?.lastLogin || null,
     createdAt: item?.createdAt || null,
     updatedAt: item?.updatedAt || null,
-    groups: normalizeUserGroups(item?.groups)
+    groups: normalizeUserGroups(item?.groups),
+    securityPhraseDownloadedAt: item?.securityPhraseDownloadedAt || null
 });
 
 const extractPrimaryGroupId = (user) => {
@@ -94,6 +96,7 @@ export function UserDetails() {
     const { userId } = useParams();
     const { showToast } = useToast();
     const { maintenance } = useMaintenance();
+    const { hasPermission, user: authUser } = useAuth();
 
     const [user, setUser] = useState(null);
     const [formValues, setFormValues] = useState(buildInitialFormValues(null));
@@ -106,8 +109,23 @@ export function UserDetails() {
     const [groupsError, setGroupsError] = useState("");
     const [savingUser, setSavingUser] = useState(false);
     const [saveError, setSaveError] = useState("");
+    const [securityPhraseWords, setSecurityPhraseWords] = useState([]);
+    const [securityPhraseDownloadedAt, setSecurityPhraseDownloadedAt] = useState(null);
+    const [securityPhraseLoading, setSecurityPhraseLoading] = useState(false);
+    const [securityPhraseError, setSecurityPhraseError] = useState("");
+    const [renewingSecurityPhrase, setRenewingSecurityPhrase] = useState(false);
 
     const maintenanceActive = Boolean(maintenance?.active);
+
+    const canEditUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "full"));
+    const canReadUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "read"));
+    const canViewSecurityPhrase = Boolean(authUser?.isSuperuser || hasPermission("users-security-phrase", "read"));
+    const canRenewSecurityPhrase = Boolean(authUser?.isSuperuser || hasPermission("users-security-phrase", "full"));
+
+    if (!canReadUsers) {
+        return null;
+    }
+
     const isSuperuserUser = useMemo(() => {
         if (!Array.isArray(user?.groups)) {
             return false;
@@ -140,6 +158,9 @@ export function UserDetails() {
                 throw new Error("USER_NOT_FOUND");
             }
             setUser(item);
+            setSecurityPhraseWords([]);
+            setSecurityPhraseDownloadedAt(item.securityPhraseDownloadedAt || null);
+            setSecurityPhraseError("");
             const initialValues = buildInitialFormValues(item);
             initialFormValuesRef.current = { ...initialValues };
             setFormValues(initialValues);
@@ -255,30 +276,34 @@ export function UserDetails() {
     );
 
     const handleUsernameChange = useCallback((event) => {
+        if (!canEditUsers) return;
         const { value } = event.target;
         setFormValues((prev) => ({
             ...prev,
             username: value
         }));
-    }, []);
+    }, [canEditUsers]);
 
     const handleEmailChange = useCallback((event) => {
+        if (!canEditUsers) return;
         const { value } = event.target;
         setFormValues((prev) => ({
             ...prev,
             email: value
         }));
-    }, []);
+    }, [canEditUsers]);
 
     const handlePasswordChange = useCallback((event) => {
+        if (!canEditUsers) return;
         const { value } = event.target;
         setFormValues((prev) => ({
             ...prev,
             password: value
         }));
-    }, []);
+    }, [canEditUsers]);
 
     const handleGroupChange = useCallback((value) => {
+        if (!canEditUsers) return;
         if (!value) {
             setFormValues((prev) => ({
                 ...prev,
@@ -291,17 +316,18 @@ export function UserDetails() {
             ...prev,
             groupId: Number.isFinite(numeric) && numeric > 0 ? numeric : null
         }));
-    }, []);
+    }, [canEditUsers]);
 
     const handleAvatarColorChange = useCallback((value) => {
+        if (!canEditUsers) return;
         setFormValues((prev) => ({
             ...prev,
             avatarColor: value || ""
         }));
-    }, []);
+    }, [canEditUsers]);
 
     const handleSaveUser = useCallback(async () => {
-        if (!user || !hasChanges) {
+        if (!canEditUsers || !user || !hasChanges) {
             return;
         }
 
@@ -364,7 +390,89 @@ export function UserDetails() {
         } finally {
             setSavingUser(false);
         }
-    }, [user, hasChanges, formValues, showToast, isSuperuserUser]);
+    }, [canEditUsers, user, hasChanges, formValues, showToast, isSuperuserUser]);
+
+    const fetchSecurityPhrase = useCallback(async () => {
+        if (!canViewSecurityPhrase || !numericUserId) {
+            return;
+        }
+
+        setSecurityPhraseLoading(true);
+        setSecurityPhraseError("");
+
+        try {
+            const response = await axios.get(`/api/users/${numericUserId}/security-phrase`);
+            const words = Array.isArray(response.data?.item?.words) ? response.data.item.words : [];
+            setSecurityPhraseWords(words);
+            setSecurityPhraseDownloadedAt(response.data?.item?.downloadedAt || null);
+        } catch (err) {
+            const serverError = err.response?.data?.error;
+            let message = "Sicherheitsschlüssel konnte nicht geladen werden.";
+
+            if (serverError === "USER_NOT_FOUND") {
+                message = "Der Benutzer wurde nicht gefunden.";
+            } else if (serverError === "INVALID_USER_ID") {
+                message = "Die Benutzer-ID ist ungültig.";
+            } else if (serverError === "INSUFFICIENT_PERMISSIONS") {
+                message = "Keine Berechtigung zum Anzeigen des Sicherheitsschlüssels.";
+            }
+
+            setSecurityPhraseError(message);
+            setSecurityPhraseWords([]);
+            setSecurityPhraseDownloadedAt(null);
+        } finally {
+            setSecurityPhraseLoading(false);
+        }
+    }, [canViewSecurityPhrase, numericUserId]);
+
+    const handleReloadSecurityPhrase = useCallback(() => {
+        if (securityPhraseLoading || renewingSecurityPhrase) {
+            return;
+        }
+        fetchSecurityPhrase();
+    }, [fetchSecurityPhrase, renewingSecurityPhrase, securityPhraseLoading]);
+
+    const handleRenewSecurityPhrase = useCallback(async () => {
+        if (!canRenewSecurityPhrase || !numericUserId || maintenanceActive || renewingSecurityPhrase) {
+            return;
+        }
+
+        setRenewingSecurityPhrase(true);
+        setSecurityPhraseError("");
+
+        try {
+            const response = await axios.post(`/api/users/${numericUserId}/security-phrase/renew`);
+            const words = Array.isArray(response.data?.item?.words) ? response.data.item.words : [];
+            setSecurityPhraseWords(words);
+            setSecurityPhraseDownloadedAt(response.data?.item?.downloadedAt || null);
+            showToast({
+                variant: "success",
+                title: "Sicherheitsschlüssel erneuert",
+                description: "Der Benutzer muss den neuen Schlüssel erneut herunterladen."
+            });
+        } catch (err) {
+            const serverError = err.response?.data?.error;
+            let message = "Der Sicherheitsschlüssel konnte nicht erneuert werden.";
+
+            if (serverError === "USER_NOT_FOUND") {
+                message = "Der Benutzer wurde nicht gefunden.";
+            } else if (serverError === "INVALID_USER_ID") {
+                message = "Die Benutzer-ID ist ungültig.";
+            } else if (serverError === "INSUFFICIENT_PERMISSIONS") {
+                message = "Keine Berechtigung zum Erneuern des Sicherheitsschlüssels.";
+            }
+
+            setSecurityPhraseError(message);
+        } finally {
+            setRenewingSecurityPhrase(false);
+        }
+    }, [
+        canRenewSecurityPhrase,
+        numericUserId,
+        maintenanceActive,
+        renewingSecurityPhrase,
+        showToast
+    ]);
 
     const avatarLabel = useMemo(() => {
         const source = (formValues.username || formValues.email || "").trim();
@@ -380,6 +488,37 @@ export function UserDetails() {
         }
         return user?.avatarColor || "";
     }, [formValues.avatarColor, user]);
+
+    const securityPhraseRows = useMemo(() => {
+        if (!Array.isArray(securityPhraseWords) || securityPhraseWords.length === 0) {
+            return [];
+        }
+        const rows = [];
+        for (let index = 0; index < securityPhraseWords.length; index += 4) {
+            rows.push(securityPhraseWords.slice(index, index + 4));
+        }
+        return rows;
+    }, [securityPhraseWords]);
+
+    const securityPhraseStatus = useMemo(() => {
+        if (!securityPhraseDownloadedAt) {
+            return {
+                text: "Noch nicht heruntergeladen",
+                tone: "text-red-500"
+            };
+        }
+        const date = new Date(securityPhraseDownloadedAt);
+        if (Number.isNaN(date.getTime())) {
+            return {
+                text: "Zuletzt heruntergeladen: unbekannt",
+                tone: "text-blue-gray-500"
+            };
+        }
+        return {
+            text: `Zuletzt heruntergeladen: ${date.toLocaleString("de-DE")}`,
+            tone: "text-blue-gray-500"
+        };
+    }, [securityPhraseDownloadedAt]);
 
     const filteredGroups = useMemo(() => {
         if (!Array.isArray(availableGroups)) {
@@ -402,9 +541,25 @@ export function UserDetails() {
         }
     }, [filteredGroups, formValues.groupId, isSuperuserUser]);
 
-    const selectDisabled = maintenanceActive || savingUser || !user || groupsLoading;
-    const avatarSelectDisabled = maintenanceActive || savingUser || !user;
-    const inputDisabled = maintenanceActive || savingUser || !user;
+    useEffect(() => {
+        if (!hasLoaded) {
+            return;
+        }
+
+        if (!canViewSecurityPhrase || !numericUserId) {
+            setSecurityPhraseWords([]);
+            setSecurityPhraseDownloadedAt(null);
+            setSecurityPhraseError("");
+            setSecurityPhraseLoading(false);
+            return;
+        }
+
+        fetchSecurityPhrase();
+    }, [hasLoaded, canViewSecurityPhrase, fetchSecurityPhrase, numericUserId]);
+
+    const inputDisabled = maintenanceActive || savingUser || !user || !canEditUsers;
+    const selectDisabled = maintenanceActive || savingUser || !user || groupsLoading || !canEditUsers || isSuperuserUser;
+    const avatarSelectDisabled = maintenanceActive || savingUser || !user || !canEditUsers;
     const groupSelectValue = formValues.groupId ? String(formValues.groupId) : "";
 
     return (
@@ -523,11 +678,6 @@ export function UserDetails() {
                                     <Typography className="mb-2 block text-xs font-semibold uppercase text-blue-gray-500">
                                         Globale Rolle
                                     </Typography>
-                                    {groupsError && !isSuperuserUser && (
-                                        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                                            {groupsError}
-                                        </div>
-                                    )}
                                     {isSuperuserUser ? (
                                         <Typography className="block text-xs font-semibold uppercase text-blue-gray-500">
                                             Die Rolle für den Superuser kann nicht geändert werden.
@@ -614,6 +764,99 @@ export function UserDetails() {
                                 </div>
                             </div>
                         </div>
+
+                        {canViewSecurityPhrase && (
+                            <div className="mt-10 border-t border-blue-gray-50 pt-8">
+                                <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+                                    <div>
+                                        <Typography variant="h6" color="blue-gray">
+                                            Sicherheitsschlüssel
+                                        </Typography>
+                                        <Typography className={`text-sm ${securityPhraseStatus.tone}`}>
+                                            {securityPhraseStatus.text}
+                                        </Typography>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        <Button
+                                            variant="outlined"
+                                            color="blue"
+                                            className="normal-case"
+                                            onClick={handleReloadSecurityPhrase}
+                                            disabled={
+                                                !canViewSecurityPhrase ||
+                                                securityPhraseLoading ||
+                                                renewingSecurityPhrase
+                                            }
+                                        >
+                                            Aktualisieren
+                                        </Button>
+                                        {canRenewSecurityPhrase && (
+                                            <Button
+                                                color="red"
+                                                className="normal-case"
+                                                onClick={handleRenewSecurityPhrase}
+                                                disabled={
+                                                    maintenanceActive ||
+                                                    securityPhraseLoading ||
+                                                    renewingSecurityPhrase
+                                                }
+                                            >
+                                                {renewingSecurityPhrase ? "Erneuert ..." : "Schlüssel erneuern"}
+                                            </Button>
+                                        )}
+                                    </div>
+                                </div>
+                                {securityPhraseLoading ? (
+                                    <div className="flex items-center gap-3 rounded-lg border border-blue-gray-50 bg-blue-gray-50/50 px-4 py-3 text-sm text-blue-gray-500">
+                                        <Spinner className="h-4 w-4" />
+                                        <span>Sicherheitsschlüssel wird geladen ...</span>
+                                    </div>
+                                ) : securityPhraseError ? (
+                                    <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                        <span>{securityPhraseError}</span>
+                                        <Button
+                                            variant="text"
+                                            size="sm"
+                                            color="red"
+                                            className="normal-case"
+                                            onClick={handleReloadSecurityPhrase}
+                                            disabled={securityPhraseLoading || renewingSecurityPhrase}
+                                        >
+                                            Erneut laden
+                                        </Button>
+                                    </div>
+                                ) : securityPhraseRows.length > 0 ? (
+                                    <div className="rounded-lg border border-blue-gray-100 bg-blue-gray-50/60 p-4">
+                                        <div className="space-y-2 text-center font-mono text-base tracking-wide text-blue-gray-900 md:text-lg">
+                                            {securityPhraseRows.map((row, rowIndex) => (
+                                                <div
+                                                    key={`security-phrase-row-${rowIndex}`}
+                                                    className="flex flex-wrap items-center justify-center gap-4"
+                                                >
+                                                    {row.map((word, wordIndex) => (
+                                                        <span
+                                                            key={`security-phrase-${rowIndex}-${wordIndex}`}
+                                                            className="uppercase"
+                                                        >
+                                                            {word}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <Typography className="text-sm text-blue-gray-500">
+                                        Kein Sicherheitsschlüssel verfügbar.
+                                    </Typography>
+                                )}
+                                {canRenewSecurityPhrase && (
+                                    <Typography className="mt-3 text-sm text-blue-gray-500">
+                                        Nach dem Erneuern muss der Benutzer den neuen Sicherheitsschlüssel erneut herunterladen.
+                                    </Typography>
+                                )}
+                            </div>
+                        )}
 
                     </CardBody>
                 </Card></div>

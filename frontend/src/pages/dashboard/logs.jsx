@@ -13,6 +13,7 @@ import {
 } from "@material-tailwind/react";
 import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 const UPDATE_STAGE_LABELS = {
   initializing: "Vorbereitung",
@@ -176,6 +177,9 @@ export function Logs() {
   const updateRunning = Boolean(updateState?.running);
   const maintenanceLocked = maintenanceActive || updateRunning;
   const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const { hasPermission } = useAuth();
+  const canDeleteLogs = hasPermission("logs-delete", "full");
+  const canExportLogs = hasPermission("logs-export", "full");
 
 
   const {
@@ -607,6 +611,10 @@ export function Logs() {
   ]);
 
   const handleDeleteLog = async (id) => {
+    if (!canDeleteLogs) {
+      setError("Dir fehlt die Berechtigung, einzelne Logeinträge zu löschen.");
+      return;
+    }
     if (!window.confirm("Diesen Log-Eintrag dauerhaft löschen?")) return;
     setActionLoading(true);
     setError("");
@@ -622,6 +630,10 @@ export function Logs() {
   };
 
   const handleDeleteFiltered = async () => {
+    if (!canDeleteLogs) {
+      setError("Dir fehlt die Berechtigung, Logs zu löschen.");
+      return;
+    }
     if (!logs.length) return;
     if (!window.confirm("Alle angezeigten Logs (entsprechend Filter) löschen?")) return;
     setActionLoading(true);
@@ -642,6 +654,10 @@ export function Logs() {
   };
 
   const handleExport = async (format) => {
+    if (!canExportLogs) {
+      setError("Dir fehlt die Berechtigung, Logs zu exportieren.");
+      return;
+    }
     setActionLoading(true);
     setError("");
     try {
@@ -716,23 +732,31 @@ export function Logs() {
           {filtersOpen && (
             <div className="mb-8">
 
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={() => handleExport('txt')}
-                  disabled={actionLoading || loading}
-                  className="w-full md:flex-1">
-                  Export TXT</Button>
-                <Button
-                  onClick={() => handleExport('sql')}
-                  disabled={actionLoading || loading}
-                  className="w-full md:flex-1">
-                  Export SQL</Button>
-                <Button
-                  onClick={handleDeleteFiltered}
-                  disabled={actionLoading || loading || logs.length === 0}
-                  className="w-full md:flex-1 bg-sunsetCoral-500 hover:bg-sunsetCoral-600">
-                  Angezeigte löschen</Button>
-              </div>
+              {(canExportLogs || canDeleteLogs) && (
+                <div className="flex flex-wrap gap-2">
+                  {canExportLogs && (
+                    <>
+                      <Button
+                        onClick={() => handleExport('txt')}
+                        disabled={actionLoading || loading}
+                        className="w-full md:flex-1">
+                        Export TXT</Button>
+                      <Button
+                        onClick={() => handleExport('sql')}
+                        disabled={actionLoading || loading}
+                        className="w-full md:flex-1">
+                        Export SQL</Button>
+                    </>
+                  )}
+                  {canDeleteLogs && (
+                    <Button
+                      onClick={handleDeleteFiltered}
+                      disabled={actionLoading || loading || logs.length === 0}
+                      className="w-full md:flex-1 bg-sunsetCoral-500 hover:bg-sunsetCoral-600">
+                      Angezeigte löschen</Button>
+                  )}
+                </div>
+              )}
 
               <div className="grid gap-6 mt-10">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -1270,15 +1294,17 @@ export function Logs() {
                           </div>
                         </td>
                         <td className="px-6 py-4 align-top">
-                          <Typography variant="small">
-                            <button
-                              onClick={() => handleDeleteLog(log.id)}
-                              disabled={actionLoading}
-                              className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60"
-                            >
-                              Löschen
-                            </button>
-                          </Typography>
+                          {canDeleteLogs && (
+                            <Typography variant="small">
+                              <button
+                                onClick={() => handleDeleteLog(log.id)}
+                                disabled={actionLoading}
+                                className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60"
+                              >
+                                Löschen
+                              </button>
+                            </Typography>
+                          )}
                         </td>
                       </tr>
                     );

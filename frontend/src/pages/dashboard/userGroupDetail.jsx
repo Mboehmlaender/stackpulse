@@ -10,11 +10,16 @@ import {
   Select,
   Option,
   Input,
-  Chip
+  Chip,
+  Radio,
+  List,
+  ListItem,
+  ListItemPrefix
 } from "@material-tailwind/react";
 
 import { useToast } from "@/components/ToastProvider.jsx";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 import { AVATAR_COLORS } from "@/data/avatarColors.js";
 
 const _ = AVATAR_COLORS.join(" ");
@@ -53,27 +58,147 @@ const buildInitialFormValues = (group) => {
   };
 };
 
+const LEVEL_OPTIONS = [
+  { value: "full", label: "Vollzugriff" },
+  { value: "read", label: "Nur lesen" },
+  { value: "none", label: "Kein Zugriff" }
+];
+
 export function UserGroupDetail() {
   const { groupId } = useParams();
   const { showToast } = useToast();
   const { maintenance } = useMaintenance();
+  const { hasPermission, user: authUser } = useAuth();
 
   const [group, setGroup] = useState(null);
   const [formValues, setFormValues] = useState(buildInitialFormValues(null));
   const initialFormValuesRef = useRef(buildInitialFormValues(null));
+  const [initialPermissionSelection, setInitialPermissionSelection] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [hasLoaded, setHasLoaded] = useState(false);
   const [savingGroup, setSavingGroup] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [permissionSections, setPermissionSections] = useState([]);
+  const [permissionSelection, setPermissionSelection] = useState({});
+  const [permissionDefaults, setPermissionDefaults] = useState({});
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionsError, setPermissionsError] = useState("");
 
   const maintenanceActive = Boolean(maintenance?.active);
   const isSuperuserGroup = useMemo(() => (group?.name || "").toLowerCase() === "superuser", [group]);
+  const isSuperuserAccount = Boolean(authUser?.isSuperuser);
+  const canEditGroupDetails = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "full"));
+  const canViewPermissionSettings = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "read"));
+  const canAdjustPermissions = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "full"));
 
   const numericGroupId = useMemo(() => {
     const candidate = Number(groupId);
     return Number.isFinite(candidate) ? candidate : null;
   }, [groupId]);
+
+  const fetchGroupPermissions = useCallback(
+    async (targetGroupId) => {
+      const numericTargetId = Number(targetGroupId);
+      if (!Number.isFinite(numericTargetId) || numericTargetId <= 0) {
+        setPermissionSections([]);
+        setPermissionSelection({});
+        setPermissionDefaults({});
+        setPermissionsError("");
+        setInitialPermissionSelection({});
+        setPermissionsLoading(false);
+        return;
+      }
+
+      setPermissionsLoading(true);
+      setPermissionsError("");
+
+      try {
+        const response = await axios.get(`/api/groups/${numericTargetId}/permissions`);
+        const rawSections = Array.isArray(response.data?.sections) ? response.data.sections : [];
+        const rawValues =
+          response.data?.values && typeof response.data.values === "object" ? response.data.values : {};
+
+        const defaults = {};
+        const initialSelection = {};
+
+        const normalizeItem = (item, index) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+          const defaultLevel =
+            typeof item.defaultLevel === "string" && item.defaultLevel ? item.defaultLevel : "none";
+          defaults[item.key] = defaultLevel;
+          const assigned = rawValues[item.key];
+          initialSelection[item.key] = typeof assigned === "string" && assigned ? assigned : defaultLevel;
+
+          const availableLevels =
+            Array.isArray(item.availableLevels) && item.availableLevels.length
+              ? item.availableLevels
+              : LEVEL_OPTIONS.map((option) => option.value);
+
+          const dependencies = Array.isArray(item.dependencies) ? item.dependencies : [];
+
+          return {
+            ...item,
+            availableLevels,
+            dependencies,
+            sortOrder: typeof item.sortOrder === "number" ? item.sortOrder : index
+          };
+        };
+
+        const normalizedSections = rawSections.map((section, sectionIndex) => {
+          const sectionItems = Array.isArray(section.items)
+            ? section.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
+            : [];
+
+          const sectionGroups = Array.isArray(section.groups)
+            ? section.groups.map((group, groupIdx) => {
+                const groupItems = Array.isArray(group.items)
+                  ? group.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
+                  : [];
+                return {
+                  ...group,
+                  sortOrder: typeof group.sortOrder === "number" ? group.sortOrder : groupIdx,
+                  items: groupItems
+                };
+              })
+            : [];
+
+          return {
+            ...section,
+            sortOrder: typeof section.sortOrder === "number" ? section.sortOrder : sectionIndex,
+            hasNavigation: Boolean(section.hasNavigation),
+            items: sectionItems,
+            groups: sectionGroups
+          };
+        });
+
+        setPermissionSections(normalizedSections);
+        setPermissionDefaults(defaults);
+        setPermissionSelection({ ...initialSelection });
+        setInitialPermissionSelection({ ...initialSelection });
+      } catch (err) {
+        let message = "Die Berechtigungen konnten nicht geladen werden.";
+        if (err.response?.data?.error === "GROUP_NOT_FOUND") {
+          message = "Die angeforderte Benutzergruppe wurde nicht gefunden.";
+        }
+        setPermissionsError(message);
+        setPermissionSections([]);
+        setPermissionSelection({});
+        setPermissionDefaults({});
+        setInitialPermissionSelection({});
+        showToast({
+          variant: "error",
+          title: "Fehler beim Laden",
+          description: message
+        });
+      } finally {
+        setPermissionsLoading(false);
+      }
+    },
+    [showToast]
+  );
 
   const fetchGroupDetails = useCallback(async () => {
     if (!numericGroupId) {
@@ -81,6 +206,10 @@ export function UserGroupDetail() {
       setGroup(null);
       setFormValues(buildInitialFormValues(null));
       initialFormValuesRef.current = buildInitialFormValues(null);
+      setPermissionSections([]);
+      setPermissionSelection({});
+      setPermissionDefaults({});
+      setPermissionsError("");
       setHasLoaded(true);
       return;
     }
@@ -99,6 +228,25 @@ export function UserGroupDetail() {
       initialFormValuesRef.current = { ...initialValues };
       setFormValues(initialValues);
       setSaveError("");
+
+      const superuserDetected = (item.name || "").toLowerCase() === "superuser";
+      if (superuserDetected) {
+        setPermissionSections([]);
+        setPermissionSelection({});
+        setPermissionDefaults({});
+        setPermissionsError("");
+        setInitialPermissionSelection({});
+        setPermissionsLoading(false);
+      } else if (canViewPermissionSettings) {
+        fetchGroupPermissions(item.id);
+      } else {
+        setPermissionSections([]);
+        setPermissionSelection({});
+        setPermissionDefaults({});
+        setPermissionsError("");
+        setInitialPermissionSelection({});
+        setPermissionsLoading(false);
+      }
     } catch (err) {
       const serverError = err.response?.data?.error;
       let message = "Gruppendetails konnten nicht geladen werden.";
@@ -114,6 +262,11 @@ export function UserGroupDetail() {
       setGroup(null);
       initialFormValuesRef.current = buildInitialFormValues(null);
       setFormValues(buildInitialFormValues(null));
+      setPermissionSections([]);
+      setPermissionSelection({});
+      setPermissionDefaults({});
+      setPermissionsError("");
+      setPermissionsLoading(false);
       setError(message);
       showToast({
         variant: "error",
@@ -124,13 +277,13 @@ export function UserGroupDetail() {
       setLoading(false);
       setHasLoaded(true);
     }
-  }, [numericGroupId, showToast]);
+  }, [numericGroupId, showToast, fetchGroupPermissions, canViewPermissionSettings]);
 
   useEffect(() => {
     fetchGroupDetails();
   }, [fetchGroupDetails]);
 
-  const hasChanges = useMemo(() => {
+  const detailsChanged = useMemo(() => {
     if (!hasLoaded || !group) {
       return false;
     }
@@ -156,6 +309,28 @@ export function UserGroupDetail() {
     );
   }, [formValues, hasLoaded, group]);
 
+  const permissionsChanged = useMemo(() => {
+    if (isSuperuserGroup) {
+      return false;
+    }
+    const initial = initialPermissionSelection || {};
+    const current = permissionSelection || {};
+    const allKeys = new Set([...Object.keys(initial), ...Object.keys(current)]);
+    for (const key of allKeys) {
+      const initialValue = initial[key] ?? null;
+      const currentValue = current[key] ?? null;
+      if (initialValue !== currentValue) {
+        return true;
+      }
+    }
+    return false;
+  }, [permissionSelection, initialPermissionSelection, isSuperuserGroup]);
+
+  const hasChanges = useMemo(
+    () => detailsChanged || permissionsChanged,
+    [detailsChanged, permissionsChanged]
+  );
+
   const handleNameChange = useCallback((event) => {
     const { value } = event.target;
     setFormValues((prev) => ({
@@ -180,7 +355,21 @@ export function UserGroupDetail() {
   }, []);
 
   const handleSaveGroup = useCallback(async () => {
-    if (!group || !hasChanges) {
+    if (!group || (!detailsChanged && !permissionsChanged)) {
+      return;
+    }
+
+    if (permissionsChanged && isSuperuserGroup) {
+      return;
+    }
+
+    if (detailsChanged && !canEditGroupDetails) {
+      setSaveError("Dir fehlt die Berechtigung, diese Gruppe zu bearbeiten.");
+      return;
+    }
+
+    if (permissionsChanged && !canAdjustPermissions) {
+      setSaveError("Dir fehlt die Berechtigung, die Gruppenrechte anzupassen.");
       return;
     }
 
@@ -188,29 +377,51 @@ export function UserGroupDetail() {
     setSaveError("");
 
     try {
-      const payload = {
-        avatarColor: formValues.avatarColor
-      };
+      if (detailsChanged) {
+        const payload = {
+          avatarColor: formValues.avatarColor
+        };
 
-      if (!isSuperuserGroup) {
-        payload.name = formValues.name;
-        payload.description = formValues.description;
+        if (!isSuperuserGroup) {
+          payload.name = formValues.name;
+          payload.description = formValues.description;
+        }
+
+        const response = await axios.put(`/api/groups/${group.id}`, payload);
+        const updated = mapGroup(response.data?.item || response.data?.group);
+        if (updated?.id) {
+          setGroup(updated);
+          const nextInitial = buildInitialFormValues(updated);
+          initialFormValuesRef.current = { ...nextInitial };
+          setFormValues(nextInitial);
+        }
       }
 
-      const response = await axios.put(`/api/groups/${group.id}`, payload);
-      const updated = mapGroup(response.data?.item || response.data?.group);
-      setGroup(updated);
-      const nextInitial = buildInitialFormValues(updated);
-      initialFormValuesRef.current = { ...nextInitial };
-      setFormValues(nextInitial);
-      showToast({
-        variant: "success",
-        title: "Gruppe gespeichert",
-        description: "Die Änderungen wurden erfolgreich gespeichert."
-      });
+      if (permissionsChanged && !isSuperuserGroup) {
+        await axios.put(`/api/groups/${group.id}/permissions`, {
+          values: permissionSelection
+        });
+        setInitialPermissionSelection({ ...permissionSelection });
+      }
+
+      if (detailsChanged) {
+        showToast({
+          variant: "success",
+          title: "Gruppe gespeichert",
+          description: "Die Änderungen wurden erfolgreich gespeichert."
+        });
+      } else if (permissionsChanged) {
+        showToast({
+          variant: "success",
+          title: "Berechtigungen gespeichert",
+          description: "Die Berechtigungen wurden erfolgreich gespeichert."
+        });
+      }
+
+      setSaveError("");
     } catch (err) {
       const serverError = err.response?.data?.error;
-      let message = "Die Gruppe konnte nicht gespeichert werden.";
+      let message = "Die Änderungen konnten nicht gespeichert werden.";
 
       if (serverError === "GROUP_NAME_REQUIRED") {
         message = "Bitte einen Gruppennamen angeben.";
@@ -221,7 +432,13 @@ export function UserGroupDetail() {
       } else if (serverError === "GROUP_NOT_FOUND") {
         message = "Die Benutzergruppe wurde nicht gefunden.";
       } else if (serverError === "GROUP_SUPERUSER_PROTECTED") {
-        message = "Für die Superuser-Gruppe kann nur die Avatar-Farbe angepasst werden.";
+        message = "Für die Superuser-Gruppe können Berechtigungen nicht angepasst werden.";
+      } else if (serverError === "PERMISSION_INVALID_PAYLOAD") {
+        message = "Ungültige Berechtigungsdaten übermittelt.";
+      } else if (serverError === "PERMISSION_INVALID_LEVEL") {
+        message = "Für mindestens eine Berechtigung wurde ein nicht erlaubter Wert übermittelt.";
+      } else if (serverError === "PERMISSION_UNKNOWN_KEY") {
+        message = "Es wurde eine unbekannte Berechtigung übermittelt.";
       }
 
       setSaveError(message);
@@ -233,7 +450,17 @@ export function UserGroupDetail() {
     } finally {
       setSavingGroup(false);
     }
-  }, [group, hasChanges, formValues, showToast, isSuperuserGroup]);
+  }, [
+    group,
+    detailsChanged,
+    permissionsChanged,
+    formValues,
+    showToast,
+    isSuperuserGroup,
+    permissionSelection,
+    canEditGroupDetails,
+    canAdjustPermissions
+  ]);
 
   const avatarLabel = useMemo(() => {
     const source = (formValues.name || formValues.description || "").trim();
@@ -250,9 +477,167 @@ export function UserGroupDetail() {
     return group?.avatarColor || "";
   }, [formValues.avatarColor, group]);
 
-  const selectDisabled = maintenanceActive || savingGroup || !group;
-  const inputDisabled = maintenanceActive || savingGroup || !group || isSuperuserGroup;
+  const inputDisabled = maintenanceActive || savingGroup || !group || isSuperuserGroup || !canEditGroupDetails;
+  const selectDisabled = maintenanceActive || savingGroup || !group || !canEditGroupDetails;
   const selectValue = formValues.avatarColor || "";
+
+  const handlePermissionChange = useCallback((permissionKey, value) => {
+    if (!permissionKey || !canAdjustPermissions || isSuperuserGroup) {
+      return;
+    }
+    setPermissionSelection((prev) => {
+      if (prev[permissionKey] === value) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [permissionKey]: value
+      };
+    });
+  }, [canAdjustPermissions, isSuperuserGroup]);
+
+  const getPermissionValue = useCallback(
+    (permissionKey) => {
+      if (!permissionKey) {
+        return null;
+      }
+      if (Object.prototype.hasOwnProperty.call(permissionSelection, permissionKey)) {
+        return permissionSelection[permissionKey];
+      }
+      if (Object.prototype.hasOwnProperty.call(permissionDefaults, permissionKey)) {
+        return permissionDefaults[permissionKey];
+      }
+      return null;
+    },
+    [permissionSelection, permissionDefaults]
+  );
+
+  const radioIcon = useMemo(
+    () => (
+      <span className="mx-auto block h-2.5 w-2.5 rounded-full border border-blue-gray-400 bg-black" />
+    ),
+    []
+  );
+  const radioCheckedIcon = useMemo(
+    () => (
+      <span className="mx-auto block h-2.5 w-2.5 rounded-full border border-blue-gray-700 bg-gray-900" />
+    ),
+    []
+  );
+
+  const isPermissionRowVisible = useCallback(
+    (row) => {
+      if (!row || !row.key) {
+        return false;
+      }
+      const dependencies = Array.isArray(row.dependencies) ? row.dependencies : [];
+      return dependencies.every((dependency) => {
+        if (!dependency || !dependency.key) {
+          return true;
+        }
+        const value = getPermissionValue(dependency.key) ?? "none";
+        const requirement = dependency.requiredLevel || "!=none";
+
+        if (requirement === "!=none") {
+          return value !== "none";
+        }
+        if (requirement.startsWith("!=")) {
+          return value !== requirement.substring(2);
+        }
+        if (requirement.startsWith("=")) {
+          return value === requirement.substring(1);
+        }
+        if (!requirement) {
+          return true;
+        }
+        return value === requirement;
+      });
+    },
+    [getPermissionValue]
+  );
+
+  const renderPermissionRow = (row, ownerKey, options = {}) => {
+    if (!isPermissionRowVisible(row)) {
+      return null;
+    }
+
+    const rowName = `permission-${ownerKey}-${row.key}`;
+    const currentValue = getPermissionValue(row.key) ?? "none";
+    const { addTopBorder = true } = options;
+
+    const rowClasses = [
+      "flex flex-col gap-2.5 px-4 py-4 md:flex-row md:items-center md:gap-6",
+      addTopBorder ? "border-t border-blue-gray-100" : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const availableLevels = new Set(
+      Array.isArray(row.availableLevels) && row.availableLevels.length
+        ? row.availableLevels
+        : LEVEL_OPTIONS.map((option) => option.value)
+    );
+
+    return (
+      <div key={`${ownerKey}-${row.key}`} className={rowClasses}>
+        <div className="text-sm font-medium leading-5 text-blue-gray-600 md:w-1/2">
+          {row.label}
+        </div>
+        <List className="flex-col gap-1.5 md:ml-auto md:flex-row md:flex-nowrap md:w-1/2 md:items-center md:justify-end md:gap-3">
+          {LEVEL_OPTIONS.map((option) => {
+            const optionId = `${rowName}-${option.value}`;
+            const checked = currentValue === option.value;
+            const disabled =
+              !availableLevels.has(option.value) ||
+              permissionsLoading ||
+              savingGroup ||
+              !canAdjustPermissions ||
+              isSuperuserGroup;
+
+            return (
+              <ListItem
+                key={`${ownerKey}-${row.key}-${option.value}`}
+                className="w-full min-w-[140px] p-0 md:w-auto md:flex-1"
+              >
+                <label
+                  htmlFor={optionId}
+                  className={`inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 min-h-[38px] ${
+                    disabled ? "cursor-not-allowed bg-blue-gray-50/40" : "cursor-pointer hover:bg-blue-gray-50/60"
+                  }`}
+                >
+                  <ListItemPrefix className="flex-shrink-0">
+                    <Radio
+                      id={optionId}
+                      name={rowName}
+                      value={option.value}
+                      checked={checked}
+                      onChange={() => handlePermissionChange(row.key, option.value)}
+                      disabled={disabled}
+                      ripple={false}
+                      className="h-4 w-4 hover:before:opacity-0"
+                      containerProps={{
+                        className: "p-0"
+                      }}
+                      icon={radioIcon}
+                      checkedIcon={radioCheckedIcon}
+                    />
+                  </ListItemPrefix>
+                  <Typography
+                    color="blue-gray"
+                    className={`text-sm font-medium leading-5 whitespace-nowrap ${
+                      disabled ? "text-blue-gray-300" : "text-blue-gray-600"
+                    }`}
+                  >
+                    {option.label}
+                  </Typography>
+                </label>
+              </ListItem>
+            );
+          })}
+        </List>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -415,11 +800,90 @@ export function UserGroupDetail() {
                   <p>Mitglieder insgesamt: {group?.memberCount ?? 0}</p>
                 </div>
               </div>
+              <div className="lg:col-span-2 xl:col-span-3">
+                <Typography variant="h6" color="blue-gray" className="mb-4">
+                  Berechtigungen (Ansicht)
+                </Typography>
+                {isSuperuserGroup ? (
+                  <div className="rounded-xl border border-blue-gray-100 bg-white px-4 py-4 text-sm text-blue-gray-600 shadow-sm">
+                    Die Superuser-Gruppe besitzt automatisch Vollzugriff auf alle Bereiche. Berechtigungen können hier nicht angepasst werden.
+                  </div>
+                ) : !canViewPermissionSettings ? null : (
+                  <div className="rounded-xl border border-blue-gray-100 bg-white shadow-sm">
+                    {permissionsLoading && (
+                      <div className="border-b border-blue-gray-100 px-4 py-4">
+                        <div className="flex items-center gap-3 text-sm text-blue-gray-500">
+                          <Spinner className="h-4 w-4" />
+                          <span>Berechtigungen werden geladen ...</span>
+                        </div>
+                      </div>
+                    )}
+                    {!permissionsLoading && permissionsError && (
+                      <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-red-700">
+                        {permissionsError}
+                      </div>
+                    )}
+                    {!permissionsLoading && !permissionsError &&
+                      (permissionSections.length === 0 ? (
+                        <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-blue-gray-500">
+                          Für diese Gruppe sind keine Berechtigungen definiert.
+                        </div>
+                      ) : (
+                        permissionSections.map((section, sectionIndex) => {
+                          const sectionItems = Array.isArray(section.items) ? section.items : [];
+                          const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
+
+                          return (
+                            <div
+                              key={section.key || sectionIndex}
+                              className={sectionIndex === 0 ? "" : "border-t border-blue-gray-100"}
+                            >
+                              <div className="border-b border-blue-gray-100 px-4 py-4">
+                                <Typography variant="h6" className="text-lg font-semibold text-blue-gray-700">
+                                  {section.title}
+                                </Typography>
+                              </div>
+                              {sectionItems.map((row, rowIndex) =>
+                                renderPermissionRow(row, section.key || sectionIndex, {
+                                  addTopBorder: rowIndex !== 0
+                                })
+                              )}
+                              {sectionGroups.map((group, groupIdx) => {
+                                const groupItems = Array.isArray(group.items) ? group.items : [];
+                                const hasVisibleRows = groupItems.some(isPermissionRowVisible);
+
+                                if (!hasVisibleRows) {
+                                  return null;
+                                }
+
+                                return (
+                                  <div key={group.key || `${section.key || sectionIndex}-${groupIdx}`} className="border-t border-blue-gray-100">
+                                    <div className="border-b border-blue-gray-100 px-4 py-3">
+                                      <Typography className="text-sm font-semibold uppercase tracking-wide text-blue-gray-600">
+                                        {group.title}
+                                      </Typography>
+                                    </div>
+                                    {groupItems.map((row, rowIndex) =>
+                                      renderPermissionRow(row, group.key || `${section.key || sectionIndex}-${groupIdx}`, {
+                                        addTopBorder: rowIndex !== 0
+                                      })
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })
+                      ))}
+                  </div>
+                )}
+              </div>
             </div>
           </CardBody>
-        </Card></div>
-      </>
-      );
+        </Card>
+      </div>
+    </>
+  );
 }
 
-      export default UserGroupDetail;
+export default UserGroupDetail;
