@@ -11,6 +11,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
+import { ensureDatabaseSchema } from './db/schemaEnsure.js';
 import {
   ensureSuperuserFromEnv,
   getSuperuserSummary,
@@ -73,6 +74,7 @@ import {
 
 dotenv.config();
 
+ensureDatabaseSchema();
 ensureSuperuserFromEnv();
 ensureDefaultsFromEnv();
 

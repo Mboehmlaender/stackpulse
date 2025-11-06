@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "🔧 Starte Migration (idempotent)..."
-node db/migrate.js
+echo "🔧 Überprüfe Datenbankschema..."
+node db/ensure.js
 
-echo "✅ Migration abgeschlossen. Starte Anwendung..."
+echo "✅ Schema-Abgleich abgeschlossen. Starte Anwendung..."
 exec "$@"
