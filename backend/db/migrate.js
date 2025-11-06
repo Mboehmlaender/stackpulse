@@ -645,7 +645,7 @@ const seedPermissions = () => {
           label: 'Sicherheitsschlüssel',
           sortOrder: 3,
           defaultLevel: 'none',
-          levels: ['full', 'read', 'none'],
+          levels: ['full', 'none'],
           isRequired: 0,
           dependencies: [
             {

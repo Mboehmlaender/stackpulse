@@ -126,16 +126,24 @@ export function UserGroupDetail() {
           if (!item || typeof item !== "object") {
             return null;
           }
+
+          const key = item.key || "";
           const defaultLevel =
             typeof item.defaultLevel === "string" && item.defaultLevel ? item.defaultLevel : "none";
-          defaults[item.key] = defaultLevel;
-          const assigned = rawValues[item.key];
-          initialSelection[item.key] = typeof assigned === "string" && assigned ? assigned : defaultLevel;
+          defaults[key] = defaultLevel;
+
+          const assigned = rawValues[key];
+          let normalizedAssigned =
+            typeof assigned === "string" && assigned ? assigned : defaultLevel;
 
           const availableLevels =
             Array.isArray(item.availableLevels) && item.availableLevels.length
               ? item.availableLevels
               : LEVEL_OPTIONS.map((option) => option.value);
+          if (!availableLevels.includes(normalizedAssigned)) {
+            normalizedAssigned = defaultLevel;
+          }
+          initialSelection[key] = normalizedAssigned;
 
           const dependencies = Array.isArray(item.dependencies) ? item.dependencies : [];
 
@@ -359,10 +367,6 @@ export function UserGroupDetail() {
       return;
     }
 
-    if (permissionsChanged && isSuperuserGroup) {
-      return;
-    }
-
     if (detailsChanged && !canEditGroupDetails) {
       setSaveError("Dir fehlt die Berechtigung, diese Gruppe zu bearbeiten.");
       return;
@@ -397,10 +401,14 @@ export function UserGroupDetail() {
         }
       }
 
-      if (permissionsChanged && !isSuperuserGroup) {
+      if (permissionsChanged) {
         await axios.put(`/api/groups/${group.id}/permissions`, {
           values: permissionSelection
         });
+        setPermissionSelection((prev) => ({
+          ...prev,
+          ...permissionSelection
+        }));
         setInitialPermissionSelection({ ...permissionSelection });
       }
 
@@ -577,6 +585,7 @@ export function UserGroupDetail() {
         ? row.availableLevels
         : LEVEL_OPTIONS.map((option) => option.value)
     );
+    const levelOptions = LEVEL_OPTIONS;
 
     return (
       <div key={`${ownerKey}-${row.key}`} className={rowClasses}>
@@ -584,7 +593,7 @@ export function UserGroupDetail() {
           {row.label}
         </div>
         <List className="flex-col gap-1.5 md:ml-auto md:flex-row md:flex-nowrap md:w-1/2 md:items-center md:justify-end md:gap-3">
-          {LEVEL_OPTIONS.map((option) => {
+          {levelOptions.map((option) => {
             const optionId = `${rowName}-${option.value}`;
             const checked = currentValue === option.value;
             const disabled =

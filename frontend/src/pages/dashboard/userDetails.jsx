@@ -119,8 +119,8 @@ export function UserDetails() {
 
     const canEditUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "full"));
     const canReadUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "read"));
-    const canViewSecurityPhrase = Boolean(authUser?.isSuperuser || hasPermission("users-security-phrase", "read"));
-    const canRenewSecurityPhrase = Boolean(authUser?.isSuperuser || hasPermission("users-security-phrase", "full"));
+    const canManageSecurityPhrase = Boolean(authUser?.isSuperuser || hasPermission("users-security-phrase", "full"));
+    const canRenewSecurityPhrase = canManageSecurityPhrase;
 
     if (!canReadUsers) {
         return null;
@@ -393,7 +393,7 @@ export function UserDetails() {
     }, [canEditUsers, user, hasChanges, formValues, showToast, isSuperuserUser]);
 
     const fetchSecurityPhrase = useCallback(async () => {
-        if (!canViewSecurityPhrase || !numericUserId) {
+        if (!canManageSecurityPhrase || !numericUserId) {
             return;
         }
 
@@ -423,14 +423,17 @@ export function UserDetails() {
         } finally {
             setSecurityPhraseLoading(false);
         }
-    }, [canViewSecurityPhrase, numericUserId]);
+    }, [canManageSecurityPhrase, numericUserId]);
 
     const handleReloadSecurityPhrase = useCallback(() => {
+        if (!canRenewSecurityPhrase) {
+            return;
+        }
         if (securityPhraseLoading || renewingSecurityPhrase) {
             return;
         }
         fetchSecurityPhrase();
-    }, [fetchSecurityPhrase, renewingSecurityPhrase, securityPhraseLoading]);
+    }, [canRenewSecurityPhrase, fetchSecurityPhrase, renewingSecurityPhrase, securityPhraseLoading]);
 
     const handleRenewSecurityPhrase = useCallback(async () => {
         if (!canRenewSecurityPhrase || !numericUserId || maintenanceActive || renewingSecurityPhrase) {
@@ -546,7 +549,7 @@ export function UserDetails() {
             return;
         }
 
-        if (!canViewSecurityPhrase || !numericUserId) {
+        if (!canManageSecurityPhrase || !numericUserId) {
             setSecurityPhraseWords([]);
             setSecurityPhraseDownloadedAt(null);
             setSecurityPhraseError("");
@@ -555,7 +558,7 @@ export function UserDetails() {
         }
 
         fetchSecurityPhrase();
-    }, [hasLoaded, canViewSecurityPhrase, fetchSecurityPhrase, numericUserId]);
+    }, [hasLoaded, canManageSecurityPhrase, fetchSecurityPhrase, numericUserId]);
 
     const inputDisabled = maintenanceActive || savingUser || !user || !canEditUsers;
     const selectDisabled = maintenanceActive || savingUser || !user || groupsLoading || !canEditUsers || isSuperuserUser;
@@ -765,7 +768,7 @@ export function UserDetails() {
                             </div>
                         </div>
 
-                        {canViewSecurityPhrase && (
+                        {canManageSecurityPhrase && (
                             <div className="mt-10 border-t border-blue-gray-50 pt-8">
                                 <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
                                     <div>
@@ -783,27 +786,26 @@ export function UserDetails() {
                                             className="normal-case"
                                             onClick={handleReloadSecurityPhrase}
                                             disabled={
-                                                !canViewSecurityPhrase ||
+                                                !canRenewSecurityPhrase ||
                                                 securityPhraseLoading ||
                                                 renewingSecurityPhrase
                                             }
                                         >
                                             Aktualisieren
                                         </Button>
-                                        {canRenewSecurityPhrase && (
-                                            <Button
-                                                color="red"
-                                                className="normal-case"
-                                                onClick={handleRenewSecurityPhrase}
-                                                disabled={
-                                                    maintenanceActive ||
-                                                    securityPhraseLoading ||
-                                                    renewingSecurityPhrase
-                                                }
-                                            >
-                                                {renewingSecurityPhrase ? "Erneuert ..." : "Schlüssel erneuern"}
-                                            </Button>
-                                        )}
+                                        <Button
+                                            color="red"
+                                            className="normal-case"
+                                            onClick={handleRenewSecurityPhrase}
+                                            disabled={
+                                                !canRenewSecurityPhrase ||
+                                                maintenanceActive ||
+                                                securityPhraseLoading ||
+                                                renewingSecurityPhrase
+                                            }
+                                        >
+                                            {renewingSecurityPhrase ? "Erneuert ..." : "Schlüssel erneuern"}
+                                        </Button>
                                     </div>
                                 </div>
                                 {securityPhraseLoading ? (
@@ -820,7 +822,11 @@ export function UserDetails() {
                                             color="red"
                                             className="normal-case"
                                             onClick={handleReloadSecurityPhrase}
-                                            disabled={securityPhraseLoading || renewingSecurityPhrase}
+                                            disabled={
+                                                !canRenewSecurityPhrase ||
+                                                securityPhraseLoading ||
+                                                renewingSecurityPhrase
+                                            }
                                         >
                                             Erneut laden
                                         </Button>
@@ -850,11 +856,9 @@ export function UserDetails() {
                                         Kein Sicherheitsschlüssel verfügbar.
                                     </Typography>
                                 )}
-                                {canRenewSecurityPhrase && (
-                                    <Typography className="mt-3 text-sm text-blue-gray-500">
-                                        Nach dem Erneuern muss der Benutzer den neuen Sicherheitsschlüssel erneut herunterladen.
-                                    </Typography>
-                                )}
+                                <Typography className="mt-3 text-sm text-blue-gray-500">
+                                    Nach dem Erneuern muss der Benutzer den neuen Sicherheitsschlüssel erneut herunterladen.
+                                </Typography>
                             </div>
                         )}
 
