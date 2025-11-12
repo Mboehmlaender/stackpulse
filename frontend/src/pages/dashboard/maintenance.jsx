@@ -10,7 +10,8 @@ import {
   CardBody,
   Button,
   Switch,
-  Input
+  Input,
+  Alert
 } from "@material-tailwind/react";
 
 const UPDATE_STATUS_LABELS = {
@@ -128,9 +129,9 @@ export function Maintenance() {
     testSshConnection,
     fetchSuperuserStatus,
     fetchSetupStatus,
-    deleteSetupEndpoint,
     deleteSetupServer,
     updateSetupApiKey,
+    updateSelfStackId,
     removeSuperuserAccount
   } = useMaintenance();
 
@@ -140,6 +141,7 @@ export function Maintenance() {
   const canViewServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-manage", "read"));
   const canEditServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-manage", "full"));
   const canDeleteServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-delete", "full"));
+  const canDeleteSuperuser = Boolean(isSuperuserAccount || hasPermission("maintenance-superuser-delete", "full"));
   const canViewPortainer = Boolean(isSuperuserAccount || hasPermission("maintenance-portainer", "read"));
   const canManagePortainerUpdate = Boolean(isSuperuserAccount || hasPermission("maintenance-update", "full"));
   const canViewSsh = Boolean(isSuperuserAccount || hasPermission("maintenance-ssh-update", "read"));
@@ -151,6 +153,7 @@ export function Maintenance() {
   const maintenanceMessage = maintenanceMeta?.message;
   const maintenanceExtraType = maintenanceMeta?.extra?.type;
   const updateRunning = Boolean(updateState?.running);
+  const maintenanceLocked = maintenanceActive || updateRunning;
 
   const [scriptDraft, setScriptDraft] = useState("");
   const [scriptSaving, setScriptSaving] = useState(false);
@@ -214,7 +217,9 @@ export function Maintenance() {
   const [apiKeyDrafts, setApiKeyDrafts] = useState({});
   const [apiKeyUpdatingId, setApiKeyUpdatingId] = useState(null);
   const [serverDeleteId, setServerDeleteId] = useState(null);
-  const [endpointDeleteId, setEndpointDeleteId] = useState(null);
+  const [selfStackDraft, setSelfStackDraft] = useState("");
+  const [selfStackSaving, setSelfStackSaving] = useState(false);
+  const [selfStackError, setSelfStackError] = useState("");
 
   const [duplicates, setDuplicates] = useState([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(true);
@@ -381,12 +386,21 @@ export function Maintenance() {
   }, [fetchDuplicates]);
 
   const setupServers = useMemo(() => setupResources?.servers?.items ?? [], [setupResources]);
-  const setupEndpoints = useMemo(() => setupResources?.endpoints?.items ?? [], [setupResources]);
   const apiKeyInfoMap = useMemo(() => {
     const items = setupResources?.apiKeys?.items ?? [];
     return new Map(items.map((entry) => [entry.serverId, entry]));
   }, [setupResources]);
   const setupComplete = useMemo(() => Boolean(setupResources?.setupComplete), [setupResources]);
+  const selfStackInfo = setupResources?.selfStack ?? null;
+  const currentSelfStackValue = selfStackInfo?.current ?? "";
+  const envSelfStackValue = setupResources?.envDefaults?.selfStackId ?? "";
+
+  useEffect(() => {
+    setSelfStackDraft(currentSelfStackValue || "");
+    setSelfStackError("");
+  }, [currentSelfStackValue]);
+
+  const selfStackDirty = selfStackDraft !== currentSelfStackValue;
 
   const totals = useMemo(() => {
     const groups = Array.isArray(duplicates) ? duplicates.length : 0;
@@ -525,7 +539,7 @@ export function Maintenance() {
   }, [canManageSsh, deleteSshConfig, showToast]);
 
   const handleSuperuserDelete = useCallback(async () => {
-    if (superuserDeleteLoading || superuserStatusLoading || !superuserExists) {
+    if (!canDeleteSuperuser || superuserDeleteLoading || superuserStatusLoading || !superuserExists) {
       return;
     }
 
@@ -566,48 +580,7 @@ export function Maintenance() {
     } finally {
       setSuperuserDeleteLoading(false);
     }
-  }, [superuserDeleteLoading, superuserStatusLoading, superuserExists, removeSuperuserAccount, loadSuperuserStatus, showToast]);
-
-  const handleDeleteEndpoint = useCallback(async (endpointId) => {
-    if (!canDeleteServers) {
-      return;
-    }
-    if (endpointDeleteId === endpointId) {
-      return;
-    }
-    const target = setupEndpoints.find((entry) => entry.id === endpointId);
-    if (!target) {
-      return;
-    }
-    const label = target.name || `Endpoint ${target.external_id}`;
-    const confirmMessage = `Endpoint "${label}" wirklich löschen?${target.is_default ? "\nDieser Endpoint ist aktuell als Standard markiert." : ""}`;
-    if (typeof window !== "undefined") {
-      const confirmed = window.confirm(confirmMessage);
-      if (!confirmed) {
-        return;
-      }
-    }
-
-    setEndpointDeleteId(endpointId);
-    try {
-      await deleteSetupEndpoint(endpointId);
-      showToast({
-        variant: "success",
-        title: "Endpoint gelöscht",
-        description: `Endpoint "${label}" wurde entfernt.`
-      });
-      await loadSetupResources({ silent: true });
-    } catch (err) {
-      const message = err.response?.data?.error || err.message || "Endpoint konnte nicht gelöscht werden.";
-      showToast({
-        variant: "error",
-        title: "Endpoint löschen fehlgeschlagen",
-        description: message
-      });
-    } finally {
-      setEndpointDeleteId(null);
-    }
-  }, [canDeleteServers, deleteSetupEndpoint, endpointDeleteId, loadSetupResources, setupEndpoints, showToast]);
+  }, [canDeleteSuperuser, superuserDeleteLoading, superuserStatusLoading, superuserExists, removeSuperuserAccount, loadSuperuserStatus, showToast]);
 
   const handleDeleteServer = useCallback(async (serverId) => {
     if (!canDeleteServers) {
@@ -620,12 +593,10 @@ export function Maintenance() {
     if (!target) {
       return;
     }
-    const linkedEndpoints = setupEndpoints.filter((entry) => entry.server_id === serverId);
     const label = target.name || target.url || `Server ${serverId}`;
     const confirmMessage = [
       `Server "${label}" wirklich löschen?`,
-      linkedEndpoints.length ? `Dabei werden ${linkedEndpoints.length} zugeordnete Endpoint(s) entfernt.` : null,
-      "Das System benötigt anschließend erneut einen gültigen Server/Endpoint im Setup."
+      "Das System benötigt anschließend erneut einen gültigen Server im Setup."
     ].filter(Boolean).join("\n");
 
     if (typeof window !== "undefined") {
@@ -654,7 +625,7 @@ export function Maintenance() {
     } finally {
       setServerDeleteId(null);
     }
-  }, [canDeleteServers, deleteSetupServer, loadSetupResources, serverDeleteId, setupEndpoints, setupServers, showToast]);
+  }, [canDeleteServers, deleteSetupServer, loadSetupResources, serverDeleteId, setupServers, showToast]);
 
   const handleApiKeyDraftChange = useCallback((serverId, value) => {
     if (!canEditServers) return;
@@ -705,6 +676,79 @@ export function Maintenance() {
       setApiKeyUpdatingId(null);
     }
   }, [apiKeyDrafts, apiKeyUpdatingId, canEditServers, loadSetupResources, showToast, updateSetupApiKey]);
+
+  const handleSelfStackDraftChange = useCallback((value) => {
+    if (!canEditServers) return;
+    setSelfStackDraft(value);
+    setSelfStackError("");
+  }, [canEditServers]);
+
+  const handleSelfStackSave = useCallback(async () => {
+    if (!canEditServers || !selfStackDirty) {
+      return;
+    }
+    setSelfStackSaving(true);
+    setSelfStackError("");
+    const normalizedValue = typeof selfStackDraft === "string" ? selfStackDraft.trim() : "";
+    try {
+      await updateSelfStackId(normalizedValue);
+      showToast({
+        variant: "success",
+        title: "Self-Stack-ID gespeichert",
+        description: normalizedValue
+          ? `Self-Stack-ID wurde auf "${normalizedValue}" gesetzt.`
+          : "Self-Stack-ID wurde entfernt."
+      });
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Self-Stack-ID konnte nicht aktualisiert werden.";
+      setSelfStackError(message);
+      showToast({
+        variant: "error",
+        title: "Self-Stack-ID",
+        description: message
+      });
+    } finally {
+      setSelfStackSaving(false);
+    }
+  }, [canEditServers, loadSetupResources, selfStackDirty, selfStackDraft, showToast, updateSelfStackId]);
+
+  const handleSelfStackRemove = useCallback(async () => {
+    if (!canEditServers) {
+      return;
+    }
+    if (!selfStackDraft && !currentSelfStackValue) {
+      return;
+    }
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm("Self-Stack-ID wirklich entfernen?");
+      if (!confirmed) {
+        return;
+      }
+    }
+    setSelfStackSaving(true);
+    setSelfStackError("");
+    try {
+      await updateSelfStackId("");
+      setSelfStackDraft("");
+      showToast({
+        variant: "success",
+        title: "Self-Stack-ID entfernt",
+        description: "Die Self-Stack-ID wurde gelöscht."
+      });
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Self-Stack-ID konnte nicht entfernt werden.";
+      setSelfStackError(message);
+      showToast({
+        variant: "error",
+        title: "Self-Stack-ID",
+        description: message
+      });
+    } finally {
+      setSelfStackSaving(false);
+    }
+  }, [canEditServers, currentSelfStackValue, loadSetupResources, selfStackDraft, showToast, updateSelfStackId]);
 
   const handleMaintenanceToggle = useCallback(async (nextActive) => {
     if (!canControlMaintenance) return;
@@ -935,7 +979,7 @@ export function Maintenance() {
               color="white"
               className="flex items-center justify-between"
             >
-              <span>Server &amp; Endpoints</span>
+              <span>Server &amp; API-Keys</span>
 
             </Typography>
           </CardHeader>
@@ -1008,7 +1052,7 @@ export function Maintenance() {
                                   color="red"
                                   size="sm"
                                   onClick={() => handleDeleteServer(server.id)}
-                                  disabled={!canDeleteServers || setupResourcesLoading || serverDeleteId === server.id || endpointDeleteId !== null || apiKeyUpdatingId === server.id}
+                                  disabled={maintenanceLocked || !canDeleteServers || setupResourcesLoading || serverDeleteId === server.id || apiKeyUpdatingId === server.id}
                                 >
                                   {serverDeleteId === server.id ? "Lösche…" : "Löschen"}
                                 </Button>
@@ -1016,7 +1060,7 @@ export function Maintenance() {
                                   color="blue"
                                   size="sm"
                                   onClick={() => handleApiKeyUpdate(server.id)}
-                                  disabled={!canEditServers || setupResourcesLoading || apiKeyUpdatingId === server.id}
+                                  disabled={maintenanceLocked || !canEditServers || setupResourcesLoading || apiKeyUpdatingId === server.id}
                                 >
                                   {apiKeyUpdatingId === server.id ? "Speichere…" : "API-Key speichern"}
                                 </Button>
@@ -1029,61 +1073,74 @@ export function Maintenance() {
                   )}
                 </div>
 
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 border-t border-blue-gray-50 pt-4">
+                  <div className="flex flex-col gap-1">
                     <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                      Endpoints
+                      Self-Stack-ID
                     </Typography>
-                    <Typography variant="small" color="blue-gray">
-                      {setupEndpoints.length} vorhanden
-                    </Typography>
-                  </div>
-                  {setupEndpoints.length === 0 ? (
-                    <p className="text-sm text-stormGrey-500">
-                      Es sind derzeit keine Endpoints hinterlegt.
+                    <p className="text-xs text-stormGrey-500">
+                      Optional – lass das Feld leer, wenn keine Self-Stack-ID benötigt wird.
                     </p>
-                  ) : (
-                    <div className="flex flex-col gap-3">
-                      {setupEndpoints.map((endpoint) => (
-                        <div
-                          key={endpoint.id}
-                          className="flex flex-col gap-2 rounded-md border border-blue-gray-100 p-3 md:flex-row md:items-center md:justify-between"
-                        >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="text-sm font-medium text-stormGrey-900">
-                                {endpoint.name || `Endpoint ${endpoint.external_id}`}
-                              </p>
-                              {endpoint.is_default ? (
-                                <span className="rounded-full bg-arcticBlue-100 px-2 py-0.5 text-[10px] font-semibold text-arcticBlue-700">
-                                  Standard
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="text-xs text-stormGrey-500">
-                              ID: {endpoint.external_id} · Server: {endpoint.server_name || endpoint.server_url}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              variant="text"
-                              color="red"
-                              size="sm"
-                              onClick={() => handleDeleteEndpoint(endpoint.id)}
-                              disabled={!canDeleteServers || setupResourcesLoading || endpointDeleteId === endpoint.id || serverDeleteId !== null}
-                            >
-                              {endpointDeleteId === endpoint.id ? "Lösche…" : "Löschen"}
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
+                  </div>
+                  {selfStackInfo?.envProvided && (
+                    <p className="text-xs text-stormGrey-500">
+                      Hinweis: Eine Umgebungsvariable liefert bereits einen Standardwert.
+                    </p>
+                  )}
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end">
+                    <div className="flex-1">
+                      <Input
+                        label="Self-Stack-ID"
+                        value={selfStackDraft}
+                        onChange={(event) => handleSelfStackDraftChange(event.target.value)}
+                        disabled={!canEditServers || setupResourcesLoading || selfStackSaving}
+                      />
                     </div>
+                    {canEditServers && (
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          variant="text"
+                          color="red"
+                          size="sm"
+                          onClick={handleSelfStackRemove}
+                          disabled={maintenanceLocked || selfStackSaving || (!currentSelfStackValue && !selfStackDraft)}
+                        >
+                          Entfernen
+                        </Button>
+                        <Button
+                          color="blue"
+                          size="sm"
+                          onClick={handleSelfStackSave}
+                          disabled={maintenanceLocked || selfStackSaving || setupResourcesLoading || !selfStackDirty}
+                        >
+                          {selfStackSaving ? "Speichere…" : "Self-Stack-ID speichern"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {!canEditServers && (
+                    <p className="text-xs text-stormGrey-500">
+                      Bearbeitung benötigt das Gruppenrecht „Server-Sektion“.
+                    </p>
+                  )}
+                  <p className="text-xs text-stormGrey-500">
+                    Aktuell gespeichert: {currentSelfStackValue || "nicht gesetzt"}
+                  </p>
+                  {envSelfStackValue && (
+                    <p className="text-xs text-stormGrey-500">
+                      Vorgabe aus Umgebung: {envSelfStackValue}
+                    </p>
+                  )}
+                  {selfStackError && (
+                    <Alert color="red" className="border border-red-200 bg-red-50 text-red-700">
+                      {selfStackError}
+                    </Alert>
                   )}
                 </div>
 
                 {!setupComplete && (
                   <Alert color="amber" className="border border-amber-200 bg-amber-50 text-amber-800">
-                    Das Setup ist aktuell unvollständig. Bitte öffne den Setup-Bereich, um Server, Endpoint und API-Key erneut festzulegen.
+                    Das Setup ist aktuell unvollständig. Bitte öffne den Setup-Bereich, um Server und API-Key erneut festzulegen.
                   </Alert>
                 )}
 
@@ -1093,7 +1150,7 @@ export function Maintenance() {
                     color="gray"
                     size="sm"
                     onClick={() => loadSetupResources()}
-                    disabled={setupResourcesLoading}
+                    disabled={maintenanceLocked || setupResourcesLoading}
                   >
                     Aktualisieren
                   </Button>
@@ -1142,7 +1199,7 @@ export function Maintenance() {
                 variant="outlined"
                 color="gray"
                 onClick={() => loadSuperuserStatus()}
-                disabled={superuserStatusLoading || superuserDeleteLoading}
+                disabled={maintenanceLocked || superuserStatusLoading || superuserDeleteLoading}
                 className="w-full sm:w-auto"
               >
                 Status aktualisieren
@@ -1150,7 +1207,7 @@ export function Maintenance() {
               <Button
                 color="red"
                 onClick={handleSuperuserDelete}
-                disabled={superuserStatusLoading || superuserDeleteLoading || !superuserExists}
+                disabled={maintenanceLocked || !canDeleteSuperuser || superuserStatusLoading || superuserDeleteLoading || !superuserExists}
                 className="w-full sm:w-auto"
               >
                 {superuserDeleteLoading ? "Wird gelöscht…" : "Superuser löschen"}
@@ -1203,7 +1260,7 @@ export function Maintenance() {
               <div className="flex items-center gap-3">
                 <Button
                   onClick={() => fetchPortainerStatus({ silent: false })}
-                  disabled={portainerLoading || portainerRefreshing}
+                  disabled={maintenanceLocked || portainerLoading || portainerRefreshing}
                   className="w-full">
                   Status aktualisieren
                 </Button>
@@ -1424,14 +1481,14 @@ export function Maintenance() {
 
                     <Button
                       onClick={handleSshSaveConfig}
-                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || updateRunning}
+                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || maintenanceLocked}
                       className="mt-3 w-full">
                       {sshSaving ? 'Speichern…' : 'SSH-Konfiguration speichern'}
                     </Button>
 
                     <Button
                       onClick={handleSshTestConnection}
-                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || updateRunning}
+                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || maintenanceLocked}
                       className="w-full bg-arcticBlue-500 hover:bg-arcticBlue-600">
                       {sshTesting ? 'Test läuft…' : 'Verbindung testen'}
                     </Button>
@@ -1439,7 +1496,7 @@ export function Maintenance() {
 
                     <Button
                       onClick={handleSshDeleteConfig}
-                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || updateRunning}
+                      disabled={!canManageSsh || sshSaving || sshTesting || sshDeleting || maintenanceLocked}
                       className="w-full hover:bg-sunsetCoral-600 bg-sunsetCoral-500"
                     >
                       {sshDeleting ? 'Löschen…' : 'SSH-Einstellungen löschen'}
@@ -1469,14 +1526,14 @@ export function Maintenance() {
                   <div className="mt-3 grid gap-2">
                     <Button
                       onClick={handleScriptSave}
-                      disabled={!canManageSsh || !scriptIsDirty || scriptSaving || updateRunning}
+                      disabled={!canManageSsh || !scriptIsDirty || scriptSaving || maintenanceLocked}
                       className="mt-3 w-full">
                       Speichern
                     </Button>
                     <Button
                       color="purple"
                       onClick={handleScriptReset}
-                      disabled={!canManageSsh || !scriptConfig || scriptConfig.source !== "custom" || scriptSaving || updateRunning}
+                      disabled={!canManageSsh || !scriptConfig || scriptConfig.source !== "custom" || scriptSaving || maintenanceLocked}
                       className="w-full hover:bg-sunsetCoral-600 bg-sunsetCoral-500">
                       Standard wiederherstellen
                     </Button>
@@ -1552,7 +1609,7 @@ export function Maintenance() {
 
                   <Button
                     onClick={handleTriggerUpdate}
-                    disabled={!canManagePortainerUpdate || disableUpdateButton || updateActionLoading}
+                    disabled={maintenanceLocked || !canManagePortainerUpdate || disableUpdateButton || updateActionLoading}
                     className="mt-3 w-full">
                     {updateActionLoading ? "Update wird gestartet…" : "Portainer aktualisieren"}
                   </Button>
@@ -1649,7 +1706,7 @@ export function Maintenance() {
                             </span>
                           </div>
                           <p className="text-sm text-gray-300">
-                            Behaltener Stack: ID {canonicalId} (Endpoint {entry?.canonical?.EndpointId ?? "-"})
+                            Behaltener Stack: ID {canonicalId}
                           </p>
                           <p className="text-xs text-gray-500">
                             Typ: {resolveStackType(entry?.canonical?.Type)} • Erstellt: {formatCreatedAt(entry?.canonical?.Created)}
@@ -1674,7 +1731,6 @@ export function Maintenance() {
                           >
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <span className="font-semibold text-white">ID: {duplicate.Id}</span>
-                              <span>Endpoint: {duplicate.EndpointId ?? "-"}</span>
                               <span>Typ: {resolveStackType(duplicate.Type)}</span>
                               <span>Erstellt: {formatCreatedAt(duplicate.Created)}</span>
                             </div>

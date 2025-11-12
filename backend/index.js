@@ -34,15 +34,12 @@ import { getSetting, setSetting, deleteSetting } from './db/settings.js';
 import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
 import {
   ensureDefaultsFromEnv,
-  getActiveEndpointExternalId,
   getActiveApiKey,
   getActiveServerUrl,
   hasServer,
-  hasEndpoint,
   hasApiKey,
   getSetupStatus,
   completeSetup,
-  removeEndpoint,
   removeServer,
   setServerApiKey
 } from './setup/index.js';
@@ -101,16 +98,6 @@ app.get('*', (req, res, next) => {
 
 const PORT = 4001;
 
-const requireActiveEndpointId = () => {
-  const value = getActiveEndpointExternalId();
-  if (!value) {
-    const error = new Error('ENDPOINT_NOT_CONFIGURED');
-    error.code = 'ENDPOINT_NOT_CONFIGURED';
-    throw error;
-  }
-  return value;
-};
-
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 const resolvePortainerBaseUrl = () => {
@@ -142,6 +129,111 @@ axiosInstance.interceptors.request.use((config) => {
   return config;
 });
 
+const PORTAINER_ENVIRONMENT_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedPortainerEnvironment = { id: null, fetchedAt: 0 };
+let resolvingEnvironmentPromise = null;
+
+const resolvePortainerEnvironmentId = async () => {
+  const now = Date.now();
+  if (cachedPortainerEnvironment.id && now - cachedPortainerEnvironment.fetchedAt < PORTAINER_ENVIRONMENT_CACHE_TTL_MS) {
+    return cachedPortainerEnvironment.id;
+  }
+
+  if (resolvingEnvironmentPromise) {
+    return resolvingEnvironmentPromise;
+  }
+
+  resolvingEnvironmentPromise = (async () => {
+    try {
+      const endpointsRes = await axiosInstance.get('/api/endpoints');
+      const endpoints = Array.isArray(endpointsRes.data) ? endpointsRes.data : [];
+      if (!endpoints.length) {
+        const error = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+        error.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+        throw error;
+      }
+      const preferred =
+        endpoints.find((endpoint) => endpoint.Type === 1 && (!endpoint.URL || endpoint.URL === '')) ||
+        endpoints[0];
+      const resolvedId = preferred?.Id ?? preferred?.ID ?? null;
+      if (!resolvedId) {
+        const error = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+        error.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+        throw error;
+      }
+      cachedPortainerEnvironment = {
+        id: String(resolvedId),
+        fetchedAt: Date.now()
+      };
+      return cachedPortainerEnvironment.id;
+    } catch (error) {
+      const normalized = error.response?.data?.message || error.message || 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+      console.error('⚠️ [Portainer] Environment-Erkennung fehlgeschlagen:', normalized);
+      const wrapped = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+      wrapped.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+      throw wrapped;
+    } finally {
+      resolvingEnvironmentPromise = null;
+    }
+  })();
+
+  return resolvingEnvironmentPromise;
+};
+
+const normalizeExternalPortainerUrl = (value = '') => {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+    const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+    const normalized = new URL(candidate);
+    normalized.hash = '';
+    return normalized.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+};
+
+const createPortainerSetupClient = ({ baseURL, apiKey }) => {
+  if (!baseURL) {
+    const error = new Error('SERVER_URL_REQUIRED');
+    error.code = 'SERVER_URL_REQUIRED';
+    throw error;
+  }
+  if (!apiKey) {
+    const error = new Error('API_KEY_REQUIRED');
+    error.code = 'API_KEY_REQUIRED';
+    throw error;
+  }
+  return axios.create({
+    baseURL,
+    httpsAgent: agent,
+    headers: {
+      'X-API-Key': apiKey
+    }
+  });
+};
+
+const extractPortainerCredentials = (payload = {}) => {
+  const rawServer = payload.server ?? {};
+  const serverUrl =
+    typeof rawServer.url === 'string' ? rawServer.url :
+      typeof payload.serverUrl === 'string' ? payload.serverUrl :
+        typeof payload.url === 'string' ? payload.url : '';
+  const apiKey =
+    typeof payload.apiKey === 'string' ? payload.apiKey :
+      typeof payload.key === 'string' ? payload.key :
+        typeof payload.api === 'string' ? payload.api :
+          typeof payload?.api?.value === 'string' ? payload.api.value :
+            '';
+
+  return {
+    serverUrl: serverUrl ? serverUrl.trim() : '',
+    apiKey: apiKey ? apiKey.trim() : ''
+  };
+};
+
 const REDEPLOY_PHASES = {
   QUEUED: 'queued',
   STARTED: 'started',
@@ -157,10 +249,20 @@ const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const envSessionTtl = Number(process.env.AUTH_SESSION_TTL_MS);
 const AUTH_SESSION_TTL_MS = Number.isFinite(envSessionTtl) && envSessionTtl > 0 ? envSessionTtl : DEFAULT_SESSION_TTL_MS;
 
+const parseBooleanEnv = (value, fallback) => {
+  if (value === undefined || value === null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+
+const AUTH_COOKIE_SECURE = parseBooleanEnv(process.env.AUTH_COOKIE_SECURE, false);
+
 const AUTH_COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production',
+  secure: AUTH_COOKIE_SECURE,
   path: '/'
 };
 
@@ -177,7 +279,9 @@ const PUBLIC_API_ROUTES = [
   { method: 'POST', matcher: /^\/api\/auth\/recover\/verify$/ },
   { method: 'POST', matcher: /^\/api\/auth\/recover\/reset$/ },
   { method: 'GET', matcher: /^\/api\/setup\/status$/ },
-  { method: 'POST', matcher: /^\/api\/setup\/complete$/ }
+  { method: 'POST', matcher: /^\/api\/setup\/complete$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/test-portainer$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/portainer-stacks$/ }
 ];
 
 const sanitizeUser = (user) => ({
@@ -422,7 +526,6 @@ const logStackEvent = ({
   status,
   message,
   redeployType = null,
-  endpointId = null,
   metadata = {}
 }) => {
   const metadataPayload = {
@@ -433,11 +536,8 @@ const logStackEvent = ({
     metadataPayload.redeployType = redeployType;
   }
 
-  if (endpointId !== undefined && endpointId !== null) {
-    metadataPayload.endpointId = String(endpointId);
-  }
-
   const hasMetadata = Object.keys(metadataPayload).length > 0;
+  const serverContextId = getActiveServerUrl() || null;
 
   logEvent({
     category: 'stack',
@@ -447,8 +547,8 @@ const logStackEvent = ({
     entityType: 'stack',
     entityId: stackId !== undefined && stackId !== null ? String(stackId) : null,
     entityName: stackName ?? null,
-    contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
-    contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
+    contextType: serverContextId ? 'server' : null,
+    contextId: serverContextId,
     message: message ?? null,
     metadata: hasMetadata ? metadataPayload : null
   });
@@ -463,7 +563,76 @@ const parseJsonColumn = (value) => {
   }
 };
 
-const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+const SELF_STACK_SETTING_KEY = 'self_stack_id';
+let cachedSelfStackId = null;
+let selfStackLoaded = false;
+
+const loadSelfStackId = () => {
+  try {
+    const stored = getSetting(SELF_STACK_SETTING_KEY);
+    if (stored && stored.value) {
+      cachedSelfStackId = String(stored.value);
+    } else if (process.env.SELF_STACK_ID) {
+      cachedSelfStackId = String(process.env.SELF_STACK_ID);
+    } else {
+      cachedSelfStackId = null;
+    }
+  } catch (error) {
+    console.warn('⚠️ [Setup] Konnte Self-Stack-ID nicht laden:', error.message);
+    cachedSelfStackId = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+  } finally {
+    selfStackLoaded = true;
+  }
+};
+
+const getSelfStackId = () => {
+  if (!selfStackLoaded) {
+    loadSelfStackId();
+  }
+  return cachedSelfStackId;
+};
+
+const persistSelfStackId = (value) => {
+  const normalized = typeof value === 'string'
+    ? value.trim()
+    : value !== undefined && value !== null
+      ? String(value).trim()
+      : '';
+
+  if (!normalized) {
+    deleteSetting(SELF_STACK_SETTING_KEY);
+    cachedSelfStackId = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+  } else {
+    setSetting(SELF_STACK_SETTING_KEY, normalized);
+    cachedSelfStackId = normalized;
+  }
+  selfStackLoaded = true;
+  return cachedSelfStackId;
+};
+
+const getEnvSelfStackId = () => {
+  const raw = typeof process.env.SELF_STACK_ID === 'string' ? process.env.SELF_STACK_ID : '';
+  return raw.trim();
+};
+
+const applySelfStackStatus = (status) => {
+  const envSelfStackId = getEnvSelfStackId();
+  const currentSelfStackId = getSelfStackId();
+  const envDefaults = { ...(status.envDefaults || {}) };
+  envDefaults.selfStackId = currentSelfStackId || envSelfStackId || envDefaults.selfStackId || '';
+
+  return {
+    ...status,
+    envDefaults,
+    selfStack: {
+      current: currentSelfStackId,
+      envProvided: Boolean(envSelfStackId)
+    }
+  };
+};
+
+const buildSetupStatusResponse = () => applySelfStackStatus(getSetupStatus());
+
 const PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
 const PORTAINER_SSH_CONFIG_KEY = 'portainer_ssh_config';
 
@@ -810,7 +979,7 @@ const testSshConnection = async (configOverride = null) => {
 
 const detectPortainerContainer = async () => {
   try {
-    const endpointId = requireActiveEndpointId();
+    const endpointId = await resolvePortainerEnvironmentId();
     const containersRes = await axiosInstance.get(`/api/endpoints/${endpointId}/docker/containers/json`, {
       params: { all: true }
     });
@@ -1128,7 +1297,7 @@ let currentPortainerUpdatePromise = null;
 
 const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) => {
   let maintenanceActivated = false;
-  const endpointId = requireActiveEndpointId();
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
     addUpdateLog(`Portainer-Update gestartet (Quelle: ${scriptSource})`, 'info');
@@ -1158,8 +1327,8 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       entityType: 'service',
       entityId: 'portainer',
       entityName: 'Portainer',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Portainer Update gestartet (Ziel: ${targetVersion ?? 'unbekannt'})`,
       metadata: {
         targetVersion: targetVersion ?? null,
@@ -1176,8 +1345,8 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       entityType: 'system',
       entityId: 'wartung',
       entityName: 'StackPulse Wartung',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: 'Wartungsmodus aktiviert (Portainer Update)',
       metadata: {
         reason: 'portainer-update',
@@ -1215,8 +1384,8 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       entityType: 'service',
       entityId: 'portainer',
       entityName: 'Portainer',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Portainer Update abgeschlossen (Version: ${finalVersion ?? 'unbekannt'})`,
       metadata: {
         resultVersion: finalVersion ?? null
@@ -1247,8 +1416,8 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
         entityType: 'system',
         entityId: 'wartung',
         entityName: 'StackPulse Wartung',
-        contextType: 'endpoint',
-        contextId: String(endpointId),
+        contextType: serverContextId ? 'server' : null,
+        contextId: serverContextId,
         message: 'Wartungsmodus deaktiviert',
         metadata: {
           reason: 'portainer-update'
@@ -1266,8 +1435,8 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       entityType: 'service',
       entityId: 'portainer',
       entityName: 'Portainer',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
       source: 'system'
     });
@@ -1287,19 +1456,19 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
       deactivateMaintenanceMode({ message: 'Portainer Update fehlgeschlagen' });
       logEvent({
         category: 'wartung',
-        eventType: 'Wartungsmodus',
-        action: 'deaktivieren',
-        status: 'fehler',
-        entityType: 'system',
-        entityId: 'wartung',
-        entityName: 'StackPulse Wartung',
-        contextType: 'endpoint',
-        contextId: String(endpointId),
-        message: 'Wartungsmodus deaktiviert (Fehler)',
-        metadata: {
-          reason: 'portainer-update'
-        },
-        source: 'system'
+      eventType: 'Wartungsmodus',
+      action: 'deaktivieren',
+      status: 'fehler',
+      entityType: 'system',
+      entityId: 'wartung',
+      entityName: 'StackPulse Wartung',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
+      message: 'Wartungsmodus deaktiviert (Fehler)',
+      metadata: {
+        reason: 'portainer-update'
+      },
+      source: 'system'
       });
     }
   } finally {
@@ -1308,17 +1477,17 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
 };
 
 const fetchPortainerStacks = async () => {
-  const endpointId = requireActiveEndpointId();
   const stacksRes = await axiosInstance.get('/api/stacks');
-  return stacksRes.data.filter((stack) => String(stack.EndpointId) === String(endpointId));
+  return Array.isArray(stacksRes.data) ? stacksRes.data : [];
 };
 
 const buildStackCollections = (stacks = []) => {
+  const currentSelfStackId = getSelfStackId();
   const collections = new Map();
 
   stacks.forEach((stack) => {
     const name = stack.Name || 'Unbenannt';
-    const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
+    const isSelf = currentSelfStackId && String(stack.Id) === currentSelfStackId;
     const entry = collections.get(name);
 
     if (!entry) {
@@ -1390,10 +1559,11 @@ const isStackOutdated = async (stackId) => {
 };
 
 const filterOutdatedStacks = async (stacks = []) => {
+  const currentSelfStackId = getSelfStackId();
   const results = await Promise.all(
     stacks.map(async (stack) => ({
       stack,
-      outdated: SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID
+      outdated: currentSelfStackId && String(stack.Id) === currentSelfStackId
         ? false
         : await isStackOutdated(stack.Id)
     }))
@@ -1427,15 +1597,10 @@ const shouldFallbackToStackFile = (message) => {
 const redeployStackById = async (stackId, redeployType) => {
   let stack;
   const messages = getRedeployMessages(redeployType);
-  const endpointId = requireActiveEndpointId();
 
   try {
     const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
     stack = stackRes.data;
-
-    if (String(stack.EndpointId) !== String(endpointId)) {
-      throw new Error(`Stack gehört nicht zum Endpoint ${endpointId}`);
-    }
 
     const targetId = stack.Id || stackId;
     const targetName = stack.Name || `Stack ${stackId}`;
@@ -1451,7 +1616,6 @@ const redeployStackById = async (stackId, redeployType) => {
       stackName: targetName,
       status: 'started',
       message: messages.started,
-      endpointId: stack.EndpointId,
       redeployType
     });
 
@@ -1531,7 +1695,6 @@ const redeployStackById = async (stackId, redeployType) => {
       stackName: targetName,
       status: 'success',
       message: messages.success,
-      endpointId: stack.EndpointId,
       redeployType
     });
 
@@ -1553,7 +1716,6 @@ const redeployStackById = async (stackId, redeployType) => {
       stackName: fallbackName,
       status: 'error',
       message: errorMessage,
-      endpointId: stack?.EndpointId || endpointId,
       redeployType
     });
 
@@ -1575,7 +1737,7 @@ app.use((req, res, next) => {
     return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
   }
 
-  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+  if (!hasServer() || !hasApiKey()) {
     return res.status(403).json({ error: 'SETUP_REQUIRED' });
   }
 
@@ -1623,11 +1785,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- API Endpoints ---
+// --- API Routes ---
 
 app.get('/api/setup/status', (req, res) => {
   try {
-    const status = getSetupStatus();
+    const status = buildSetupStatusResponse();
     res.json(status);
   } catch (error) {
     console.error('⚠️ [Setup] Statusabfrage fehlgeschlagen:', error);
@@ -1635,12 +1797,60 @@ app.get('/api/setup/status', (req, res) => {
   }
 });
 
+app.post('/api/setup/test-portainer', async (req, res) => {
+  const { serverUrl, apiKey } = extractPortainerCredentials(req.body);
+  const normalizedUrl = normalizeExternalPortainerUrl(serverUrl);
+
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'SERVER_URL_INVALID' });
+  }
+  if (!apiKey) {
+    return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+  }
+
+  try {
+    const client = createPortainerSetupClient({ baseURL: normalizedUrl, apiKey });
+    const statusRes = await client.get('/api/status');
+    res.json({
+      success: true,
+      status: statusRes.data ?? null
+    });
+  } catch (error) {
+    const message = error.response?.data?.message || error.message || 'PORTAINER_TEST_FAILED';
+    const status = error.response?.status ?? 400;
+    res.status(status === 401 ? 401 : 400).json({ error: 'PORTAINER_TEST_FAILED', message });
+  }
+});
+
+app.post('/api/setup/portainer-stacks', async (req, res) => {
+  const { serverUrl, apiKey } = extractPortainerCredentials(req.body);
+  const normalizedUrl = normalizeExternalPortainerUrl(serverUrl);
+
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'SERVER_URL_INVALID' });
+  }
+  if (!apiKey) {
+    return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+  }
+
+  try {
+    const client = createPortainerSetupClient({ baseURL: normalizedUrl, apiKey });
+    const stacksRes = await client.get('/api/stacks');
+    const stacks = Array.isArray(stacksRes.data) ? stacksRes.data : [];
+    res.json({ success: true, stacks });
+  } catch (error) {
+    const message = error.response?.data?.message || error.message || 'PORTAINER_STACK_FETCH_FAILED';
+    const status = error.response?.status ?? 400;
+    res.status(status === 401 ? 401 : 400).json({ error: 'PORTAINER_STACK_FETCH_FAILED', message });
+  }
+});
+
 app.post('/api/setup/complete', (req, res) => {
-  const { superuser: superuserInput, server: serverInput, endpoint: endpointInput, apiKey: apiKeyInput } = req.body ?? {};
+  const { superuser: superuserInput, server: serverInput, apiKey: apiKeyInput, selfStackId: selfStackInput } = req.body ?? {};
+  const hasSelfStackInput = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
   const initialStatus = getSetupStatus();
   const needsSuperuser = initialStatus.requirements.superuser;
   const needsServer = initialStatus.requirements.server;
-  const needsEndpoint = initialStatus.requirements.endpoint;
   const needsApiKey = initialStatus.requirements.apiKey;
 
   const created = {};
@@ -1655,22 +1865,6 @@ app.post('/api/setup/complete', (req, res) => {
     return {
       name: name || null,
       url
-    };
-  };
-
-  const normalizeEndpointInput = (input) => {
-    if (!input) return null;
-    const name = typeof input.name === 'string' ? input.name.trim() : '';
-    const externalRaw = input.externalId !== undefined && input.externalId !== null
-      ? String(input.externalId).trim()
-      : '';
-    const serverIdRaw = input.serverId !== undefined && input.serverId !== null ? Number(input.serverId) : null;
-    const serverId = Number.isFinite(serverIdRaw) ? serverIdRaw : null;
-
-    return {
-      name: name || null,
-      externalId: externalRaw || '',
-      serverId
     };
   };
 
@@ -1691,52 +1885,19 @@ app.post('/api/setup/complete', (req, res) => {
   };
 
   try {
-    let serverPayload = normalizeServerInput(serverInput);
-    let endpointPayload = normalizeEndpointInput(endpointInput);
+    const serverPayload = normalizeServerInput(serverInput);
     const apiKeyPayload = normalizeApiKeyInput(apiKeyInput);
 
     if (needsServer && (!serverPayload || !serverPayload.url)) {
       return res.status(400).json({ error: 'SERVER_DETAILS_REQUIRED' });
     }
 
-    if (endpointPayload && !endpointPayload.externalId) {
-      endpointPayload.externalId = '';
-    }
-
-    if (needsEndpoint && (!endpointPayload || !endpointPayload.externalId)) {
-      const fallbackExternal = initialStatus.envDefaults.endpointExternalId?.trim();
-      if (fallbackExternal) {
-        endpointPayload = endpointPayload || {};
-        endpointPayload.externalId = fallbackExternal;
-        endpointPayload.name = endpointPayload.name || initialStatus.envDefaults.endpointName || `Endpoint ${fallbackExternal}`;
-      } else {
-        return res.status(400).json({ error: 'ENDPOINT_DETAILS_REQUIRED' });
-      }
-    }
-
-    const shouldHandleInfrastructure =
-      needsServer ||
-      needsEndpoint ||
-      (serverPayload && serverPayload.url) ||
-      (endpointPayload && endpointPayload.externalId);
-
-    if (shouldHandleInfrastructure) {
-      const endpointInputPayload = endpointPayload;
-      if (!endpointInputPayload || !endpointInputPayload.externalId) {
-        return res.status(400).json({ error: 'ENDPOINT_DETAILS_REQUIRED' });
-      }
-
+    if (needsServer || (serverPayload && serverPayload.url)) {
       const setupResult = completeSetup({
-        server: serverPayload && serverPayload.url ? serverPayload : null,
-        endpoint: endpointInputPayload
+        server: serverPayload && serverPayload.url ? serverPayload : null
       });
-
       created.server = setupResult.server;
-      created.endpoint = setupResult.endpoint;
-      created.defaultEndpoint = setupResult.defaultEndpoint;
     }
-
-    let targetServerId = apiKeyPayload?.serverId ?? created.server?.id ?? endpointPayload?.serverId ?? null;
 
     if (needsSuperuser) {
       const username = typeof superuserInput?.username === 'string' ? superuserInput.username.trim() : '';
@@ -1753,6 +1914,7 @@ app.post('/api/setup/complete', (req, res) => {
 
     const statusSnapshot = getSetupStatus();
 
+    let targetServerId = apiKeyPayload?.serverId ?? created.server?.id ?? null;
     if (!targetServerId) {
       targetServerId = statusSnapshot.servers.items?.[0]?.id ?? null;
     }
@@ -1767,8 +1929,18 @@ app.post('/api/setup/complete', (req, res) => {
       return res.status(400).json({ error: 'API_KEY_REQUIRED' });
     }
 
-    const finalStatus = getSetupStatus();
-    created.defaultEndpoint = finalStatus.endpoints.default;
+    if (hasSelfStackInput) {
+      const normalizedSelfStackId = typeof selfStackInput === 'string'
+        ? selfStackInput.trim()
+        : selfStackInput !== undefined && selfStackInput !== null
+          ? String(selfStackInput).trim()
+          : '';
+
+      const nextSelfStackId = persistSelfStackId(normalizedSelfStackId);
+      created.selfStackId = nextSelfStackId || null;
+    }
+
+    const finalStatus = buildSetupStatusResponse();
     res.status(201).json({
       success: finalStatus.setupComplete,
       status: finalStatus,
@@ -1780,8 +1952,6 @@ app.post('/api/setup/complete', (req, res) => {
       case 'SERVER_URL_REQUIRED':
       case 'SERVER_NAME_REQUIRED':
       case 'SERVER_DETAILS_REQUIRED':
-      case 'ENDPOINT_DETAILS_REQUIRED':
-      case 'ENDPOINT_EXTERNAL_ID_REQUIRED':
       case 'USERNAME_REQUIRED':
       case 'EMAIL_INVALID':
       case 'PASSWORD_TOO_SHORT':
@@ -1802,31 +1972,6 @@ app.post('/api/setup/complete', (req, res) => {
   }
 });
 
-app.delete('/api/setup/endpoints/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
-  const { id } = req.params;
-  const numericId = Number(id);
-  if (!Number.isFinite(numericId)) {
-    return res.status(400).json({ error: 'ENDPOINT_ID_INVALID' });
-  }
-
-  try {
-    const result = removeEndpoint(numericId);
-    const status = getSetupStatus();
-    res.json({ success: true, removed: result, status });
-  } catch (error) {
-    const code = error.code || error.message;
-    switch (code) {
-      case 'ENDPOINT_ID_INVALID':
-        return res.status(400).json({ error: 'ENDPOINT_ID_INVALID' });
-      case 'ENDPOINT_NOT_FOUND':
-        return res.status(404).json({ error: 'ENDPOINT_NOT_FOUND' });
-      default:
-        console.error('⚠️ [Setup] Endpoint konnte nicht gelöscht werden:', error);
-        return res.status(500).json({ error: 'ENDPOINT_DELETE_FAILED' });
-    }
-  }
-});
-
 app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
@@ -1836,7 +1981,7 @@ app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delet
 
   try {
     const result = removeServer(numericId);
-    const status = getSetupStatus();
+    const status = buildSetupStatusResponse();
     res.json({ success: true, removed: result, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -1863,7 +2008,7 @@ app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-
 
   try {
     const result = setServerApiKey({ serverId: numericId, apiKey: rawValue });
-    const status = getSetupStatus();
+    const status = buildSetupStatusResponse();
     res.json({ success: true, updated: result, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -1884,12 +2029,39 @@ app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-
   }
 });
 
+app.put('/api/setup/self-stack', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
+  const hasPayload = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
+  if (!hasPayload) {
+    return res.status(400).json({ error: 'SELF_STACK_ID_MISSING' });
+  }
+
+  const inputValue = req.body.selfStackId;
+  const normalizedSelfStackId = typeof inputValue === 'string'
+    ? inputValue.trim()
+    : inputValue !== undefined && inputValue !== null
+      ? String(inputValue).trim()
+      : '';
+
+  try {
+    const nextValue = persistSelfStackId(normalizedSelfStackId) || null;
+    const status = buildSetupStatusResponse();
+    res.json({
+      success: true,
+      value: nextValue,
+      status
+    });
+  } catch (error) {
+    console.error('⚠️ [Setup] Self-Stack-ID konnte nicht aktualisiert werden:', error);
+    res.status(500).json({ error: 'SELF_STACK_ID_UPDATE_FAILED' });
+  }
+});
+
 app.post('/api/auth/login', (req, res) => {
   if (!hasSuperuser()) {
     return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
   }
 
-  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+  if (!hasServer() || !hasApiKey()) {
     return res.status(403).json({ error: 'SETUP_REQUIRED' });
   }
 
@@ -2006,7 +2178,7 @@ app.get('/api/auth/session', (req, res) => {
     return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
   }
 
-  if (!hasServer() || !hasEndpoint() || !hasApiKey()) {
+  if (!hasServer() || !hasApiKey()) {
     return res.status(403).json({ error: 'SETUP_REQUIRED' });
   }
 
@@ -2571,7 +2743,7 @@ app.post('/api/auth/superuser/register', (req, res) => {
   }
 });
 
-app.delete('/api/auth/superuser', (req, res) => {
+app.delete('/api/auth/superuser', requirePermission('maintenance-superuser-delete', 'full'), (req, res) => {
   if (!hasSuperuser()) {
     return res.status(404).json({ error: 'SUPERUSER_NOT_FOUND' });
   }
@@ -2600,6 +2772,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
       console.warn(`⚠️ [API] GET /api/stacks: Doppelte Stack-Namen erkannt: ${duplicateNames.join(', ')}`);
     }
 
+    const currentSelfStackId = getSelfStackId();
     const stacksWithStatus = await Promise.all(
       canonicalStacks.map(async (stack) => {
         try {
@@ -2615,7 +2788,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
             redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployPhase,
             redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            redeployDisabled: currentSelfStackId ? String(stack.Id) === currentSelfStackId : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
         } catch (err) {
@@ -2628,7 +2801,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
             redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployPhase,
             redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            redeployDisabled: currentSelfStackId ? String(stack.Id) === currentSelfStackId : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
         }
@@ -2959,7 +3132,6 @@ app.post(
       stackName: target.canonical.Name,
       status: 'started',
       message: `Bereinigung doppelter Stacks gestartet (${duplicatesToDelete.length} Einträge)`,
-      endpointId: target.canonical.EndpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE,
       metadata: {
         duplicateIds: duplicateIds
@@ -2978,7 +3150,6 @@ app.post(
         results.push({
           id: stack.Id,
           name: stack.Name,
-          endpointId: stack.EndpointId,
           status: 'deleted'
         });
       } catch (err) {
@@ -2988,7 +3159,6 @@ app.post(
         results.push({
           id: stack.Id,
           name: stack.Name,
-          endpointId: stack.EndpointId,
           status: 'error',
           message
         });
@@ -3002,7 +3172,6 @@ app.post(
         stackName: target.canonical.Name,
         status: 'error',
         message: `Bereinigung fehlgeschlagen für IDs: ${failedIds}`,
-        endpointId: target.canonical.EndpointId,
         redeployType: REDEPLOY_TYPES.MAINTENANCE,
         metadata: {
           duplicateIds: duplicateIds
@@ -3013,8 +3182,7 @@ app.post(
         success: false,
         canonical: {
           id: target.canonical.Id,
-          name: target.canonical.Name,
-          endpointId: target.canonical.EndpointId
+          name: target.canonical.Name
         },
         results
       });
@@ -3025,7 +3193,6 @@ app.post(
       stackName: target.canonical.Name,
       status: 'success',
       message: `Bereinigung abgeschlossen. Entfernte IDs: ${results.map((entry) => entry.id).join(', ')}`,
-      endpointId: target.canonical.EndpointId,
       redeployType: REDEPLOY_TYPES.MAINTENANCE,
       metadata: {
         removedDuplicates: results.filter((entry) => entry.status === 'deleted').map((entry) => entry.id)
@@ -3036,8 +3203,7 @@ app.post(
       success: true,
       canonical: {
         id: target.canonical.Id,
-        name: target.canonical.Name,
-        endpointId: target.canonical.EndpointId
+        name: target.canonical.Name
       },
       removed: results.length,
       results
@@ -3107,7 +3273,9 @@ app.get('/api/logs', requirePermission('logs-access', 'read'), (req, res) => {
       const metadata = parseJsonColumn(row.metadata);
       const legacyStack = row.entityType === 'stack' ? (row.entityId ?? null) : null;
       const legacyStackName = row.entityType === 'stack' ? (row.entityName ?? row.entityId ?? null) : null;
-      const legacyEndpoint = row.contextType === 'endpoint' ? (row.contextId ?? null) : null;
+      const serverContext = row.contextType === 'server'
+        ? (row.contextId ?? null)
+        : null;
 
       return {
         ...row,
@@ -3118,7 +3286,7 @@ app.get('/api/logs', requirePermission('logs-access', 'read'), (req, res) => {
         stackId: legacyStack,
         stackName: legacyStackName,
         redeployType: row.eventType ?? null,
-        endpoint: legacyEndpoint
+        server: serverContext
       };
     });
     const total = db.prepare(countQuery).get(params)?.total ?? logs.length;
@@ -3204,12 +3372,11 @@ app.put(
   async (req, res) => {
   console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
 
-  let endpointId;
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
-    endpointId = requireActiveEndpointId();
     const stacksRes = await axiosInstance.get('/api/stacks');
-    const filteredStacks = stacksRes.data.filter(stack => String(stack.EndpointId) === String(endpointId));
+    const filteredStacks = Array.isArray(stacksRes.data) ? stacksRes.data : [];
 
     console.log("📦 Redeploy ALL für folgende Stacks:");
     filteredStacks.forEach(s => console.log(`   - ${s.Name}`));
@@ -3232,8 +3399,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-alle',
       entityName: 'Redeploy ALLE',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Redeploy ALLE gestartet für: ${stackSummary}`,
       metadata: {
         stacks: stackSummaryList
@@ -3271,8 +3438,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-alle',
       entityName: 'Redeploy ALLE',
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: 'Redeploy ALLE abgeschlossen',
       metadata: {
         processedStacks: stackSummaryList
@@ -3291,8 +3458,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-alle',
       entityName: 'Redeploy ALLE',
-      contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
-      contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
       source: 'system'
     });
@@ -3315,10 +3482,9 @@ app.put(
     return res.status(400).json({ error: 'stackIds muss eine nicht leere Array sein' });
   }
 
-  let endpointId;
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
-    endpointId = requireActiveEndpointId();
     const normalizedIds = stackIds.map((id) => String(id));
     const { filteredStacks } = await loadStackCollections();
     const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
@@ -3352,8 +3518,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-auswahl',
       entityName: `Redeploy Auswahl (${stackIds.length})`,
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Redeploy Auswahl gestartet für: ${summaryText}`,
       metadata: {
         requestedStackIds: normalizedIds
@@ -3370,8 +3536,8 @@ app.put(
         entityType: 'bulk-operation',
         entityId: 'redeploy-auswahl',
         entityName: `Redeploy Auswahl (${stackIds.length})`,
-        contextType: 'endpoint',
-        contextId: String(endpointId),
+        contextType: serverContextId ? 'server' : null,
+        contextId: serverContextId,
         message: 'Redeploy Auswahl übersprungen: keine veralteten Stacks',
         metadata: {
           requestedStackIds: normalizedIds,
@@ -3407,8 +3573,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-auswahl',
       entityName: `Redeploy Auswahl (${stackIds.length})`,
-      contextType: 'endpoint',
-      contextId: String(endpointId),
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: 'Redeploy Auswahl abgeschlossen',
       metadata: {
         processedStackIds: eligibleStacks.map((stack) => String(stack.Id))
@@ -3428,8 +3594,8 @@ app.put(
       entityType: 'bulk-operation',
       entityId: 'redeploy-auswahl',
       entityName: `Redeploy Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
-      contextType: endpointId !== undefined && endpointId !== null ? 'endpoint' : null,
-      contextId: endpointId !== undefined && endpointId !== null ? String(endpointId) : null,
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
       metadata: {
         requestedStackIds: normalized

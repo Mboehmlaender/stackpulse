@@ -17,6 +17,15 @@ import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
 import { useAuth } from "@/components/AuthProvider.jsx";
 
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
+
 const normalizeUserGroups = (rawGroups) => {
   if (!Array.isArray(rawGroups)) {
     return [];
@@ -61,8 +70,12 @@ export function Users() {
   const [togglingUserId, setTogglingUserId] = useState(null);
 
   const { showToast } = useToast();
-  const { maintenance } = useMaintenance();
-  const maintenanceActive = Boolean(maintenance?.active);
+  const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const maintenanceLocked = maintenanceActive || updateRunning;
   const navigate = useNavigate();
   const noop = useCallback(() => { }, []);
   const { hasPermission } = useAuth();
@@ -253,7 +266,7 @@ export function Users() {
   }, []);
 
   const handleDeleteUser = useCallback(async (user) => {
-    if (maintenanceActive || !user?.id) {
+    if (maintenanceLocked || !user?.id) {
       return;
     }
     if (!canDeleteUsers) {
@@ -314,7 +327,7 @@ export function Users() {
     } finally {
       setDeletingUserId(null);
     }
-  }, [maintenanceActive, canDeleteUsers, showToast, fetchUsers]);
+  }, [maintenanceLocked, canDeleteUsers, showToast, fetchUsers]);
 
   const handleToggleUserStatus = useCallback(async (user) => {
     if (!user?.id) {
@@ -323,11 +336,11 @@ export function Users() {
     if (!canManageUsers) {
       return;
     }
-    if (maintenanceActive) {
+    if (maintenanceLocked) {
       showToast({
         variant: "error",
         title: "Aktion nicht möglich",
-        description: "Im Wartungsmodus können keine Statusänderungen durchgeführt werden."
+        description: "Im Wartungsmodus oder während eines Updates sind Statusänderungen gesperrt."
       });
       return;
     }
@@ -386,10 +399,11 @@ export function Users() {
     } finally {
       setTogglingUserId(null);
     }
-  }, [maintenanceActive, canManageUsers, showToast, fetchUsers]);
+  }, [maintenanceLocked, canManageUsers, showToast, fetchUsers]);
 
   const handleCreateUser = useCallback(async () => {
-    if (maintenanceActive) {
+    if (maintenanceLocked) {
+      setCreateError("Im Wartungsmodus oder während eines Updates können keine Benutzer angelegt werden.");
       return;
     }
     if (!canManageUsers) {
@@ -467,7 +481,7 @@ export function Users() {
       setCreatingUser(false);
     }
   }, [
-    maintenanceActive,
+    maintenanceLocked,
     canManageUsers,
     newUsername,
     newEmail,
@@ -479,8 +493,8 @@ export function Users() {
   ]);
 
   const hasSelectableGroups = availableGroups.length > 0;
-  const createDisabled = maintenanceActive || creatingUser || groupsLoading || !hasSelectableGroups;
-  const groupSelectDisabled = maintenanceActive || creatingUser || groupsLoading || !hasSelectableGroups;
+  const createDisabled = maintenanceLocked || creatingUser || groupsLoading || !hasSelectableGroups;
+  const groupSelectDisabled = maintenanceLocked || creatingUser || groupsLoading || !hasSelectableGroups;
   const renderSelectedGroup = useCallback(
     (element) => {
       if (element && element.props && element.props.children) {
@@ -497,9 +511,18 @@ export function Users() {
 
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
-      {maintenanceActive && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+            </span>
+            {updateRunning && (
+              <span className="text-xs text-indigo-900">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
         </div>
       )}
       <Card>
@@ -539,14 +562,14 @@ export function Users() {
                       label="Benutzername"
                       value={newUsername}
                       onChange={(event) => setNewUsername(event.target.value)}
-                      disabled={maintenanceActive || creatingUser}
+                      disabled={maintenanceLocked || creatingUser}
                       crossOrigin=""
                     />
                     <Input
                       label="E-Mail (optional)"
                       value={newEmail}
                       onChange={(event) => setNewEmail(event.target.value)}
-                      disabled={maintenanceActive || creatingUser}
+                      disabled={maintenanceLocked || creatingUser}
                       crossOrigin=""
                     />
                     <Input
@@ -554,7 +577,7 @@ export function Users() {
                       label="Passwort"
                       value={newPassword}
                       onChange={(event) => setNewPassword(event.target.value)}
-                      disabled={maintenanceActive || creatingUser}
+                      disabled={maintenanceLocked || creatingUser}
                       crossOrigin=""
                     />
                     <Select
@@ -582,7 +605,12 @@ export function Users() {
                     <Button color="green" onClick={handleCreateUser} disabled={createDisabled}>
                       {creatingUser ? "Speichert ..." : "Benutzer anlegen"}
                     </Button>
-                    <Button variant="text" color="blue-gray" onClick={resetNewUserForm} disabled={creatingUser}>
+                    <Button
+                      variant="text"
+                      color="blue-gray"
+                      onClick={resetNewUserForm}
+                      disabled={creatingUser || maintenanceLocked}
+                    >
                       Formular zurücksetzen
                     </Button>
                   </div>
@@ -694,10 +722,10 @@ export function Users() {
                           {canManageUsers ? (
                             <button
                               type="button"
-                              className={`inline-flex items-center rounded-full px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${maintenanceActive ? "cursor-not-allowed" : "cursor-pointer"}`}
+                              className={`inline-flex items-center rounded-full px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${maintenanceLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
                               onClick={() => handleToggleUserStatus(user)}
                               disabled={
-                                maintenanceActive ||
+                                maintenanceLocked ||
                                 togglingUserId === user.id ||
                                 (Array.isArray(user.groups) &&
                                   user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser" && user.isActive))
@@ -746,7 +774,7 @@ export function Users() {
                                 variant="text"
                                 color="red"
                                 onClick={() => handleDeleteUser(user)}
-                                disabled={maintenanceActive || deletingUserId === user.id}
+                                disabled={maintenanceLocked || deletingUserId === user.id}
                               >
                                 {deletingUserId === user.id ? "Löscht ..." : "Löschen"}
                               </Button>

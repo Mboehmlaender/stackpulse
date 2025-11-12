@@ -819,18 +819,19 @@ export function Stacks() {
 
     <div className="mt-12 mb-8 flex flex-col gap-12">
 
-      {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
-        <div className="flex flex-col gap-1">
-          <span>
-            Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
-          </span>
-          {updateRunning && (
-            <span className="text-xs text-indigo-900">
-              Phase: {updateStageLabel}
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
             </span>
-          )}
+            {updateRunning && (
+              <span className="text-xs text-indigo-900">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
       )}
 
       <Card>
@@ -1072,7 +1073,7 @@ export function Stacks() {
                   ) : (canRedeploySingle ? (
                     <Button
                       onClick={() => handleRedeploy(stack.Id)}
-                      disabled={isBusy}
+                      disabled={maintenanceLocked || isBusy}
                       className="disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Redeploy

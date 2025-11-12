@@ -98,14 +98,14 @@ export function buildEventLogFilter(queryParams = {}) {
     filters.push(`(entity_type = 'stack' AND entity_id IN (${placeholders.join(', ')}))`);
   }
 
-  const legacyEndpoints = valueToArray(queryParams.endpoints ?? queryParams.endpoint);
-  if (legacyEndpoints.length) {
-    const placeholders = legacyEndpoints.map((_, idx) => {
-      const key = `legacyEndpoint${idx}`;
-      params[key] = legacyEndpoints[idx];
+  const serverContexts = valueToArray(queryParams.servers ?? queryParams.server);
+  if (serverContexts.length) {
+    const placeholders = serverContexts.map((_, idx) => {
+      const key = `serverContext${idx}`;
+      params[key] = serverContexts[idx];
       return `@${key}`;
     });
-    filters.push(`(context_type = 'endpoint' AND context_id IN (${placeholders.join(', ')}))`);
+    filters.push(`(context_type = 'server' AND context_id IN (${placeholders.join(', ')}))`);
   }
 
   const messageQuery = singleValue(queryParams.message ?? queryParams.text);

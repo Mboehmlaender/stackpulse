@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
   Card,
@@ -12,6 +12,7 @@ import {
 } from "@material-tailwind/react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/components/ToastProvider.jsx";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 const PHRASE_WORD_COUNT = 8;
 
@@ -36,6 +37,7 @@ const buildPhrasePayload = (words = []) => {
 export function ForgotPassword() {
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { user } = useAuth();
 
   const [username, setUsername] = useState("");
   const [phraseInputs, setPhraseInputs] = useState(Array(PHRASE_WORD_COUNT).fill(""));
@@ -49,6 +51,12 @@ export function ForgotPassword() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState("");
+
+  useEffect(() => {
+    if (user) {
+      navigate("/dashboard/stacks", { replace: true });
+    }
+  }, [user, navigate]);
 
   const phraseWords = useMemo(() => {
     if (fileContent.trim()) {

@@ -693,18 +693,19 @@ export function Logs() {
   const toggleOpen = () => setOpen((cur) => !cur);
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
-      {(maintenanceActive || updateRunning) && (<div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
-        <div className="flex flex-col gap-1">
-          <span>
-            Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
-          </span>
-          {updateRunning && (
-            <span className="text-xs text-indigo-900">
-              Phase: {updateStageLabel}
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
             </span>
-          )}
+            {updateRunning && (
+              <span className="text-xs text-indigo-900">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
       )}
       <Card>
         <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
@@ -738,12 +739,12 @@ export function Logs() {
                     <>
                       <Button
                         onClick={() => handleExport('txt')}
-                        disabled={actionLoading || loading}
+                        disabled={maintenanceLocked || actionLoading || loading}
                         className="w-full md:flex-1">
                         Export TXT</Button>
                       <Button
                         onClick={() => handleExport('sql')}
-                        disabled={actionLoading || loading}
+                        disabled={maintenanceLocked || actionLoading || loading}
                         className="w-full md:flex-1">
                         Export SQL</Button>
                     </>
@@ -751,7 +752,7 @@ export function Logs() {
                   {canDeleteLogs && (
                     <Button
                       onClick={handleDeleteFiltered}
-                      disabled={actionLoading || loading || logs.length === 0}
+                      disabled={maintenanceLocked || actionLoading || loading || logs.length === 0}
                       className="w-full md:flex-1 bg-sunsetCoral-500 hover:bg-sunsetCoral-600">
                       Angezeigte löschen</Button>
                   )}
@@ -1075,7 +1076,7 @@ export function Logs() {
                       }}
                       variant="static"
                       label="Kontext-ID"
-                      placeholder="z. B. Endpoint-ID"
+                      placeholder="z. B. Server-ID"
                     />
                   </div>
                 </div>
@@ -1141,7 +1142,7 @@ export function Logs() {
                   <div className="flex-1 min-w-[180px]">
                     <Button
                       onClick={handleResetFilters}
-                      disabled={actionLoading || loading}
+                      disabled={maintenanceLocked || actionLoading || loading}
                       className="w-full"
                     >
                       Zurücksetzen
@@ -1298,7 +1299,7 @@ export function Logs() {
                             <Typography variant="small">
                               <button
                                 onClick={() => handleDeleteLog(log.id)}
-                                disabled={actionLoading}
+                                disabled={maintenanceLocked || actionLoading}
                                 className="rounded-md border border-sunsetCoral-600 px-3 py-1 text-xs text-sunsetCoral-800 transition hover:bg-sunsetCoral-600/20 disabled:opacity-60"
                               >
                                 Löschen

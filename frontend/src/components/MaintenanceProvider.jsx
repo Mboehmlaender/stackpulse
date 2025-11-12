@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { useAuth } from "@/components/AuthProvider.jsx";
 
 const MaintenanceContext = createContext(null);
 
@@ -14,6 +15,8 @@ const INITIAL_STATE = {
 };
 
 export default function MaintenanceProvider({ children }) {
+  const { isAuthenticated, hasPermission, user } = useAuth();
+  const canAccessMaintenance = Boolean(isAuthenticated && (user?.isSuperuser || hasPermission("maintenance-access", "read")));
   const [state, setState] = useState(INITIAL_STATE);
   const pollingRef = useRef(null);
   const wasRunningRef = useRef(false);
@@ -26,6 +29,10 @@ export default function MaintenanceProvider({ children }) {
   }, []);
 
   const fetchConfig = useCallback(async () => {
+    if (!canAccessMaintenance) {
+      applyState({ loading: false, error: "" });
+      return null;
+    }
     applyState({ loading: true, error: "" });
     try {
       const response = await axios.get("/api/maintenance/config");
@@ -43,9 +50,12 @@ export default function MaintenanceProvider({ children }) {
       const message = err.response?.data?.error || err.message || "Fehler beim Laden der Wartungsdaten";
       applyState({ loading: false, error: message });
     }
-  }, [applyState]);
+  }, [applyState, canAccessMaintenance]);
 
   const refreshUpdateStatus = useCallback(async () => {
+    if (!canAccessMaintenance) {
+      return;
+    }
     try {
       const response = await axios.get("/api/maintenance/update-status");
       const data = response.data ?? {};
@@ -59,13 +69,20 @@ export default function MaintenanceProvider({ children }) {
       const message = err.response?.data?.error || err.message || "Fehler beim Aktualisieren des Wartungsstatus";
       setState((prev) => ({ ...prev, error: message }));
     }
-  }, []);
+  }, [canAccessMaintenance]);
 
   useEffect(() => {
+    if (!canAccessMaintenance) {
+      applyState({ loading: false, error: "" });
+      return;
+    }
     fetchConfig();
-  }, [fetchConfig]);
+  }, [applyState, fetchConfig, canAccessMaintenance]);
 
   useEffect(() => {
+    if (!canAccessMaintenance) {
+      return undefined;
+    }
     if (state.update?.running) {
       refreshUpdateStatus();
       const intervalId = setInterval(() => {
@@ -79,15 +96,15 @@ export default function MaintenanceProvider({ children }) {
       pollingRef.current = null;
     }
     return undefined;
-  }, [state.update?.running, refreshUpdateStatus]);
+  }, [canAccessMaintenance, state.update?.running, refreshUpdateStatus]);
 
   useEffect(() => {
     const currentlyRunning = Boolean(state.update?.running);
-    if (!currentlyRunning && wasRunningRef.current) {
+    if (canAccessMaintenance && !currentlyRunning && wasRunningRef.current) {
       fetchConfig();
     }
     wasRunningRef.current = currentlyRunning;
-  }, [state.update?.running, fetchConfig]);
+  }, [canAccessMaintenance, state.update?.running, fetchConfig]);
 
   const triggerUpdate = useCallback(async (payload = {}) => {
     await axios.post("/api/maintenance/portainer-update", payload);
@@ -145,11 +162,6 @@ export default function MaintenanceProvider({ children }) {
     return response.data ?? {};
   }, []);
 
-  const deleteSetupEndpoint = useCallback(async (endpointId) => {
-    const response = await axios.delete(`/api/setup/endpoints/${endpointId}`);
-    return response.data ?? { success: false };
-  }, []);
-
   const deleteSetupServer = useCallback(async (serverId) => {
     const response = await axios.delete(`/api/setup/servers/${serverId}`);
     return response.data ?? { success: false };
@@ -157,6 +169,11 @@ export default function MaintenanceProvider({ children }) {
 
   const updateSetupApiKey = useCallback(async (serverId, apiKey) => {
     const response = await axios.put(`/api/setup/servers/${serverId}/api-key`, { apiKey });
+    return response.data ?? { success: false };
+  }, []);
+
+  const updateSelfStackId = useCallback(async (selfStackId) => {
+    const response = await axios.put("/api/setup/self-stack", { selfStackId });
     return response.data ?? { success: false };
   }, []);
 
@@ -184,11 +201,11 @@ export default function MaintenanceProvider({ children }) {
     testSshConnection,
     fetchSuperuserStatus,
     fetchSetupStatus,
-    deleteSetupEndpoint,
     deleteSetupServer,
     updateSetupApiKey,
+    updateSelfStackId,
     removeSuperuserAccount
-  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection, fetchSuperuserStatus, fetchSetupStatus, deleteSetupEndpoint, deleteSetupServer, updateSetupApiKey, removeSuperuserAccount]);
+  }), [state, fetchConfig, refreshUpdateStatus, setMaintenanceMode, triggerUpdate, saveScript, resetScript, saveSshConfig, deleteSshConfig, testSshConnection, fetchSuperuserStatus, fetchSetupStatus, deleteSetupServer, updateSetupApiKey, updateSelfStackId, removeSuperuserAccount]);
 
   return (
     <MaintenanceContext.Provider value={value}>

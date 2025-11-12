@@ -15,26 +15,6 @@ const updateServer = db.prepare(`
   WHERE id = ?
 `);
 
-const selectAllEndpoints = db.prepare(`
-  SELECT e.*, s.name as server_name, s.url as server_url
-  FROM endpoints e
-  INNER JOIN servers s ON s.id = e.server_id
-  ORDER BY e.id ASC
-`);
-const selectEndpointById = db.prepare('SELECT * FROM endpoints WHERE id = ?');
-const selectEndpointByExternalId = db.prepare('SELECT * FROM endpoints WHERE external_id = ?');
-const selectEndpointByServerAndExternal = db.prepare('SELECT * FROM endpoints WHERE server_id = ? AND external_id = ?');
-const selectEndpointsByServerId = db.prepare('SELECT * FROM endpoints WHERE server_id = ?');
-const insertEndpoint = db.prepare(`
-  INSERT INTO endpoints (server_id, name, external_id, is_default)
-  VALUES (?, ?, ?, ?)
-`);
-const updateEndpoint = db.prepare(`
-  UPDATE endpoints
-  SET name = ?, external_id = ?, updated_at = CURRENT_TIMESTAMP
-  WHERE id = ?
-`);
-const deleteEndpointStmt = db.prepare('DELETE FROM endpoints WHERE id = ?');
 const deleteServerStmt = db.prepare('DELETE FROM servers WHERE id = ?');
 
 const selectApiKeyByServerId = db.prepare('SELECT * FROM server_api_keys WHERE server_id = ?');
@@ -51,29 +31,8 @@ const upsertApiKey = db.prepare(`
 `);
 const deleteApiKeyByServerId = db.prepare('DELETE FROM server_api_keys WHERE server_id = ?');
 
-const clearDefaultEndpointStmt = db.prepare('UPDATE endpoints SET is_default = 0 WHERE is_default != 0');
-const setDefaultEndpointStmt = db.prepare('UPDATE endpoints SET is_default = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
-const selectDefaultEndpointStmt = db.prepare(`
-  SELECT e.*, s.name as server_name, s.url as server_url
-  FROM endpoints e
-  INNER JOIN servers s ON s.id = e.server_id
-  WHERE e.is_default = 1
-  LIMIT 1
-`);
 const countServersStmt = db.prepare('SELECT COUNT(*) as count FROM servers');
-const countEndpointsStmt = db.prepare('SELECT COUNT(*) as count FROM endpoints');
 const selectFirstServerStmt = db.prepare('SELECT * FROM servers ORDER BY id ASC LIMIT 1');
-const selectFirstEndpointStmt = db.prepare(`
-  SELECT e.*, s.name as server_name, s.url as server_url
-  FROM endpoints e
-  INNER JOIN servers s ON s.id = e.server_id
-  ORDER BY e.id ASC
-  LIMIT 1
-`);
-const transactionalSetDefaultEndpoint = db.transaction((endpointId) => {
-  clearDefaultEndpointStmt.run();
-  setDefaultEndpointStmt.run(endpointId);
-});
 
 const API_KEY_SECRET = crypto.createHash('sha256')
   .update(process.env.PORTAINER_API_SECRET || process.env.PORTAINER_API_KEY || 'stackpulse-portainer-api-key')
@@ -167,89 +126,6 @@ function ensureServer({ name, url }) {
   return created;
 }
 
-function ensureEndpoint({ serverId, name, externalId, makeDefault = false }) {
-  if (!serverId) {
-    const error = new Error('SERVER_REQUIRED');
-    error.code = 'SERVER_REQUIRED';
-    throw error;
-  }
-  const server = selectServerById.get(serverId);
-  if (!server) {
-    const error = new Error('SERVER_NOT_FOUND');
-    error.code = 'SERVER_NOT_FOUND';
-    throw error;
-  }
-
-  const trimmedExternal = String(externalId ?? '').trim();
-  if (!trimmedExternal) {
-    const error = new Error('ENDPOINT_EXTERNAL_ID_REQUIRED');
-    error.code = 'ENDPOINT_EXTERNAL_ID_REQUIRED';
-    throw error;
-  }
-
-  const normalizedName = String(name || `Endpoint ${trimmedExternal}`).trim();
-  if (!normalizedName) {
-    const error = new Error('ENDPOINT_NAME_REQUIRED');
-    error.code = 'ENDPOINT_NAME_REQUIRED';
-    throw error;
-  }
-
-  let existing = selectEndpointByServerAndExternal.get(serverId, trimmedExternal);
-  if (existing) {
-    if (existing.name !== normalizedName || existing.external_id !== trimmedExternal) {
-      updateEndpoint.run(normalizedName, trimmedExternal, existing.id);
-      existing = selectEndpointById.get(existing.id);
-      console.log(`ℹ️ [Setup] Endpoint aktualisiert: ${existing.name} (${existing.id}) für Server ${server.name} (${server.id})`);
-    }
-  } else {
-    const isDefault = makeDefault || countEndpointsStmt.get().count === 0 ? 1 : 0;
-    const result = insertEndpoint.run(serverId, normalizedName, trimmedExternal, isDefault);
-    existing = selectEndpointById.get(result.lastInsertRowid);
-    console.log(`✅ [Setup] Endpoint angelegt: ${existing.name} (${existing.id}) für Server ${server.name} (${server.id})`);
-  }
-
-  if (makeDefault && existing && !existing.is_default) {
-    transactionalSetDefaultEndpoint(existing.id);
-    existing = selectEndpointById.get(existing.id);
-  }
-
-  return existing;
-}
-
-function removeEndpoint(endpointId) {
-  const id = Number(endpointId);
-  if (!Number.isFinite(id)) {
-    const error = new Error('ENDPOINT_ID_INVALID');
-    error.code = 'ENDPOINT_ID_INVALID';
-    throw error;
-  }
-
-  const endpoint = selectEndpointById.get(id);
-  if (!endpoint) {
-    const error = new Error('ENDPOINT_NOT_FOUND');
-    error.code = 'ENDPOINT_NOT_FOUND';
-    throw error;
-  }
-
-  const wasDefault = Boolean(endpoint.is_default);
-  deleteEndpointStmt.run(id);
-
-  if (wasDefault) {
-    const fallback = selectFirstEndpointStmt.get();
-    if (fallback) {
-      transactionalSetDefaultEndpoint(fallback.id);
-      console.log(`ℹ️ [Setup] Neuer Standard-Endpoint gesetzt: ${fallback.name} (${fallback.id})`);
-    }
-  }
-
-  console.log(`🗑️ [Setup] Endpoint entfernt: ${endpoint.name} (${endpoint.id}) für Server ${endpoint.server_id}`);
-
-  return {
-    endpoint,
-    removed: true
-  };
-}
-
 function setServerApiKey({ serverId, apiKey }) {
   const id = Number(serverId);
   if (!Number.isFinite(id)) {
@@ -289,43 +165,7 @@ function setServerApiKey({ serverId, apiKey }) {
   };
 }
 
-function setDefaultEndpoint(endpointId) {
-  if (!endpointId) return null;
-  const endpoint = selectEndpointById.get(endpointId);
-  if (!endpoint) {
-    const error = new Error('ENDPOINT_NOT_FOUND');
-    error.code = 'ENDPOINT_NOT_FOUND';
-    throw error;
-  }
-  transactionalSetDefaultEndpoint(endpointId);
-  return selectEndpointById.get(endpointId);
-}
-
-function getDefaultEndpoint() {
-  let endpoint = selectDefaultEndpointStmt.get();
-  if (!endpoint) {
-    endpoint = selectFirstEndpointStmt.get();
-    if (endpoint) {
-      transactionalSetDefaultEndpoint(endpoint.id);
-      endpoint = selectDefaultEndpointStmt.get();
-    }
-  }
-  return endpoint || null;
-}
-
-function getActiveEndpointExternalId() {
-  const endpoint = getDefaultEndpoint();
-  return endpoint ? endpoint.external_id : null;
-}
-
 function getActiveApiKey() {
-  const defaultEndpoint = getDefaultEndpoint();
-  if (defaultEndpoint) {
-    const row = selectApiKeyByServerId.get(defaultEndpoint.server_id);
-    const key = decryptApiKey(row);
-    if (key) return key;
-  }
-
   const firstServer = selectFirstServerStmt.get();
   if (firstServer) {
     const row = selectApiKeyByServerId.get(firstServer.id);
@@ -338,21 +178,6 @@ function getActiveApiKey() {
 }
 
 function getActiveServerUrl() {
-  const endpoint = getDefaultEndpoint();
-  if (endpoint) {
-    const normalizedEndpointUrl = endpoint.server_url ? normalizeUrl(endpoint.server_url) : '';
-    if (normalizedEndpointUrl) {
-      return normalizedEndpointUrl;
-    }
-    const server = selectServerById.get(endpoint.server_id);
-    if (server?.url) {
-      const normalizedServerUrl = normalizeUrl(server.url);
-      if (normalizedServerUrl) {
-        return normalizedServerUrl;
-      }
-    }
-  }
-
   const firstServer = selectFirstServerStmt.get();
   if (firstServer?.url) {
     const normalizedUrl = normalizeUrl(firstServer.url);
@@ -386,8 +211,6 @@ function removeServer(serverId) {
     throw error;
   }
 
-  const relatedEndpoints = selectEndpointsByServerId.all(id);
-  const hadDefaultEndpoint = relatedEndpoints.some((endpoint) => endpoint.is_default);
   const existingApiKey = selectApiKeyByServerId.get(id);
 
   deleteServerStmt.run(id);
@@ -396,25 +219,12 @@ function removeServer(serverId) {
     console.log(`🗑️ [Setup] API-Key entfernt: Server ${server.name} (${server.id})`);
   }
 
-  if (hadDefaultEndpoint) {
-    const fallback = getDefaultEndpoint();
-    if (fallback) {
-      console.log(`ℹ️ [Setup] Neuer Standard-Endpoint gesetzt: ${fallback.name} (${fallback.id})`);
-    }
-  }
-
-  console.log(`🗑️ [Setup] Server entfernt: ${server.name} (${server.id}) – entfernte Endpoints: ${relatedEndpoints.length}`);
+  console.log(`🗑️ [Setup] Server entfernt: ${server.name} (${server.id})`);
 
   return {
     server,
-    removed: true,
-    endpointsRemoved: relatedEndpoints.length
+    removed: true
   };
-}
-
-function hasEndpoint() {
-  const { count } = countEndpointsStmt.get();
-  return count > 0;
 }
 
 function hasApiKey() {
@@ -423,45 +233,18 @@ function hasApiKey() {
 }
 
 function hasCompleteSetup() {
-  return hasSuperuser() && hasServer() && hasEndpoint() && hasApiKey();
+  return hasSuperuser() && hasServer() && hasApiKey();
 }
 
 function ensureDefaultsFromEnv() {
   const envServerUrlRaw = process.env.PORTAINER_URL;
   const envServerName = process.env.PORTAINER_SERVER_NAME;
-  const envEndpointIdRaw = process.env.PORTAINER_ENDPOINT_ID;
-  const envEndpointName = process.env.PORTAINER_ENDPOINT_NAME;
   let server = null;
   if (envServerUrlRaw) {
     try {
       server = ensureServer({ name: envServerName, url: envServerUrlRaw });
     } catch (error) {
       console.error('⚠️ [Setup] Konnte Server aus Umgebungsvariablen nicht anlegen:', error.message);
-    }
-  }
-
-  const trimmedEndpointId = typeof envEndpointIdRaw === 'string' ? envEndpointIdRaw.trim() : '';
-  if (trimmedEndpointId) {
-    const existingEndpoint = selectEndpointByExternalId.get(trimmedEndpointId);
-    if (!existingEndpoint) {
-      const targetServer = server || selectFirstServerStmt.get();
-      if (targetServer) {
-        try {
-          const endpointName = envEndpointName || `Endpoint ${trimmedEndpointId}`;
-          ensureEndpoint({
-            serverId: targetServer.id,
-            name: endpointName,
-            externalId: trimmedEndpointId,
-            makeDefault: true
-          });
-        } catch (error) {
-          console.error('⚠️ [Setup] Konnte Endpoint aus Umgebungsvariablen nicht anlegen:', error.message);
-        }
-      } else {
-        console.warn('⚠️ [Setup] Endpoint aus Umgebungsvariablen benötigt einen vorhandenen Server.');
-      }
-    } else if (!existingEndpoint.is_default) {
-      transactionalSetDefaultEndpoint(existingEndpoint.id);
     }
   }
 
@@ -480,8 +263,6 @@ function ensureDefaultsFromEnv() {
 
 function getSetupStatus() {
   const servers = selectAllServers.all();
-  const endpoints = selectAllEndpoints.all();
-  const defaultEndpoint = getDefaultEndpoint();
   const apiKeyRecords = selectAllApiKeys.all();
   const apiKeyMap = new Map(apiKeyRecords.map((entry) => [entry.server_id, entry]));
 
@@ -489,10 +270,6 @@ function getSetupStatus() {
   const envServerName = rawEnvServerName.trim();
   const rawEnvServerUrl = typeof process.env.PORTAINER_URL === 'string' ? process.env.PORTAINER_URL : '';
   const envServerUrl = rawEnvServerUrl.trim();
-  const rawEnvEndpointName = typeof process.env.PORTAINER_ENDPOINT_NAME === 'string' ? process.env.PORTAINER_ENDPOINT_NAME : '';
-  const envEndpointName = rawEnvEndpointName.trim();
-  const rawEnvEndpointId = typeof process.env.PORTAINER_ENDPOINT_ID === 'string' ? process.env.PORTAINER_ENDPOINT_ID : '';
-  const envEndpointId = rawEnvEndpointId.trim();
   const rawEnvApiKey = typeof process.env.PORTAINER_API_KEY === 'string' ? process.env.PORTAINER_API_KEY : '';
   const envApiKeyTrimmed = rawEnvApiKey.trim();
   const envApiKeyProvided = Boolean(envApiKeyTrimmed);
@@ -503,7 +280,6 @@ function getSetupStatus() {
   const envSuperuserEmail = envSuperuserEmailRaw.trim();
 
   const serverRequired = servers.length === 0;
-  const endpointRequired = endpoints.length === 0;
 
   const apiKeyItems = servers.map((server) => {
     const keyMeta = apiKeyMap.get(server.id) || null;
@@ -518,7 +294,7 @@ function getSetupStatus() {
   const apiKeyRequired = servers.length > 0 && apiKeyCount === 0;
 
   const superuserExists = hasSuperuser();
-  const setupComplete = superuserExists && !serverRequired && !endpointRequired && !apiKeyRequired;
+  const setupComplete = superuserExists && !serverRequired && !apiKeyRequired;
 
   return {
     superuser: {
@@ -536,13 +312,6 @@ function getSetupStatus() {
       requireInput: serverRequired,
       envProvided: Boolean(envServerUrl)
     },
-    endpoints: {
-      count: endpoints.length,
-      items: endpoints,
-      requireInput: endpointRequired,
-      envProvided: Boolean(envEndpointId),
-      default: defaultEndpoint
-    },
     apiKeys: {
       count: apiKeyCount,
       items: apiKeyItems,
@@ -553,7 +322,6 @@ function getSetupStatus() {
     requirements: {
       superuser: !superuserExists,
       server: serverRequired,
-      endpoint: endpointRequired,
       apiKey: apiKeyRequired
     },
     setupComplete,
@@ -561,9 +329,6 @@ function getSetupStatus() {
       serverName: envServerName || (envServerUrl ? deriveServerName(envServerUrl) : ''),
       serverNameFromEnv: rawEnvServerName,
       serverUrl: envServerUrl,
-      endpointName: envEndpointName || (envEndpointId ? `Endpoint ${envEndpointId}` : ''),
-      endpointNameFromEnv: rawEnvEndpointName,
-      endpointExternalId: envEndpointId,
       apiKeyProvided: envApiKeyProvided,
       apiKeyValue: rawEnvApiKey,
       superuserUsername: envSuperuserUsernameRaw,
@@ -573,77 +338,36 @@ function getSetupStatus() {
   };
 }
 
-const createEndpointWithDefaultTransaction = db.transaction(({ serverInput, endpointInput }) => {
-  let server = null;
+function completeSetup({ server: serverInput }) {
+  let serverRecord = null;
 
-  if (endpointInput?.serverId) {
-    const byId = selectServerById.get(endpointInput.serverId);
-    if (!byId) {
-      const error = new Error('SERVER_NOT_FOUND');
-      error.code = 'SERVER_NOT_FOUND';
-      throw error;
-    }
-    server = byId;
+  if (serverInput && typeof serverInput.url === 'string' && serverInput.url.trim()) {
+    serverRecord = ensureServer(serverInput);
+  } else {
+    serverRecord = selectFirstServerStmt.get();
   }
 
-  if (serverInput) {
-    server = ensureServer(serverInput);
-  }
-
-  if (!server) {
-    server = selectFirstServerStmt.get();
-  }
-
-  if (!server) {
+  if (!serverRecord) {
     const error = new Error('SERVER_DETAILS_REQUIRED');
     error.code = 'SERVER_DETAILS_REQUIRED';
     throw error;
   }
 
-  if (!endpointInput) {
-    const error = new Error('ENDPOINT_DETAILS_REQUIRED');
-    error.code = 'ENDPOINT_DETAILS_REQUIRED';
-    throw error;
-  }
-
-  const endpoint = ensureEndpoint({
-    serverId: server.id,
-    name: endpointInput.name,
-    externalId: endpointInput.externalId,
-    makeDefault: true
-  });
-
   return {
-    server,
-    endpoint
-  };
-});
-
-function completeSetup({ server: serverInput, endpoint: endpointInput }) {
-  const result = createEndpointWithDefaultTransaction({ serverInput, endpointInput });
-  return {
-    server: result.server,
-    endpoint: result.endpoint,
-    defaultEndpoint: getDefaultEndpoint()
+    server: serverRecord
   };
 }
 
 export {
   ensureDefaultsFromEnv,
   ensureServer,
-  ensureEndpoint,
   setServerApiKey,
-  setDefaultEndpoint,
-  getDefaultEndpoint,
-  getActiveEndpointExternalId,
   getActiveApiKey,
   getActiveServerUrl,
   hasServer,
-  hasEndpoint,
   hasApiKey,
   hasCompleteSetup,
   getSetupStatus,
   completeSetup,
-  removeEndpoint,
   removeServer
 };

@@ -26,10 +26,41 @@ import {
   ordersOverviewData,
 } from "@/data";
 import { CheckCircleIcon, ClockIcon } from "@heroicons/react/24/solid";
+import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
 
 export function Home() {
+  const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const maintenanceLocked = maintenanceActive || updateRunning;
+
   return (
     <div className="mt-12">
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100 mb-8">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+            </span>
+            {updateRunning && (
+              <span className="text-xs text-indigo-900">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
       <div className="mb-12 grid gap-y-10 gap-x-6 md:grid-cols-2 xl:grid-cols-4">
         {statisticsCardsData.map(({ icon, title, footer, ...rest }) => (
           <StatisticsCard
@@ -87,7 +118,7 @@ export function Home() {
             </div>
             <Menu placement="left-start">
               <MenuHandler>
-                <IconButton size="sm" variant="text" color="blue-gray">
+                <IconButton size="sm" variant="text" color="blue-gray" disabled={maintenanceLocked}>
                   <EllipsisVerticalIcon
                     strokeWidth={3}
                     fill="currenColor"

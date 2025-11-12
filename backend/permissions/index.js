@@ -257,6 +257,26 @@ export function saveGroupPermissionValues(groupId, values = {}) {
     normalizedEntries.push({ item, level });
   });
 
+  const getSubmittedLevel = (permissionKey) => {
+    const entry = normalizedEntries.find((entry) => entry.item.key === permissionKey);
+    if (entry) {
+      return entry.level;
+    }
+    const fallback = itemMap.get(permissionKey);
+    return fallback ? fallback.defaultLevel || 'none' : 'none';
+  };
+
+  const serverManageLevel = getSubmittedLevel('maintenance-server-manage');
+  const serverDeleteLevel = getSubmittedLevel('maintenance-server-delete');
+
+  if (getLevelPriority(serverDeleteLevel) >= getLevelPriority('full') &&
+    getLevelPriority(serverManageLevel) < getLevelPriority('full')) {
+    const error = new Error('PERMISSION_DEPENDENCY_LEVEL');
+    error.code = 'PERMISSION_DEPENDENCY_LEVEL';
+    error.permissionKey = 'maintenance-server-delete';
+    throw error;
+  }
+
   const runSave = db.transaction(() => {
     deleteGroupPermissionValuesStmt.run(numericId);
     normalizedEntries.forEach(({ item, level }) => {

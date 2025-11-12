@@ -21,6 +21,15 @@ import { useAuth } from "@/components/AuthProvider.jsx";
 
 const _ = AVATAR_COLORS.join(" ");
 
+const UPDATE_STAGE_LABELS = {
+    initializing: "Vorbereitung",
+    "activating-maintenance": "Wartungsmodus aktivieren",
+    "executing-script": "Skript wird ausgeführt",
+    waiting: "Warte auf Portainer",
+    completed: "Abgeschlossen",
+    failed: "Fehlgeschlagen"
+};
+
 const normalizeUserGroups = (rawGroups) => {
     if (!Array.isArray(rawGroups)) {
         return [];
@@ -95,7 +104,7 @@ const buildInitialFormValues = (user) => {
 export function UserDetails() {
     const { userId } = useParams();
     const { showToast } = useToast();
-    const { maintenance } = useMaintenance();
+    const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
     const { hasPermission, user: authUser } = useAuth();
 
     const [user, setUser] = useState(null);
@@ -115,7 +124,11 @@ export function UserDetails() {
     const [securityPhraseError, setSecurityPhraseError] = useState("");
     const [renewingSecurityPhrase, setRenewingSecurityPhrase] = useState(false);
 
-    const maintenanceActive = Boolean(maintenance?.active);
+    const maintenanceActive = Boolean(maintenanceMeta?.active);
+    const maintenanceMessage = maintenanceMeta?.message;
+    const updateRunning = Boolean(updateState?.running);
+    const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+    const maintenanceLocked = maintenanceActive || updateRunning;
 
     const canEditUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "full"));
     const canReadUsers = Boolean(authUser?.isSuperuser || hasPermission("users-edit", "read"));
@@ -132,6 +145,8 @@ export function UserDetails() {
         }
         return user.groups.some((group) => (group?.name || "").toLowerCase() === "superuser");
     }, [user]);
+    const canCurrentUserEditSuperuser = authUser?.isSuperuser && user?.id && Number(authUser.id) === Number(user.id);
+    const superuserFieldsLocked = isSuperuserUser && !canCurrentUserEditSuperuser;
 
     const numericUserId = useMemo(() => {
         const asNumber = Number(userId);
@@ -161,7 +176,7 @@ export function UserDetails() {
             setSecurityPhraseWords([]);
             setSecurityPhraseDownloadedAt(item.securityPhraseDownloadedAt || null);
             setSecurityPhraseError("");
-            const initialValues = buildInitialFormValues(item);
+        const initialValues = buildInitialFormValues(item);
             initialFormValuesRef.current = { ...initialValues };
             setFormValues(initialValues);
             setSaveError("");
@@ -436,7 +451,7 @@ export function UserDetails() {
     }, [canRenewSecurityPhrase, fetchSecurityPhrase, renewingSecurityPhrase, securityPhraseLoading]);
 
     const handleRenewSecurityPhrase = useCallback(async () => {
-        if (!canRenewSecurityPhrase || !numericUserId || maintenanceActive || renewingSecurityPhrase) {
+        if (!canRenewSecurityPhrase || !numericUserId || maintenanceLocked || renewingSecurityPhrase) {
             return;
         }
 
@@ -472,7 +487,7 @@ export function UserDetails() {
     }, [
         canRenewSecurityPhrase,
         numericUserId,
-        maintenanceActive,
+        maintenanceLocked,
         renewingSecurityPhrase,
         showToast
     ]);
@@ -560,17 +575,26 @@ export function UserDetails() {
         fetchSecurityPhrase();
     }, [hasLoaded, canManageSecurityPhrase, fetchSecurityPhrase, numericUserId]);
 
-    const inputDisabled = maintenanceActive || savingUser || !user || !canEditUsers;
-    const selectDisabled = maintenanceActive || savingUser || !user || groupsLoading || !canEditUsers || isSuperuserUser;
-    const avatarSelectDisabled = maintenanceActive || savingUser || !user || !canEditUsers;
+    const inputDisabled = maintenanceLocked || savingUser || !user || !canEditUsers;
+    const selectDisabled = maintenanceLocked || savingUser || !user || groupsLoading || !canEditUsers || isSuperuserUser;
+    const avatarSelectDisabled = maintenanceLocked || savingUser || !user || !canEditUsers || superuserFieldsLocked;
     const groupSelectValue = formValues.groupId ? String(formValues.groupId) : "";
 
     return (
         <>
             <div className="mt-12 flex flex-col gap-12">
-                {maintenanceActive && (
-                    <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                        Wartungsmodus aktiv – Änderungen sind deaktiviert.
+                {(maintenanceActive || updateRunning) && (
+                    <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+                        <div className="flex flex-col gap-1">
+                            <span>
+                                Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+                            </span>
+                            {updateRunning && (
+                                <span className="text-xs text-indigo-900">
+                                    Phase: {updateStageLabel}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 )}
                 <div className="relative h-72 w-full overflow-hidden rounded-xl bg-[url('/img/background-image.png')] bg-cover\tbg-center">
@@ -600,7 +624,7 @@ export function UserDetails() {
                                     color="green"
                                     className="normal-case"
                                     onClick={handleSaveUser}
-                                    disabled={maintenanceActive || savingUser}
+                                    disabled={maintenanceLocked || savingUser}
                                 >
                                     {savingUser ? "Speichert ..." : "Änderungen speichern"}
                                 </Button>
@@ -627,6 +651,16 @@ export function UserDetails() {
                                 <Typography variant="h6" color="blue-gray" className="mb-4">
                                     Allgemeine Einstellungen
                                 </Typography>
+                                {(isSuperuserUser) && (
+                                    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                                        Systemgruppe – Name und Beschreibung sind geschützt.
+                                        {superuserFieldsLocked && (
+                                            <span className="mt-1 block text-xs text-amber-600">
+                                                Nur der Superuser selbst kann Benutzername, E-Mail-Adresse und Passwort ändern.
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
                                 <div className="mb-6">
                                     <Typography className="mb-2 block text-xs font-semibold uppercase text-blue-gray-500">
                                         Benutzername
@@ -635,7 +669,7 @@ export function UserDetails() {
                                         value={formValues.username}
                                         onChange={handleUsernameChange}
                                         placeholder="Benutzername"
-                                        disabled={inputDisabled}
+                                        disabled={inputDisabled || superuserFieldsLocked}
                                         className=" !border-t-blue-gray-200 focus:!border-t-gray-900"
                                         labelProps={{
                                             className: "before:content-none after:content-none"
@@ -651,7 +685,7 @@ export function UserDetails() {
                                         value={formValues.email}
                                         onChange={handleEmailChange}
                                         placeholder="benutzer@example.com"
-                                        disabled={inputDisabled}
+                                        disabled={inputDisabled || superuserFieldsLocked}
                                         className=" !border-t-blue-gray-200 focus:!border-t-gray-900"
                                         labelProps={{
                                             className: "before:content-none after:content-none"
@@ -667,7 +701,7 @@ export function UserDetails() {
                                         value={formValues.password}
                                         onChange={handlePasswordChange}
                                         placeholder="Passwort setzen"
-                                        disabled={inputDisabled}
+                                        disabled={inputDisabled || superuserFieldsLocked}
                                         className=" !border-t-blue-gray-200 focus:!border-t-gray-900"
                                         labelProps={{
                                             className: "before:content-none after:content-none"
@@ -787,6 +821,7 @@ export function UserDetails() {
                                             onClick={handleReloadSecurityPhrase}
                                             disabled={
                                                 !canRenewSecurityPhrase ||
+                                                maintenanceLocked ||
                                                 securityPhraseLoading ||
                                                 renewingSecurityPhrase
                                             }
@@ -799,7 +834,7 @@ export function UserDetails() {
                                             onClick={handleRenewSecurityPhrase}
                                             disabled={
                                                 !canRenewSecurityPhrase ||
-                                                maintenanceActive ||
+                                                maintenanceLocked ||
                                                 securityPhraseLoading ||
                                                 renewingSecurityPhrase
                                             }
@@ -824,6 +859,7 @@ export function UserDetails() {
                                             onClick={handleReloadSecurityPhrase}
                                             disabled={
                                                 !canRenewSecurityPhrase ||
+                                                maintenanceLocked ||
                                                 securityPhraseLoading ||
                                                 renewingSecurityPhrase
                                             }

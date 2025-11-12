@@ -24,6 +24,15 @@ import { AVATAR_COLORS } from "@/data/avatarColors.js";
 
 const _ = AVATAR_COLORS.join(" ");
 
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
+
 const mapGroup = (item) => ({
   id: item?.id ?? null,
   name: item?.name || "",
@@ -63,11 +72,19 @@ const LEVEL_OPTIONS = [
   { value: "read", label: "Nur lesen" },
   { value: "none", label: "Kein Zugriff" }
 ];
+const LEVEL_PRIORITY = {
+  none: 0,
+  read: 1,
+  full: 2
+};
+
+const normalizePermissionLevel = (key, value) =>
+  key === "maintenance-server-delete" && value !== "full" ? "none" : value;
 
 export function UserGroupDetail() {
   const { groupId } = useParams();
   const { showToast } = useToast();
-  const { maintenance } = useMaintenance();
+  const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
   const { hasPermission, user: authUser } = useAuth();
 
   const [group, setGroup] = useState(null);
@@ -85,12 +102,17 @@ export function UserGroupDetail() {
   const [permissionsLoading, setPermissionsLoading] = useState(false);
   const [permissionsError, setPermissionsError] = useState("");
 
-  const maintenanceActive = Boolean(maintenance?.active);
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const maintenanceLocked = maintenanceActive || updateRunning;
   const isSuperuserGroup = useMemo(() => (group?.name || "").toLowerCase() === "superuser", [group]);
   const isSuperuserAccount = Boolean(authUser?.isSuperuser);
   const canEditGroupDetails = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "full"));
   const canViewPermissionSettings = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "read"));
   const canAdjustPermissions = Boolean(isSuperuserAccount || hasPermission("user-groups-edit", "full"));
+  const superuserGroupLocked = isSuperuserGroup && !isSuperuserAccount;
 
   const numericGroupId = useMemo(() => {
     const candidate = Number(groupId);
@@ -162,15 +184,15 @@ export function UserGroupDetail() {
 
           const sectionGroups = Array.isArray(section.groups)
             ? section.groups.map((group, groupIdx) => {
-                const groupItems = Array.isArray(group.items)
-                  ? group.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
-                  : [];
-                return {
-                  ...group,
-                  sortOrder: typeof group.sortOrder === "number" ? group.sortOrder : groupIdx,
-                  items: groupItems
-                };
-              })
+              const groupItems = Array.isArray(group.items)
+                ? group.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
+                : [];
+              return {
+                ...group,
+                sortOrder: typeof group.sortOrder === "number" ? group.sortOrder : groupIdx,
+                items: groupItems
+              };
+            })
             : [];
 
           return {
@@ -485,22 +507,33 @@ export function UserGroupDetail() {
     return group?.avatarColor || "";
   }, [formValues.avatarColor, group]);
 
-  const inputDisabled = maintenanceActive || savingGroup || !group || isSuperuserGroup || !canEditGroupDetails;
-  const selectDisabled = maintenanceActive || savingGroup || !group || !canEditGroupDetails;
+  const inputDisabled = maintenanceLocked || savingGroup || !group || superuserGroupLocked || !canEditGroupDetails;
+  const selectDisabled = maintenanceLocked || savingGroup || !group || superuserGroupLocked || !canEditGroupDetails;
   const selectValue = formValues.avatarColor || "";
 
   const handlePermissionChange = useCallback((permissionKey, value) => {
     if (!permissionKey || !canAdjustPermissions || isSuperuserGroup) {
       return;
     }
+    const nextValue = normalizePermissionLevel(permissionKey, value);
     setPermissionSelection((prev) => {
-      if (prev[permissionKey] === value) {
+      const shouldResetDelete =
+        permissionKey === "maintenance-server-manage" && nextValue !== "full";
+
+      if (!shouldResetDelete && prev[permissionKey] === nextValue) {
         return prev;
       }
-      return {
+
+      const nextState = {
         ...prev,
-        [permissionKey]: value
+        [permissionKey]: nextValue
       };
+
+      if (shouldResetDelete) {
+        nextState["maintenance-server-delete"] = "none";
+      }
+
+      return nextState;
     });
   }, [canAdjustPermissions, isSuperuserGroup]);
 
@@ -509,13 +542,16 @@ export function UserGroupDetail() {
       if (!permissionKey) {
         return null;
       }
+      let value = null;
       if (Object.prototype.hasOwnProperty.call(permissionSelection, permissionKey)) {
-        return permissionSelection[permissionKey];
+        value = permissionSelection[permissionKey];
+      } else if (Object.prototype.hasOwnProperty.call(permissionDefaults, permissionKey)) {
+        value = permissionDefaults[permissionKey];
       }
-      if (Object.prototype.hasOwnProperty.call(permissionDefaults, permissionKey)) {
-        return permissionDefaults[permissionKey];
+      if (typeof value === "string") {
+        return normalizePermissionLevel(permissionKey, value);
       }
-      return null;
+      return value;
     },
     [permissionSelection, permissionDefaults]
   );
@@ -571,6 +607,8 @@ export function UserGroupDetail() {
 
     const rowName = `permission-${ownerKey}-${row.key}`;
     const currentValue = getPermissionValue(row.key) ?? "none";
+    const displayValue = normalizePermissionLevel(row.key, currentValue);
+    const serverManageLevel = getPermissionValue("maintenance-server-manage") ?? "none";
     const { addTopBorder = true } = options;
 
     const rowClasses = [
@@ -580,10 +618,13 @@ export function UserGroupDetail() {
       .filter(Boolean)
       .join(" ");
 
+    const baseLevels = Array.isArray(row.availableLevels) && row.availableLevels.length
+      ? row.availableLevels
+      : LEVEL_OPTIONS.map((option) => option.value);
     const availableLevels = new Set(
-      Array.isArray(row.availableLevels) && row.availableLevels.length
-        ? row.availableLevels
-        : LEVEL_OPTIONS.map((option) => option.value)
+      row.key === "maintenance-server-delete"
+        ? baseLevels.filter((level) => level === "full" || level === "none")
+        : baseLevels
     );
     const levelOptions = LEVEL_OPTIONS;
 
@@ -595,13 +636,18 @@ export function UserGroupDetail() {
         <List className="flex-col gap-1.5 md:ml-auto md:flex-row md:flex-nowrap md:w-1/2 md:items-center md:justify-end md:gap-3">
           {levelOptions.map((option) => {
             const optionId = `${rowName}-${option.value}`;
-            const checked = currentValue === option.value;
+            const checked = displayValue === option.value;
+            const requiresManageFull =
+              row.key === "maintenance-server-delete" &&
+              option.value === "full" &&
+              (LEVEL_PRIORITY[serverManageLevel] ?? 0) < LEVEL_PRIORITY.full;
             const disabled =
               !availableLevels.has(option.value) ||
               permissionsLoading ||
               savingGroup ||
               !canAdjustPermissions ||
-              isSuperuserGroup;
+              isSuperuserGroup ||
+              requiresManageFull;
 
             return (
               <ListItem
@@ -610,9 +656,8 @@ export function UserGroupDetail() {
               >
                 <label
                   htmlFor={optionId}
-                  className={`inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 min-h-[38px] ${
-                    disabled ? "cursor-not-allowed bg-blue-gray-50/40" : "cursor-pointer hover:bg-blue-gray-50/60"
-                  }`}
+                  className={`inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 min-h-[38px] ${disabled ? "cursor-not-allowed bg-blue-gray-50/40" : "cursor-pointer hover:bg-blue-gray-50/60"
+                    }`}
                 >
                   <ListItemPrefix className="flex-shrink-0">
                     <Radio
@@ -633,9 +678,8 @@ export function UserGroupDetail() {
                   </ListItemPrefix>
                   <Typography
                     color="blue-gray"
-                    className={`text-sm font-medium leading-5 whitespace-nowrap ${
-                      disabled ? "text-blue-gray-300" : "text-blue-gray-600"
-                    }`}
+                    className={`text-sm font-medium leading-5 whitespace-nowrap ${disabled ? "text-blue-gray-300" : "text-blue-gray-600"
+                      }`}
                   >
                     {option.label}
                   </Typography>
@@ -651,9 +695,18 @@ export function UserGroupDetail() {
   return (
     <>
       <div className="mt-12 flex flex-col gap-12">
-        {maintenanceActive && (
-          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Wartungsmodus aktiv – Änderungen sind deaktiviert.
+        {(maintenanceActive || updateRunning) && (
+          <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+            <div className="flex flex-col gap-1">
+              <span>
+                Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+              </span>
+              {updateRunning && (
+                <span className="text-xs text-indigo-900">
+                  Phase: {updateStageLabel}
+                </span>
+              )}
+            </div>
           </div>
         )}
         <div className="relative h-72 w-full overflow-hidden rounded-xl bg-[url('/img/background-image.png')] bg-cover\tbg-center">
@@ -683,7 +736,7 @@ export function UserGroupDetail() {
                   color="green"
                   className="normal-case"
                   onClick={handleSaveGroup}
-                  disabled={maintenanceActive || savingGroup}
+                  disabled={maintenanceLocked || savingGroup}
                 >
                   {savingGroup ? "Speichert ..." : "Änderungen speichern"}
                 </Button>
@@ -710,11 +763,14 @@ export function UserGroupDetail() {
                 <Typography variant="h6" color="blue-gray" className="mb-4">
                   Gruppendaten
                 </Typography>
-                {(maintenanceActive || isSuperuserGroup) && (
+                {isSuperuserGroup && (
                   <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    {maintenanceActive
-                      ? "Wartungsmodus aktiv – Änderungen sind deaktiviert."
-                      : "Systemgruppe – Name und Beschreibung sind geschützt."}
+                    Systemgruppe – Name und Beschreibung sind geschützt.
+                    {superuserGroupLocked && (
+                      <span className="mt-1 block text-xs text-amber-600">
+                        Nur der Superuser darf die Superuser-Gruppe bearbeiten.
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="mb-6">
@@ -810,81 +866,87 @@ export function UserGroupDetail() {
                 </div>
               </div>
               <div className="lg:col-span-2 xl:col-span-3">
-                <Typography variant="h6" color="blue-gray" className="mb-4">
-                  Berechtigungen (Ansicht)
-                </Typography>
-                {isSuperuserGroup ? (
-                  <div className="rounded-xl border border-blue-gray-100 bg-white px-4 py-4 text-sm text-blue-gray-600 shadow-sm">
-                    Die Superuser-Gruppe besitzt automatisch Vollzugriff auf alle Bereiche. Berechtigungen können hier nicht angepasst werden.
-                  </div>
-                ) : !canViewPermissionSettings ? null : (
-                  <div className="rounded-xl border border-blue-gray-100 bg-white shadow-sm">
-                    {permissionsLoading && (
-                      <div className="border-b border-blue-gray-100 px-4 py-4">
-                        <div className="flex items-center gap-3 text-sm text-blue-gray-500">
-                          <Spinner className="h-4 w-4" />
-                          <span>Berechtigungen werden geladen ...</span>
-                        </div>
+                {(!maintenanceActive && !updateRunning) && (
+                  <>
+                    <Typography variant="h6" color="blue-gray" className="mb-4">
+                      Berechtigungen (Ansicht)
+                    </Typography>
+
+                    {isSuperuserGroup ? (
+                      <div className="rounded-xl border border-blue-gray-100 bg-white px-4 py-4 text-sm text-blue-gray-600 shadow-sm">
+                        Die Superuser-Gruppe besitzt automatisch Vollzugriff auf alle Bereiche. Berechtigungen können hier nicht angepasst werden.
                       </div>
-                    )}
-                    {!permissionsLoading && permissionsError && (
-                      <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-red-700">
-                        {permissionsError}
-                      </div>
-                    )}
-                    {!permissionsLoading && !permissionsError &&
-                      (permissionSections.length === 0 ? (
-                        <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-blue-gray-500">
-                          Für diese Gruppe sind keine Berechtigungen definiert.
-                        </div>
-                      ) : (
-                        permissionSections.map((section, sectionIndex) => {
-                          const sectionItems = Array.isArray(section.items) ? section.items : [];
-                          const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
-
-                          return (
-                            <div
-                              key={section.key || sectionIndex}
-                              className={sectionIndex === 0 ? "" : "border-t border-blue-gray-100"}
-                            >
-                              <div className="border-b border-blue-gray-100 px-4 py-4">
-                                <Typography variant="h6" className="text-lg font-semibold text-blue-gray-700">
-                                  {section.title}
-                                </Typography>
-                              </div>
-                              {sectionItems.map((row, rowIndex) =>
-                                renderPermissionRow(row, section.key || sectionIndex, {
-                                  addTopBorder: rowIndex !== 0
-                                })
-                              )}
-                              {sectionGroups.map((group, groupIdx) => {
-                                const groupItems = Array.isArray(group.items) ? group.items : [];
-                                const hasVisibleRows = groupItems.some(isPermissionRowVisible);
-
-                                if (!hasVisibleRows) {
-                                  return null;
-                                }
-
-                                return (
-                                  <div key={group.key || `${section.key || sectionIndex}-${groupIdx}`} className="border-t border-blue-gray-100">
-                                    <div className="border-b border-blue-gray-100 px-4 py-3">
-                                      <Typography className="text-sm font-semibold uppercase tracking-wide text-blue-gray-600">
-                                        {group.title}
-                                      </Typography>
-                                    </div>
-                                    {groupItems.map((row, rowIndex) =>
-                                      renderPermissionRow(row, group.key || `${section.key || sectionIndex}-${groupIdx}`, {
-                                        addTopBorder: rowIndex !== 0
-                                      })
-                                    )}
-                                  </div>
-                                );
-                              })}
+                    ) : !canViewPermissionSettings ? null : (
+                      <div className="rounded-xl border border-blue-gray-100 bg-white shadow-sm">
+                        {permissionsLoading && (
+                          <div className="border-b border-blue-gray-100 px-4 py-4">
+                            <div className="flex items-center gap-3 text-sm text-blue-gray-500">
+                              <Spinner className="h-4 w-4" />
+                              <span>Berechtigungen werden geladen ...</span>
                             </div>
-                          );
-                        })
-                      ))}
-                  </div>
+                          </div>
+                        )}
+                        {!permissionsLoading && permissionsError && (
+                          <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-red-700">
+                            {permissionsError}
+                          </div>
+                        )}
+                        {!permissionsLoading && !permissionsError &&
+                          (permissionSections.length === 0 ? (
+                            <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-blue-gray-500">
+                              Für diese Gruppe sind keine Berechtigungen definiert.
+                            </div>
+                          ) : (
+                            permissionSections.map((section, sectionIndex) => {
+                              const sectionItems = Array.isArray(section.items) ? section.items : [];
+                              const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
+
+                              return (
+                                <div
+                                  key={section.key || sectionIndex}
+                                  className={sectionIndex === 0 ? "" : "border-t border-blue-gray-100"}
+                                >
+                                  <div className="border-b border-blue-gray-100 px-4 py-4">
+                                    <Typography variant="h6" className="text-lg font-semibold text-blue-gray-700">
+                                      {section.title}
+                                    </Typography>
+                                  </div>
+                                  {sectionItems.map((row, rowIndex) =>
+                                    renderPermissionRow(row, section.key || sectionIndex, {
+                                      addTopBorder: rowIndex !== 0
+                                    })
+                                  )}
+                                  {sectionGroups.map((group, groupIdx) => {
+                                    const groupItems = Array.isArray(group.items) ? group.items : [];
+                                    const hasVisibleRows = groupItems.some(isPermissionRowVisible);
+
+                                    if (!hasVisibleRows) {
+                                      return null;
+                                    }
+
+                                    return (
+                                      <div key={group.key || `${section.key || sectionIndex}-${groupIdx}`} className="border-t border-blue-gray-100">
+                                        <div className="border-b border-blue-gray-100 px-4 py-3">
+                                          <Typography className="text-sm font-semibold uppercase tracking-wide text-blue-gray-600">
+                                            {group.title}
+                                          </Typography>
+                                        </div>
+                                        {groupItems.map((row, rowIndex) =>
+                                          renderPermissionRow(row, group.key || `${section.key || sectionIndex}-${groupIdx}`, {
+                                            addTopBorder: rowIndex !== 0
+                                          })
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })
+                          ))}
+                      </div>
+                    )}
+                  </>
+
                 )}
               </div>
             </div>

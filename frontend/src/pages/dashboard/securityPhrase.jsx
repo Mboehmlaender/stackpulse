@@ -11,6 +11,15 @@ import {
 import { useNavigate } from "react-router-dom";
 import { ArrowDownTrayIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useAuth } from "@/components/AuthProvider.jsx";
+import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
 
 const formatWordsAsText = (words = []) => {
   if (!Array.isArray(words) || words.length === 0) {
@@ -37,6 +46,7 @@ const groupWords = (words = []) => {
 export function SecurityPhrase() {
   const navigate = useNavigate();
   const { user, setSession, refreshSession } = useAuth();
+  const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [words, setWords] = useState([]);
@@ -44,6 +54,11 @@ export function SecurityPhrase() {
   const [downloaded, setDownloaded] = useState(false);
 
   const requiresDownload = Boolean(user?.requiresSecurityPhraseDownload);
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const maintenanceLocked = maintenanceActive || updateRunning;
 
   const groupedWords = useMemo(() => groupWords(words), [words]);
 
@@ -81,6 +96,11 @@ export function SecurityPhrase() {
       if (err?.response?.status === 409 || err?.response?.data?.error === "SECURITY_PHRASE_ALREADY_DOWNLOADED") {
         await refreshSession();
         navigate("/dashboard/stacks", { replace: true });
+        return;
+      }
+      if (err?.response?.status === 401) {
+        await refreshSession();
+        navigate("/auth/sign-in", { replace: true });
         return;
       }
 
@@ -133,6 +153,11 @@ export function SecurityPhrase() {
       setDownloaded(Boolean(downloadedAt));
       navigate("/dashboard/stacks", { replace: true });
     } catch (err) {
+      if (err?.response?.status === 401) {
+        await refreshSession();
+        navigate("/auth/sign-in", { replace: true });
+        return;
+      }
       const message = err?.response?.data?.error || err?.message || "Download konnte nicht bestätigt werden.";
       setError(message);
     } finally {
@@ -223,7 +248,7 @@ export function SecurityPhrase() {
                   size="md"
                   className="flex items-center gap-2 normal-case"
                   onClick={handleDownload}
-                  disabled={saving || downloaded || words.length === 0}
+                  disabled={maintenanceLocked || saving || downloaded || words.length === 0}
                 >
                   <ArrowDownTrayIcon className="h-5 w-5" />
                   Sicherheitsschlüssel herunterladen

@@ -89,6 +89,7 @@ export const routes = [
       name: "passwort vergessen",
       path: "/forgot-password",
       element: <ForgotPassword />,
+      hidden: true,
     },
     {
       icon: <ArrowLeftOnRectangleIcon {...icon} />,

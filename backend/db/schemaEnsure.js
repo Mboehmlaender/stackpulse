@@ -177,12 +177,12 @@ const PERMISSION_BLUEPRINT = [
     groups: [
       {
         key: 'maintenance-server-group',
-        title: 'Server & Endpoints',
+        title: 'Server',
         sortOrder: 0,
         items: [
           {
             key: 'maintenance-server-manage',
-            label: 'Server/Endpoint-Sektion',
+            label: 'Server-Sektion',
             sortOrder: 0,
             defaultLevel: 'none',
             levels: ['full', 'read', 'none'],
@@ -192,7 +192,7 @@ const PERMISSION_BLUEPRINT = [
           },
           {
             key: 'maintenance-server-delete',
-            label: 'Server/Endpoint löschen',
+            label: 'Server löschen',
             sortOrder: 1,
             defaultLevel: 'none',
             levels: ['full', 'none'],
@@ -204,9 +204,26 @@ const PERMISSION_BLUEPRINT = [
         ]
       },
       {
+        key: 'maintenance-superuser-group',
+        title: 'Superuser',
+        sortOrder: 1,
+        items: [
+          {
+            key: 'maintenance-superuser-delete',
+            label: 'Superuser löschen',
+            sortOrder: 0,
+            defaultLevel: 'none',
+            levels: ['full', 'none'],
+            dependencies: [
+              { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' }
+            ]
+          }
+        ]
+      },
+      {
         key: 'maintenance-portainer-group',
         title: 'Portainer',
-        sortOrder: 1,
+        sortOrder: 2,
         items: [
           {
             key: 'maintenance-portainer',
@@ -245,7 +262,7 @@ const PERMISSION_BLUEPRINT = [
       {
         key: 'maintenance-duplicates-group',
         title: 'Doppelte Stacks',
-        sortOrder: 2,
+        sortOrder: 3,
         items: [
           {
             key: 'maintenance-duplicates',
@@ -348,6 +365,16 @@ const tableExists = (tableName) => {
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`)
     .get(tableName);
   return Boolean(result);
+};
+
+const dropDeprecatedArtifacts = () => {
+  const deprecatedTables = ['user_endpoint_permission_overrides', 'endpoints'];
+  deprecatedTables.forEach((table) => {
+    if (tableExists(table)) {
+      db.exec(`DROP TABLE IF EXISTS ${table}`);
+      console.log(`ℹ️ Veraltete Tabelle ${table} entfernt`);
+    }
+  });
 };
 
 const getExistingColumns = (tableName) => {
@@ -701,6 +728,7 @@ export const ensureDatabaseSchema = () => {
     const tableDefinitions = parseTableDefinitions(statements);
     const indexDefinitions = parseIndexStatements(statements);
 
+    dropDeprecatedArtifacts();
     ensureTablesAndColumns(tableDefinitions);
     ensureIndexes(indexDefinitions);
     ensurePermissionSeeds();

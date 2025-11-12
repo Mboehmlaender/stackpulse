@@ -17,6 +17,15 @@ import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useToast } from "@/components/ToastProvider.jsx";
 import { useAuth } from "@/components/AuthProvider.jsx";
 
+const UPDATE_STAGE_LABELS = {
+  initializing: "Vorbereitung",
+  "activating-maintenance": "Wartungsmodus aktivieren",
+  "executing-script": "Skript wird ausgeführt",
+  waiting: "Warte auf Portainer",
+  completed: "Abgeschlossen",
+  failed: "Fehlgeschlagen"
+};
+
 export function Usergroups() {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -29,8 +38,12 @@ export function Usergroups() {
   const [deletingGroupId, setDeletingGroupId] = useState(null);
 
   const { showToast } = useToast();
-  const { maintenance } = useMaintenance();
-  const maintenanceActive = Boolean(maintenance?.active);
+  const { maintenance: maintenanceMeta, update: updateState } = useMaintenance();
+  const maintenanceActive = Boolean(maintenanceMeta?.active);
+  const maintenanceMessage = maintenanceMeta?.message;
+  const updateRunning = Boolean(updateState?.running);
+  const updateStageLabel = updateState?.stage ? (UPDATE_STAGE_LABELS[updateState.stage] ?? updateState.stage) : "–";
+  const maintenanceLocked = maintenanceActive || updateRunning;
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
 
@@ -190,7 +203,8 @@ export function Usergroups() {
   }, []);
 
   const handleCreateGroup = useCallback(async () => {
-    if (maintenanceActive) {
+    if (maintenanceLocked) {
+      setCreateGroupError("Im Wartungsmodus oder während eines Updates können keine Gruppen angelegt werden.");
       return;
     }
     if (!canEditGroups) {
@@ -236,7 +250,7 @@ export function Usergroups() {
       setCreatingGroup(false);
     }
   }, [
-    maintenanceActive,
+    maintenanceLocked,
     canEditGroups,
     newGroupName,
     newGroupDescription,
@@ -245,10 +259,10 @@ export function Usergroups() {
     fetchGroups
   ]);
 
-  const createGroupDisabled = maintenanceActive || creatingGroup;
+  const createGroupDisabled = maintenanceLocked || creatingGroup;
 
   const handleDeleteGroup = useCallback(async (group) => {
-    if (maintenanceActive || !group?.id) {
+    if (maintenanceLocked || !group?.id) {
       return;
     }
 
@@ -322,13 +336,22 @@ export function Usergroups() {
     } finally {
       setDeletingGroupId(null);
     }
-  }, [maintenanceActive, canDeleteGroups, showToast, fetchGroups]);
+  }, [maintenanceLocked, canDeleteGroups, showToast, fetchGroups]);
 
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
-      {maintenanceActive && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Wartungsmodus aktiv – Änderungen sind deaktiviert. Die Liste kann dennoch angezeigt werden.
+      {(maintenanceActive || updateRunning) && (
+        <div className="rounded-lg border border-cyan-500/60 bg-cyan-900/30 px-4 py-3 text-sm text-bluegray-100">
+          <div className="flex flex-col gap-1">
+            <span>
+              Wartungsmodus aktiv{maintenanceMessage ? ` – ${maintenanceMessage}` : updateRunning ? " – Portainer-Update läuft" : ""}.
+            </span>
+            {updateRunning && (
+              <span className="text-xs text-indigo-900">
+                Phase: {updateStageLabel}
+              </span>
+            )}
+          </div>
         </div>
       )}
       <Card className="border border-blue-gray-100 shadow-sm">
@@ -374,7 +397,12 @@ export function Usergroups() {
                 <Button color="green" onClick={handleCreateGroup} disabled={createGroupDisabled}>
                   {creatingGroup ? "Speichert ..." : "Gruppe anlegen"}
                 </Button>
-                <Button variant="text" color="blue-gray" onClick={resetNewGroupForm} disabled={creatingGroup}>
+                <Button
+                  variant="text"
+                  color="blue-gray"
+                  onClick={resetNewGroupForm}
+                  disabled={creatingGroup || maintenanceLocked}
+                >
                   Formular zurücksetzen
                 </Button>
               </div>
@@ -498,7 +526,7 @@ export function Usergroups() {
                                 color="red"
                                 onClick={() => handleDeleteGroup(group)}
                                 disabled={
-                                  maintenanceActive ||
+                                  maintenanceLocked ||
                                   deletingGroupId === group.id ||
                                   Number(group.memberCount) > 0
                                 }

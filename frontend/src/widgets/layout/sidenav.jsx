@@ -22,7 +22,7 @@ export function Sidenav({ brandImg, brandName, routes }) {
         } fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] w-72  rounded-xl transition-transform duration-300 xl:translate-x-0 border border-blue-gray-100`}
     >
       <div className="relative py-6 px-8 text-right">
-        <img src={logo} alt="StackPulse" className="w-auto" /><span className="mt-1 text-xs text-stormGrey-500 block antialiased font-sans">v0.4</span>
+        <img src={logo} alt="StackPulse" className="w-auto" /><span className="mt-1 text-xs text-stormGrey-500 block antialiased font-sans">v0.5</span>
 
         <IconButton
           variant="text"
@@ -36,7 +36,10 @@ export function Sidenav({ brandImg, brandName, routes }) {
       </div>
       <div className="m-4">
         {routes.map(({ layout, title, pages }, key) => {
-          const visiblePages = pages.filter(({ permission }) => {
+          const visiblePages = pages.filter(({ permission, hidden }) => {
+            if (hidden) {
+              return false;
+            }
             if (!permission || !permission.key) {
               return true;
             }
