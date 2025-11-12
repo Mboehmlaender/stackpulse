@@ -11,17 +11,78 @@ import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './db/index.js';
+import { ensureDatabaseSchema } from './db/schemaEnsure.js';
 import {
-  logRedeployEvent,
-  buildLogFilter,
-  deleteLogById,
-  deleteLogsByFilters,
-  exportLogsByFilters
-} from './db/redeployLogs.js';
+  ensureSuperuserFromEnv,
+  getSuperuserSummary,
+  hasSuperuser,
+  registerSuperuser,
+  removeSuperuser,
+  findUserByIdentifier,
+  markUserLogin,
+  verifyPassword,
+  SUPERUSER_GROUP_NAME
+} from './auth/superuser.js';
+import {
+  logEvent,
+  buildEventLogFilter,
+  deleteEventLogById,
+  deleteEventLogsByFilters,
+  exportEventLogsByFilters
+} from './logging/eventLogs.js';
 import { getSetting, setSetting, deleteSetting } from './db/settings.js';
 import { activateMaintenanceMode, deactivateMaintenanceMode, getMaintenanceState, isMaintenanceModeActive } from './maintenance/state.js';
+import {
+  ensureDefaultsFromEnv,
+  getActiveApiKey,
+  getActiveServerUrl,
+  hasServer,
+  hasApiKey,
+  getSetupStatus,
+  completeSetup,
+  removeServer,
+  setServerApiKey
+} from './setup/index.js';
+import {
+  listUsers,
+  getUserById,
+  updateUserGroups,
+  createUser,
+  updateUserDetails,
+  deleteUser,
+  updateUserActiveStatus,
+  getUserSecurityPhrase,
+  renewUserSecurityPhrase,
+  markSecurityPhraseDownloaded,
+  ensureSecurityPhrasesForExistingUsers,
+  verifySecurityPhraseForUsername,
+  setUserPassword
+} from './users/index.js';
+import { listGroups, createGroup, getGroupById, updateGroupDetails, deleteGroup } from './groups/index.js';
+import {
+  getPermissionStructure,
+  getPermissionValuesByGroup,
+  saveGroupPermissionValues,
+  clearGroupPermissionValues,
+  getSuperuserPermissionMap,
+  getEffectivePermissionsForGroups,
+  hasRequiredPermission
+} from './permissions/index.js';
 
 dotenv.config();
+
+ensureDatabaseSchema();
+ensureSuperuserFromEnv();
+ensureDefaultsFromEnv();
+
+try {
+  const initializedCount = ensureSecurityPhrasesForExistingUsers();
+  if (initializedCount > 0) {
+    console.log(`ℹ️ Sicherheitsschlüssel für ${initializedCount} bestehende Benutzer initialisiert`);
+  }
+} catch (error) {
+  console.error('⚠️ Initialisierung der Sicherheitsschlüssel für bestehende Benutzer fehlgeschlagen:', error);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,14 +97,142 @@ app.get('*', (req, res, next) => {
 });
 
 const PORT = 4001;
-const ENDPOINT_ID = Number(process.env.PORTAINER_ENDPOINT_ID);
 
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+const resolvePortainerBaseUrl = () => {
+  const envUrl = typeof process.env.PORTAINER_URL === 'string' ? process.env.PORTAINER_URL.trim() : '';
+  if (envUrl) return envUrl;
+  const activeUrl = getActiveServerUrl();
+  return activeUrl ? activeUrl.trim() : '';
+};
+
 const axiosInstance = axios.create({
-  httpsAgent: agent,
-  headers: { "X-API-Key": process.env.PORTAINER_API_KEY },
-  baseURL: process.env.PORTAINER_URL,
+  httpsAgent: agent
 });
+
+axiosInstance.interceptors.request.use((config) => {
+  const currentBase = typeof config.baseURL === 'string' ? config.baseURL.trim() : '';
+  const effectiveBase = currentBase || resolvePortainerBaseUrl();
+  if (!effectiveBase) {
+    throw new Error('PORTAINER_URL_NOT_CONFIGURED');
+  }
+  config.baseURL = effectiveBase;
+
+  const apiKey = getActiveApiKey();
+  if (apiKey) {
+    config.headers = config.headers || {};
+    config.headers["X-API-Key"] = apiKey;
+  } else if (config.headers?.["X-API-Key"]) {
+    delete config.headers["X-API-Key"];
+  }
+  return config;
+});
+
+const PORTAINER_ENVIRONMENT_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedPortainerEnvironment = { id: null, fetchedAt: 0 };
+let resolvingEnvironmentPromise = null;
+
+const resolvePortainerEnvironmentId = async () => {
+  const now = Date.now();
+  if (cachedPortainerEnvironment.id && now - cachedPortainerEnvironment.fetchedAt < PORTAINER_ENVIRONMENT_CACHE_TTL_MS) {
+    return cachedPortainerEnvironment.id;
+  }
+
+  if (resolvingEnvironmentPromise) {
+    return resolvingEnvironmentPromise;
+  }
+
+  resolvingEnvironmentPromise = (async () => {
+    try {
+      const endpointsRes = await axiosInstance.get('/api/endpoints');
+      const endpoints = Array.isArray(endpointsRes.data) ? endpointsRes.data : [];
+      if (!endpoints.length) {
+        const error = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+        error.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+        throw error;
+      }
+      const preferred =
+        endpoints.find((endpoint) => endpoint.Type === 1 && (!endpoint.URL || endpoint.URL === '')) ||
+        endpoints[0];
+      const resolvedId = preferred?.Id ?? preferred?.ID ?? null;
+      if (!resolvedId) {
+        const error = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+        error.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+        throw error;
+      }
+      cachedPortainerEnvironment = {
+        id: String(resolvedId),
+        fetchedAt: Date.now()
+      };
+      return cachedPortainerEnvironment.id;
+    } catch (error) {
+      const normalized = error.response?.data?.message || error.message || 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+      console.error('⚠️ [Portainer] Environment-Erkennung fehlgeschlagen:', normalized);
+      const wrapped = new Error('PORTAINER_ENVIRONMENT_NOT_FOUND');
+      wrapped.code = 'PORTAINER_ENVIRONMENT_NOT_FOUND';
+      throw wrapped;
+    } finally {
+      resolvingEnvironmentPromise = null;
+    }
+  })();
+
+  return resolvingEnvironmentPromise;
+};
+
+const normalizeExternalPortainerUrl = (value = '') => {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+    const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+    const normalized = new URL(candidate);
+    normalized.hash = '';
+    return normalized.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+};
+
+const createPortainerSetupClient = ({ baseURL, apiKey }) => {
+  if (!baseURL) {
+    const error = new Error('SERVER_URL_REQUIRED');
+    error.code = 'SERVER_URL_REQUIRED';
+    throw error;
+  }
+  if (!apiKey) {
+    const error = new Error('API_KEY_REQUIRED');
+    error.code = 'API_KEY_REQUIRED';
+    throw error;
+  }
+  return axios.create({
+    baseURL,
+    httpsAgent: agent,
+    headers: {
+      'X-API-Key': apiKey
+    }
+  });
+};
+
+const extractPortainerCredentials = (payload = {}) => {
+  const rawServer = payload.server ?? {};
+  const serverUrl =
+    typeof rawServer.url === 'string' ? rawServer.url :
+      typeof payload.serverUrl === 'string' ? payload.serverUrl :
+        typeof payload.url === 'string' ? payload.url : '';
+  const apiKey =
+    typeof payload.apiKey === 'string' ? payload.apiKey :
+      typeof payload.key === 'string' ? payload.key :
+        typeof payload.api === 'string' ? payload.api :
+          typeof payload?.api?.value === 'string' ? payload.api.value :
+            '';
+
+  return {
+    serverUrl: serverUrl ? serverUrl.trim() : '',
+    apiKey: apiKey ? apiKey.trim() : ''
+  };
+};
 
 const REDEPLOY_PHASES = {
   QUEUED: 'queued',
@@ -54,6 +243,226 @@ const REDEPLOY_PHASES = {
 };
 
 const redeployingStacks = new Map();
+
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'sp_auth_token';
+const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const envSessionTtl = Number(process.env.AUTH_SESSION_TTL_MS);
+const AUTH_SESSION_TTL_MS = Number.isFinite(envSessionTtl) && envSessionTtl > 0 ? envSessionTtl : DEFAULT_SESSION_TTL_MS;
+
+const parseBooleanEnv = (value, fallback) => {
+  if (value === undefined || value === null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+
+const AUTH_COOKIE_SECURE = parseBooleanEnv(process.env.AUTH_COOKIE_SECURE, false);
+
+const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: AUTH_COOKIE_SECURE,
+  path: '/'
+};
+
+const activeSessions = new Map();
+const passwordResetTickets = new Map();
+const PASSWORD_RESET_TTL_MS = 1000 * 60 * 15;
+
+const PUBLIC_API_ROUTES = [
+  { method: 'GET', matcher: /^\/api\/auth\/superuser\/status$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/superuser\/register$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/login$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/logout$/ },
+  { method: 'GET', matcher: /^\/api\/auth\/session$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/recover\/verify$/ },
+  { method: 'POST', matcher: /^\/api\/auth\/recover\/reset$/ },
+  { method: 'GET', matcher: /^\/api\/setup\/status$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/complete$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/test-portainer$/ },
+  { method: 'POST', matcher: /^\/api\/setup\/portainer-stacks$/ }
+];
+
+const sanitizeUser = (user) => ({
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  avatarColor: user.avatar_color || null
+});
+
+const buildUserSessionPayload = (userId) => {
+  const record = getUserById(userId);
+  if (!record || !record.isActive) {
+    return null;
+  }
+
+  const groups = Array.isArray(record.groups) ? record.groups : [];
+  const groupIds = groups
+    .map((group) => Number(group.id))
+    .filter((groupId) => Number.isFinite(groupId) && groupId > 0);
+
+  const isSuperuser = groups.some(
+    (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
+  );
+
+  const permissions = isSuperuser
+    ? getSuperuserPermissionMap()
+    : getEffectivePermissionsForGroups(groupIds);
+
+  return {
+    user: {
+      id: record.id,
+      username: record.username,
+      email: record.email || null,
+      avatarColor: record.avatarColor || null,
+      groups,
+      isSuperuser,
+      securityPhraseDownloadedAt: record.securityPhraseDownloadedAt || null,
+      requiresSecurityPhraseDownload: !record.securityPhraseDownloadedAt
+    },
+    permissions
+  };
+};
+
+const cleanupExpiredSessions = () => {
+  const now = Date.now();
+  for (const [token, session] of activeSessions.entries()) {
+    if (!session || session.expiresAt <= now) {
+      activeSessions.delete(token);
+    }
+  }
+};
+
+const removeSessionsForUser = (userId) => {
+  if (!userId) return;
+  for (const [token, session] of activeSessions.entries()) {
+    if (session?.userId === userId) {
+      activeSessions.delete(token);
+    }
+  }
+};
+
+const cleanupExpiredPasswordResetTickets = () => {
+  const now = Date.now();
+  for (const [token, ticket] of passwordResetTickets.entries()) {
+    if (!ticket || ticket.expiresAt <= now) {
+      passwordResetTickets.delete(token);
+    }
+  }
+};
+
+const removePasswordResetTicketsForUser = (userId) => {
+  if (!userId) return;
+  for (const [token, ticket] of passwordResetTickets.entries()) {
+    if (ticket?.userId === userId) {
+      passwordResetTickets.delete(token);
+    }
+  }
+};
+
+const createPasswordResetTicketForUser = (userId) => {
+  cleanupExpiredPasswordResetTickets();
+  removePasswordResetTicketsForUser(userId);
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + PASSWORD_RESET_TTL_MS;
+  passwordResetTickets.set(token, { userId, expiresAt });
+  return { token, expiresAt };
+};
+
+const getPasswordResetTicket = (token) => {
+  if (!token) {
+    return null;
+  }
+  cleanupExpiredPasswordResetTickets();
+  const record = passwordResetTickets.get(token);
+  if (!record) {
+    return null;
+  }
+  if (record.expiresAt <= Date.now()) {
+    passwordResetTickets.delete(token);
+    return null;
+  }
+  return record;
+};
+
+const createSessionForUser = (user) => {
+  cleanupExpiredSessions();
+  removeSessionsForUser(user.id);
+  const token = crypto.randomBytes(48).toString('hex');
+  const expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
+  activeSessions.set(token, { userId: user.id, expiresAt });
+  return { token, expiresAt };
+};
+
+const getSessionRecord = (token) => {
+  if (!token) return null;
+  cleanupExpiredSessions();
+  const record = activeSessions.get(token);
+  if (!record) return null;
+  if (record.expiresAt <= Date.now()) {
+    activeSessions.delete(token);
+    return null;
+  }
+  return record;
+};
+
+const touchSession = (token) => {
+  if (!token) return;
+  const record = activeSessions.get(token);
+  if (!record) return;
+  record.expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
+  activeSessions.set(token, record);
+};
+
+const extractAuthToken = (req) => {
+  const rawCookie = req.headers?.cookie;
+  if (rawCookie && typeof rawCookie === 'string') {
+    const parts = rawCookie.split(';');
+    for (const part of parts) {
+      const [name, ...rest] = part.trim().split('=');
+      if (name === AUTH_COOKIE_NAME) {
+        return rest.join('=');
+      }
+    }
+  }
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
+  if (authHeader && typeof authHeader === 'string') {
+    const lower = authHeader.toLowerCase();
+    if (lower.startsWith('bearer ')) {
+      return authHeader.slice(7).trim();
+    }
+  }
+  return null;
+};
+
+const setAuthCookie = (res, token) => {
+  if (!token || !res) return;
+  if (typeof res.cookie === 'function') {
+    res.cookie(AUTH_COOKIE_NAME, token, {
+      ...AUTH_COOKIE_OPTIONS,
+      maxAge: AUTH_SESSION_TTL_MS
+    });
+  } else {
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax`);
+  }
+};
+
+const clearAuthCookie = (res) => {
+  if (!res) return;
+  if (typeof res.clearCookie === 'function') {
+    res.clearCookie(AUTH_COOKIE_NAME, {
+      ...AUTH_COOKIE_OPTIONS,
+      maxAge: 0
+    });
+  } else {
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=; Path=/; Max-Age=0`);
+  }
+};
+
+const isPublicApiRoute = (req) => {
+  return PUBLIC_API_ROUTES.some(({ method, matcher }) => req.method === method && matcher.test(req.path));
+};
 
 const isActiveRedeployPhase = (phase) => phase === REDEPLOY_PHASES.QUEUED || phase === REDEPLOY_PHASES.STARTED;
 
@@ -111,7 +520,119 @@ const REDEPLOY_TYPES = {
   MAINTENANCE: 'Wartung'
 };
 
-const SELF_STACK_ID = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+const logStackEvent = ({
+  stackId,
+  stackName,
+  status,
+  message,
+  redeployType = null,
+  metadata = {}
+}) => {
+  const metadataPayload = {
+    ...metadata
+  };
+
+  if (redeployType) {
+    metadataPayload.redeployType = redeployType;
+  }
+
+  const hasMetadata = Object.keys(metadataPayload).length > 0;
+  const serverContextId = getActiveServerUrl() || null;
+
+  logEvent({
+    category: 'stack',
+    eventType: redeployType ?? null,
+    action: 'redeploy',
+    status: status ?? null,
+    entityType: 'stack',
+    entityId: stackId !== undefined && stackId !== null ? String(stackId) : null,
+    entityName: stackName ?? null,
+    contextType: serverContextId ? 'server' : null,
+    contextId: serverContextId,
+    message: message ?? null,
+    metadata: hasMetadata ? metadataPayload : null
+  });
+};
+
+const parseJsonColumn = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const SELF_STACK_SETTING_KEY = 'self_stack_id';
+let cachedSelfStackId = null;
+let selfStackLoaded = false;
+
+const loadSelfStackId = () => {
+  try {
+    const stored = getSetting(SELF_STACK_SETTING_KEY);
+    if (stored && stored.value) {
+      cachedSelfStackId = String(stored.value);
+    } else if (process.env.SELF_STACK_ID) {
+      cachedSelfStackId = String(process.env.SELF_STACK_ID);
+    } else {
+      cachedSelfStackId = null;
+    }
+  } catch (error) {
+    console.warn('⚠️ [Setup] Konnte Self-Stack-ID nicht laden:', error.message);
+    cachedSelfStackId = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+  } finally {
+    selfStackLoaded = true;
+  }
+};
+
+const getSelfStackId = () => {
+  if (!selfStackLoaded) {
+    loadSelfStackId();
+  }
+  return cachedSelfStackId;
+};
+
+const persistSelfStackId = (value) => {
+  const normalized = typeof value === 'string'
+    ? value.trim()
+    : value !== undefined && value !== null
+      ? String(value).trim()
+      : '';
+
+  if (!normalized) {
+    deleteSetting(SELF_STACK_SETTING_KEY);
+    cachedSelfStackId = process.env.SELF_STACK_ID ? String(process.env.SELF_STACK_ID) : null;
+  } else {
+    setSetting(SELF_STACK_SETTING_KEY, normalized);
+    cachedSelfStackId = normalized;
+  }
+  selfStackLoaded = true;
+  return cachedSelfStackId;
+};
+
+const getEnvSelfStackId = () => {
+  const raw = typeof process.env.SELF_STACK_ID === 'string' ? process.env.SELF_STACK_ID : '';
+  return raw.trim();
+};
+
+const applySelfStackStatus = (status) => {
+  const envSelfStackId = getEnvSelfStackId();
+  const currentSelfStackId = getSelfStackId();
+  const envDefaults = { ...(status.envDefaults || {}) };
+  envDefaults.selfStackId = currentSelfStackId || envSelfStackId || envDefaults.selfStackId || '';
+
+  return {
+    ...status,
+    envDefaults,
+    selfStack: {
+      current: currentSelfStackId,
+      envProvided: Boolean(envSelfStackId)
+    }
+  };
+};
+
+const buildSetupStatusResponse = () => applySelfStackStatus(getSetupStatus());
+
 const PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
 const PORTAINER_SSH_CONFIG_KEY = 'portainer_ssh_config';
 
@@ -458,7 +979,8 @@ const testSshConnection = async (configOverride = null) => {
 
 const detectPortainerContainer = async () => {
   try {
-    const containersRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/json`, {
+    const endpointId = await resolvePortainerEnvironmentId();
+    const containersRes = await axiosInstance.get(`/api/endpoints/${endpointId}/docker/containers/json`, {
       params: { all: true }
     });
     const containers = Array.isArray(containersRes.data) ? containersRes.data : [];
@@ -484,7 +1006,7 @@ const detectPortainerContainer = async () => {
       return { summary: null, error: 'Portainer-Container nicht gefunden' };
     }
 
-    const inspectRes = await axiosInstance.get(`/api/endpoints/${ENDPOINT_ID}/docker/containers/${matchedContainer.Id}/json`);
+    const inspectRes = await axiosInstance.get(`/api/endpoints/${endpointId}/docker/containers/${matchedContainer.Id}/json`);
     const inspect = inspectRes.data ?? {};
 
     const trimName = (value) => (typeof value === 'string' ? value.replace(/^\//, '') : value);
@@ -654,6 +1176,52 @@ const maintenanceGuard = (req, res, next) => {
   });
 };
 
+const requirePermission = (permissionKey, requiredLevel = 'full') => (req, res, next) => {
+  if (!permissionKey) {
+    return next();
+  }
+
+  if (req.user?.isSuperuser) {
+    return next();
+  }
+
+  const permissions = req.userPermissions || {};
+  if (hasRequiredPermission(permissions, permissionKey, requiredLevel)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: 'INSUFFICIENT_PERMISSIONS',
+    permission: permissionKey,
+    requiredLevel
+  });
+};
+
+const requireAnyPermission = (candidates = []) => (req, res, next) => {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return next();
+  }
+
+  if (req.user?.isSuperuser) {
+    return next();
+  }
+
+  const permissions = req.userPermissions || {};
+  const granted = candidates.some(({ key, level }) =>
+    typeof key === 'string' && hasRequiredPermission(permissions, key, level || 'full')
+  );
+
+  if (granted) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: 'INSUFFICIENT_PERMISSIONS',
+    permission: candidates.map((entry) => entry.key).filter(Boolean),
+    requiredLevel: candidates.map((entry) => entry.level || 'full')
+  });
+};
+
 const logScriptOutput = (data, level) => {
   if (!data) return;
   const text = data.toString();
@@ -729,6 +1297,7 @@ let currentPortainerUpdatePromise = null;
 
 const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) => {
   let maintenanceActivated = false;
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
     addUpdateLog(`Portainer-Update gestartet (Quelle: ${scriptSource})`, 'info');
@@ -750,22 +1319,40 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     });
     maintenanceActivated = true;
 
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'started',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'gestartet',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Portainer Update gestartet (Ziel: ${targetVersion ?? 'unbekannt'})`,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        targetVersion: targetVersion ?? null,
+        scriptSource
+      },
+      source: 'system'
     });
 
-    logRedeployEvent({
-      stackId: 'maintenance',
-      stackName: 'StackPulse Wartung',
-      status: 'started',
+    logEvent({
+      category: 'wartung',
+      eventType: 'Wartungsmodus',
+      action: 'aktivieren',
+      status: 'gestartet',
+      entityType: 'system',
+      entityId: 'wartung',
+      entityName: 'StackPulse Wartung',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: 'Wartungsmodus aktiviert (Portainer Update)',
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        reason: 'portainer-update',
+        scriptSource
+      },
+      source: 'system'
     });
 
     updatePortainerState({
@@ -789,13 +1376,21 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     const statusAfter = await fetchPortainerStatusSummary().catch(() => null);
     const finalVersion = statusAfter?.currentVersion ?? null;
 
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'success',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'erfolgreich',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Portainer Update abgeschlossen (Version: ${finalVersion ?? 'unbekannt'})`,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      metadata: {
+        resultVersion: finalVersion ?? null
+      },
+      source: 'system'
     });
 
     updatePortainerState({
@@ -813,24 +1408,37 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
     if (maintenanceActivated || maintenanceState?.active) {
       deactivateMaintenanceMode({ message: 'Portainer Update abgeschlossen' });
       maintenanceActivated = false;
-      logRedeployEvent({
-        stackId: 'maintenance',
-        stackName: 'StackPulse Wartung',
-        status: 'success',
+      logEvent({
+        category: 'wartung',
+        eventType: 'Wartungsmodus',
+        action: 'deaktivieren',
+        status: 'erfolgreich',
+        entityType: 'system',
+        entityId: 'wartung',
+        entityName: 'StackPulse Wartung',
+        contextType: serverContextId ? 'server' : null,
+        contextId: serverContextId,
         message: 'Wartungsmodus deaktiviert',
-        endpoint: ENDPOINT_ID,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+        metadata: {
+          reason: 'portainer-update'
+        },
+        source: 'system'
       });
     }
   } catch (err) {
     const message = err?.message || 'Portainer Update fehlgeschlagen';
-    logRedeployEvent({
-      stackId: 'portainer',
-      stackName: 'Portainer',
-      status: 'error',
+    logEvent({
+      category: 'wartung',
+      eventType: 'portainer-update',
+      action: 'aktualisieren',
+      status: 'fehler',
+      entityType: 'service',
+      entityId: 'portainer',
+      entityName: 'Portainer',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      source: 'system'
     });
 
     updatePortainerState({
@@ -846,13 +1454,21 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
 
     if (maintenanceActivated || isMaintenanceModeActive()) {
       deactivateMaintenanceMode({ message: 'Portainer Update fehlgeschlagen' });
-      logRedeployEvent({
-        stackId: 'maintenance',
-        stackName: 'StackPulse Wartung',
-        status: 'error',
-        message: 'Wartungsmodus deaktiviert (Fehler)',
-        endpoint: ENDPOINT_ID,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+      logEvent({
+        category: 'wartung',
+      eventType: 'Wartungsmodus',
+      action: 'deaktivieren',
+      status: 'fehler',
+      entityType: 'system',
+      entityId: 'wartung',
+      entityName: 'StackPulse Wartung',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
+      message: 'Wartungsmodus deaktiviert (Fehler)',
+      metadata: {
+        reason: 'portainer-update'
+      },
+      source: 'system'
       });
     }
   } finally {
@@ -862,15 +1478,16 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
 
 const fetchPortainerStacks = async () => {
   const stacksRes = await axiosInstance.get('/api/stacks');
-  return stacksRes.data.filter((stack) => stack.EndpointId === ENDPOINT_ID);
+  return Array.isArray(stacksRes.data) ? stacksRes.data : [];
 };
 
 const buildStackCollections = (stacks = []) => {
+  const currentSelfStackId = getSelfStackId();
   const collections = new Map();
 
   stacks.forEach((stack) => {
     const name = stack.Name || 'Unbenannt';
-    const isSelf = SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID;
+    const isSelf = currentSelfStackId && String(stack.Id) === currentSelfStackId;
     const entry = collections.get(name);
 
     if (!entry) {
@@ -942,10 +1559,11 @@ const isStackOutdated = async (stackId) => {
 };
 
 const filterOutdatedStacks = async (stacks = []) => {
+  const currentSelfStackId = getSelfStackId();
   const results = await Promise.all(
     stacks.map(async (stack) => ({
       stack,
-      outdated: SELF_STACK_ID && String(stack.Id) === SELF_STACK_ID
+      outdated: currentSelfStackId && String(stack.Id) === currentSelfStackId
         ? false
         : await isStackOutdated(stack.Id)
     }))
@@ -984,10 +1602,6 @@ const redeployStackById = async (stackId, redeployType) => {
     const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
     stack = stackRes.data;
 
-    if (stack.EndpointId !== ENDPOINT_ID) {
-      throw new Error(`Stack gehört nicht zum Endpoint ${ENDPOINT_ID}`);
-    }
-
     const targetId = stack.Id || stackId;
     const targetName = stack.Name || `Stack ${stackId}`;
 
@@ -997,12 +1611,11 @@ const redeployStackById = async (stackId, redeployType) => {
       phase: REDEPLOY_PHASES.STARTED
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: targetId,
       stackName: targetName,
       status: 'started',
       message: messages.started,
-      endpoint: stack.EndpointId,
       redeployType
     });
 
@@ -1077,12 +1690,11 @@ const redeployStackById = async (stackId, redeployType) => {
       phase: REDEPLOY_PHASES.SUCCESS
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: targetId,
       stackName: targetName,
       status: 'success',
       message: messages.success,
-      endpoint: stack.EndpointId,
       redeployType
     });
 
@@ -1099,12 +1711,11 @@ const redeployStackById = async (stackId, redeployType) => {
       message: errorMessage
     });
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: fallbackId,
       stackName: fallbackName,
       status: 'error',
       message: errorMessage,
-      endpoint: stack?.EndpointId || ENDPOINT_ID,
       redeployType
     });
 
@@ -1113,7 +1724,1041 @@ const redeployStackById = async (stackId, redeployType) => {
   }
 };
 
-// --- API Endpoints ---
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
+  if (req.method === 'OPTIONS' || isPublicApiRoute(req)) {
+    return next();
+  }
+
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const token = extractAuthToken(req);
+  const session = getSessionRecord(token);
+  if (!session) {
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  const userRecord = getUserById(session.userId);
+  if (!userRecord || !userRecord.isActive) {
+    activeSessions.delete(token);
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  const userGroups = Array.isArray(userRecord.groups) ? userRecord.groups : [];
+  const groupIds = userGroups
+    .map((group) => Number(group.id))
+    .filter((groupId) => Number.isFinite(groupId) && groupId > 0);
+
+  const isSuperuser = userGroups.some(
+    (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
+  );
+
+  const permissionsMap = isSuperuser
+    ? getSuperuserPermissionMap()
+    : getEffectivePermissionsForGroups(groupIds);
+
+  req.user = {
+    id: userRecord.id,
+    username: userRecord.username,
+    email: userRecord.email,
+    avatarColor: userRecord.avatarColor || null,
+    groups: userGroups,
+    isSuperuser,
+    securityPhraseDownloadedAt: userRecord.securityPhraseDownloadedAt || null,
+    requiresSecurityPhraseDownload: !userRecord.securityPhraseDownloadedAt
+  };
+  req.userPermissions = permissionsMap;
+  req.authToken = token;
+  touchSession(token);
+  setAuthCookie(res, token);
+  next();
+});
+
+// --- API Routes ---
+
+app.get('/api/setup/status', (req, res) => {
+  try {
+    const status = buildSetupStatusResponse();
+    res.json(status);
+  } catch (error) {
+    console.error('⚠️ [Setup] Statusabfrage fehlgeschlagen:', error);
+    res.status(500).json({ error: 'SETUP_STATUS_FAILED' });
+  }
+});
+
+app.post('/api/setup/test-portainer', async (req, res) => {
+  const { serverUrl, apiKey } = extractPortainerCredentials(req.body);
+  const normalizedUrl = normalizeExternalPortainerUrl(serverUrl);
+
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'SERVER_URL_INVALID' });
+  }
+  if (!apiKey) {
+    return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+  }
+
+  try {
+    const client = createPortainerSetupClient({ baseURL: normalizedUrl, apiKey });
+    const statusRes = await client.get('/api/status');
+    res.json({
+      success: true,
+      status: statusRes.data ?? null
+    });
+  } catch (error) {
+    const message = error.response?.data?.message || error.message || 'PORTAINER_TEST_FAILED';
+    const status = error.response?.status ?? 400;
+    res.status(status === 401 ? 401 : 400).json({ error: 'PORTAINER_TEST_FAILED', message });
+  }
+});
+
+app.post('/api/setup/portainer-stacks', async (req, res) => {
+  const { serverUrl, apiKey } = extractPortainerCredentials(req.body);
+  const normalizedUrl = normalizeExternalPortainerUrl(serverUrl);
+
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'SERVER_URL_INVALID' });
+  }
+  if (!apiKey) {
+    return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+  }
+
+  try {
+    const client = createPortainerSetupClient({ baseURL: normalizedUrl, apiKey });
+    const stacksRes = await client.get('/api/stacks');
+    const stacks = Array.isArray(stacksRes.data) ? stacksRes.data : [];
+    res.json({ success: true, stacks });
+  } catch (error) {
+    const message = error.response?.data?.message || error.message || 'PORTAINER_STACK_FETCH_FAILED';
+    const status = error.response?.status ?? 400;
+    res.status(status === 401 ? 401 : 400).json({ error: 'PORTAINER_STACK_FETCH_FAILED', message });
+  }
+});
+
+app.post('/api/setup/complete', (req, res) => {
+  const { superuser: superuserInput, server: serverInput, apiKey: apiKeyInput, selfStackId: selfStackInput } = req.body ?? {};
+  const hasSelfStackInput = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
+  const initialStatus = getSetupStatus();
+  const needsSuperuser = initialStatus.requirements.superuser;
+  const needsServer = initialStatus.requirements.server;
+  const needsApiKey = initialStatus.requirements.apiKey;
+
+  const created = {};
+
+  const normalizeServerInput = (input) => {
+    if (!input) return null;
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    const url = typeof input.url === 'string' ? input.url.trim() : '';
+    if (!url) {
+      return { name: name || '', url: '' };
+    }
+    return {
+      name: name || null,
+      url
+    };
+  };
+
+  const normalizeApiKeyInput = (input) => {
+    if (!input) return null;
+    if (typeof input === 'string') {
+      const value = input.trim();
+      return { value, serverId: null };
+    }
+    if (typeof input === 'object') {
+      const rawValue = typeof input.value === 'string' ? input.value : typeof input.key === 'string' ? input.key : '';
+      const value = rawValue.trim();
+      const serverIdRaw = input.serverId !== undefined && input.serverId !== null ? Number(input.serverId) : null;
+      const serverId = Number.isFinite(serverIdRaw) ? serverIdRaw : null;
+      return { value, serverId };
+    }
+    return null;
+  };
+
+  try {
+    const serverPayload = normalizeServerInput(serverInput);
+    const apiKeyPayload = normalizeApiKeyInput(apiKeyInput);
+
+    if (needsServer && (!serverPayload || !serverPayload.url)) {
+      return res.status(400).json({ error: 'SERVER_DETAILS_REQUIRED' });
+    }
+
+    if (needsServer || (serverPayload && serverPayload.url)) {
+      const setupResult = completeSetup({
+        server: serverPayload && serverPayload.url ? serverPayload : null
+      });
+      created.server = setupResult.server;
+    }
+
+    if (needsSuperuser) {
+      const username = typeof superuserInput?.username === 'string' ? superuserInput.username.trim() : '';
+      const email = typeof superuserInput?.email === 'string' ? superuserInput.email.trim() : '';
+      const password = typeof superuserInput?.password === 'string' ? superuserInput.password : '';
+
+      if (!username || !email || !password) {
+        return res.status(400).json({ error: 'SUPERUSER_DETAILS_REQUIRED' });
+      }
+
+      const user = registerSuperuser({ username, email, password });
+      created.superuser = user;
+    }
+
+    const statusSnapshot = getSetupStatus();
+
+    let targetServerId = apiKeyPayload?.serverId ?? created.server?.id ?? null;
+    if (!targetServerId) {
+      targetServerId = statusSnapshot.servers.items?.[0]?.id ?? null;
+    }
+
+    if (apiKeyPayload && apiKeyPayload.value) {
+      if (!targetServerId) {
+        return res.status(400).json({ error: 'SERVER_DETAILS_REQUIRED' });
+      }
+      const apiKeyResult = setServerApiKey({ serverId: targetServerId, apiKey: apiKeyPayload.value });
+      created.apiKey = apiKeyResult;
+    } else if (needsApiKey) {
+      return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+    }
+
+    if (hasSelfStackInput) {
+      const normalizedSelfStackId = typeof selfStackInput === 'string'
+        ? selfStackInput.trim()
+        : selfStackInput !== undefined && selfStackInput !== null
+          ? String(selfStackInput).trim()
+          : '';
+
+      const nextSelfStackId = persistSelfStackId(normalizedSelfStackId);
+      created.selfStackId = nextSelfStackId || null;
+    }
+
+    const finalStatus = buildSetupStatusResponse();
+    res.status(201).json({
+      success: finalStatus.setupComplete,
+      status: finalStatus,
+      created
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_URL_REQUIRED':
+      case 'SERVER_NAME_REQUIRED':
+      case 'SERVER_DETAILS_REQUIRED':
+      case 'USERNAME_REQUIRED':
+      case 'EMAIL_INVALID':
+      case 'PASSWORD_TOO_SHORT':
+      case 'INVALID_PASSWORD':
+      case 'API_KEY_REQUIRED':
+        return res.status(400).json({ error: code });
+      case 'API_KEY_ENCRYPT_FAILED':
+        console.error('⚠️ [Setup] API-Key Verschlüsselung fehlgeschlagen:', error);
+        return res.status(500).json({ error: 'API_KEY_ENCRYPT_FAILED' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      case 'SUPERUSER_ALREADY_EXISTS':
+        return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+      default:
+        console.error('⚠️ [Setup] Fehler beim Abschluss:', error);
+        return res.status(500).json({ error: 'SETUP_FAILED' });
+    }
+  }
+});
+
+app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+
+  try {
+    const result = removeServer(numericId);
+    const status = buildSetupStatusResponse();
+    res.json({ success: true, removed: result, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      default:
+        console.error('⚠️ [Setup] Server konnte nicht gelöscht werden:', error);
+        return res.status(500).json({ error: 'SERVER_DELETE_FAILED' });
+    }
+  }
+});
+
+app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+
+  const rawValue = typeof req.body?.apiKey === 'string' ? req.body.apiKey : typeof req.body?.key === 'string' ? req.body.key : '';
+
+  try {
+    const result = setServerApiKey({ serverId: numericId, apiKey: rawValue });
+    const status = buildSetupStatusResponse();
+    res.json({ success: true, updated: result, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      case 'API_KEY_REQUIRED':
+        return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+      case 'API_KEY_ENCRYPT_FAILED':
+        console.error('⚠️ [Setup] API-Key Verschlüsselung fehlgeschlagen:', error);
+        return res.status(500).json({ error: 'API_KEY_ENCRYPT_FAILED' });
+      default:
+        console.error('⚠️ [Setup] API-Key konnte nicht aktualisiert werden:', error);
+        return res.status(500).json({ error: 'API_KEY_UPDATE_FAILED' });
+    }
+  }
+});
+
+app.put('/api/setup/self-stack', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
+  const hasPayload = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
+  if (!hasPayload) {
+    return res.status(400).json({ error: 'SELF_STACK_ID_MISSING' });
+  }
+
+  const inputValue = req.body.selfStackId;
+  const normalizedSelfStackId = typeof inputValue === 'string'
+    ? inputValue.trim()
+    : inputValue !== undefined && inputValue !== null
+      ? String(inputValue).trim()
+      : '';
+
+  try {
+    const nextValue = persistSelfStackId(normalizedSelfStackId) || null;
+    const status = buildSetupStatusResponse();
+    res.json({
+      success: true,
+      value: nextValue,
+      status
+    });
+  } catch (error) {
+    console.error('⚠️ [Setup] Self-Stack-ID konnte nicht aktualisiert werden:', error);
+    res.status(500).json({ error: 'SELF_STACK_ID_UPDATE_FAILED' });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const { identifier, password } = req.body ?? {};
+  if (!identifier || !password) {
+    return res.status(400).json({ error: 'MISSING_CREDENTIALS' });
+  }
+
+  const user = findUserByIdentifier(identifier);
+  if (!user) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
+
+  if (!user.is_active) {
+    return res.status(403).json({ error: 'USER_INACTIVE' });
+  }
+
+  const passwordValid = verifyPassword(password, user.password_hash, user.password_salt);
+  if (!passwordValid) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+  }
+
+  const session = createSessionForUser(user);
+  markUserLogin(user.id);
+  setAuthCookie(res, session.token);
+
+  const payload = buildUserSessionPayload(user.id);
+  if (payload) {
+    res.json(payload);
+  } else {
+    res.json({ user: sanitizeUser(user), permissions: {} });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = extractAuthToken(req);
+  if (token) {
+    activeSessions.delete(token);
+  }
+  clearAuthCookie(res);
+  res.json({ success: true });
+});
+
+app.post('/api/auth/recover/verify', (req, res) => {
+  const { username, phrase, words } = req.body ?? {};
+
+  try {
+    const candidate = typeof phrase === 'string' && phrase.trim() ? phrase : words;
+    const verification = verifySecurityPhraseForUsername(username, candidate);
+    const ticket = createPasswordResetTicketForUser(verification.userId);
+    res.json({ token: ticket.token, expiresIn: PASSWORD_RESET_TTL_MS });
+  } catch (error) {
+    if (error.code === 'USERNAME_REQUIRED' || error.code === 'PHRASE_REQUIRED') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'PHRASE_NOT_INITIALIZED') {
+      return res.status(409).json({ error: 'PHRASE_NOT_INITIALIZED' });
+    }
+    if (error.code === 'PHRASE_MISMATCH') {
+      return res.status(401).json({ error: 'PHRASE_MISMATCH' });
+    }
+    if (error.code === 'INVALID_PASSWORD') {
+      return res.status(400).json({ error: 'INVALID_PASSWORD' });
+    }
+    console.error('⚠️ [Auth] Sicherheitsphrase-Überprüfung fehlgeschlagen:', error);
+    res.status(500).json({ error: 'RECOVERY_VERIFY_FAILED' });
+  }
+});
+
+app.post('/api/auth/recover/reset', (req, res) => {
+  const { token, password, confirmPassword } = req.body ?? {};
+
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    return res.status(400).json({ error: 'TOKEN_REQUIRED' });
+  }
+
+  if (typeof password !== 'string' || !password.trim()) {
+    return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
+  }
+
+  if (typeof confirmPassword === 'string' && password !== confirmPassword) {
+    return res.status(400).json({ error: 'PASSWORD_MISMATCH' });
+  }
+
+  const trimmedToken = token.trim();
+  const ticket = getPasswordResetTicket(trimmedToken);
+  if (!ticket) {
+    return res.status(410).json({ error: 'TOKEN_INVALID_OR_EXPIRED' });
+  }
+
+  try {
+    setUserPassword(ticket.userId, password, { resetMethod: 'security-phrase' });
+    passwordResetTickets.delete(trimmedToken);
+    removeSessionsForUser(ticket.userId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      passwordResetTickets.delete(trimmedToken);
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error('⚠️ [Auth] Passwort-Zurücksetzung fehlgeschlagen:', error);
+    res.status(500).json({ error: 'RECOVERY_RESET_FAILED' });
+  }
+});
+
+app.get('/api/auth/session', (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(403).json({ error: 'SUPERUSER_REQUIRED' });
+  }
+
+  if (!hasServer() || !hasApiKey()) {
+    return res.status(403).json({ error: 'SETUP_REQUIRED' });
+  }
+
+  const token = extractAuthToken(req);
+  const session = getSessionRecord(token);
+  if (!session) {
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  const payload = buildUserSessionPayload(session.userId);
+  if (!payload) {
+    activeSessions.delete(token);
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  touchSession(token);
+  setAuthCookie(res, token);
+  res.json(payload);
+});
+
+app.get('/api/users', requirePermission('users-access', 'read'), (req, res) => {
+  try {
+    const users = listUsers();
+    res.json({ items: users, total: users.length });
+  } catch (error) {
+    console.error('⚠️ [Users] Abruf der Benutzerliste fehlgeschlagen:', error);
+    res.status(500).json({ error: 'USERS_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/users', requirePermission('users-edit', 'full'), (req, res) => {
+  const { username, email, password, groupId, avatarColor } = req.body ?? {};
+
+  try {
+    const user = createUser({ username, email, password, groupId, avatarColor }, { actor: req.user });
+    res.status(201).json({ item: user });
+  } catch (error) {
+    if (error.code === 'USERNAME_REQUIRED' || error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'INVALID_EMAIL') {
+      return res.status(400).json({ error: 'INVALID_EMAIL' });
+    }
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'USERNAME_TAKEN' || error.code === 'EMAIL_TAKEN') {
+      return res.status(409).json({ error: error.code });
+    }
+    console.error('⚠️ [Users] Anlegen eines Benutzers fehlgeschlagen:', error);
+    res.status(500).json({ error: 'USER_CREATE_FAILED' });
+  }
+});
+
+app.get('/api/users/me/security-phrase', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  try {
+    const phrase = getUserSecurityPhrase(userId, { actor: req.user });
+    if (phrase.downloadedAt) {
+      return res.status(409).json({
+        error: 'SECURITY_PHRASE_ALREADY_DOWNLOADED',
+        downloadedAt: phrase.downloadedAt
+      });
+    }
+    res.json({
+      item: {
+        userId: phrase.userId,
+        words: phrase.words,
+        downloadedAt: phrase.downloadedAt
+      }
+    });
+  } catch (error) {
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte für Benutzer ${userId} nicht geladen werden:`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/users/me/security-phrase/downloaded', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+
+  try {
+    const result = markSecurityPhraseDownloaded(userId, { actor: req.user });
+    const sessionPayload = buildUserSessionPayload(userId);
+    res.json({
+      item: {
+        userId: result.userId,
+        downloadedAt: result.downloadedAt
+      },
+      session: sessionPayload
+    });
+  } catch (error) {
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheits-Download konnte nicht vermerkt werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_DOWNLOAD_FAILED' });
+  }
+});
+
+app.get('/api/users/:userId', requirePermission('users-access', 'read'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const user = getUserById(numericId);
+    if (!user) {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    res.json({ item: user });
+  } catch (error) {
+    console.error(`⚠️ [Users] Abruf der Benutzerdetails fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_FETCH_FAILED' });
+  }
+});
+
+app.get('/api/users/:userId/security-phrase', requirePermission('users-security-phrase', 'read'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const phrase = getUserSecurityPhrase(numericId, { actor: req.user });
+    res.json({ item: phrase });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte nicht geladen werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_FETCH_FAILED' });
+  }
+});
+
+app.post('/api/users/:userId/security-phrase/renew', requirePermission('users-security-phrase', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const renewed = renewUserSecurityPhrase(numericId, { actor: req.user });
+    res.json({ item: renewed });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    console.error(`⚠️ [Users] Sicherheitsschlüssel konnte nicht erneuert werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SECURITY_PHRASE_RENEW_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId', requirePermission('users-edit', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  const { username, email, password, avatarColor, groupId, groupIds } = req.body ?? {};
+
+  try {
+    const updatedUser = updateUserDetails(numericId, {
+      username,
+      email,
+      password,
+      avatarColor,
+      groupId,
+      groupIds
+    });
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USERNAME_REQUIRED') {
+      return res.status(400).json({ error: 'USERNAME_REQUIRED' });
+    }
+    if (error.code === 'INVALID_EMAIL') {
+      return res.status(400).json({ error: 'INVALID_EMAIL' });
+    }
+    if (error.code === 'USERNAME_TAKEN') {
+      return res.status(409).json({ error: 'USERNAME_TAKEN' });
+    }
+    if (error.code === 'EMAIL_TAKEN') {
+      return res.status(409).json({ error: 'EMAIL_TAKEN' });
+    }
+    if (error.code === 'INVALID_PASSWORD' || error.code === 'PASSWORD_TOO_SHORT') {
+      return res.status(400).json({ error: error.code });
+    }
+    if (error.code === 'INVALID_AVATAR_COLOR') {
+      return res.status(400).json({ error: 'INVALID_AVATAR_COLOR' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND', details: error.missingGroupIds || [] });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Aktualisierung der Benutzerdaten fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_UPDATE_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId/groups', requirePermission('users-edit', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+  const { groupIds } = req.body ?? {};
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const updatedUser = updateUserGroups(numericId, Array.isArray(groupIds) ? groupIds : []);
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND', details: error.missingGroupIds || [] });
+    }
+    console.error(`⚠️ [Users] Aktualisierung der Gruppenzuordnung fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_GROUPS_UPDATE_FAILED' });
+  }
+});
+
+app.delete('/api/users/:userId', requirePermission('users-delete', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    deleteUser(numericId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USER_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'USER_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Löschen fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_DELETE_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId/active', requirePermission('users-edit', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+  const { isActive } = req.body ?? {};
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  try {
+    const updatedUser = updateUserActiveStatus(numericId, Boolean(isActive));
+    res.json({ item: updatedUser });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USER_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'USER_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Users] Aktualisierung des Aktivstatus fehlgeschlagen (${userId}):`, error);
+    res.status(500).json({ error: 'USER_STATUS_UPDATE_FAILED' });
+  }
+});
+
+app.get(
+  '/api/groups',
+  requireAnyPermission([
+    { key: 'user-groups-access', level: 'read' },
+    { key: 'users-edit', level: 'read' }
+  ]),
+  (req, res) => {
+  try {
+    const groups = listGroups();
+    res.json({ items: groups, total: groups.length });
+  } catch (error) {
+    console.error('⚠️ [Groups] Abruf der Benutzergruppenliste fehlgeschlagen:', error);
+    res.status(500).json({ error: 'GROUPS_FETCH_FAILED' });
+  }
+  }
+);
+
+app.get(
+  '/api/groups/:groupId',
+  requireAnyPermission([
+    { key: 'user-groups-access', level: 'read' },
+    { key: 'users-edit', level: 'read' }
+  ]),
+  (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    res.json({ item: group });
+  } catch (error) {
+    console.error(`⚠️ [Groups] Abruf der Gruppendetails fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_FETCH_FAILED' });
+  }
+  }
+);
+
+app.get('/api/groups/:groupId/permissions', requirePermission('user-groups-edit', 'read'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+
+    const sections = getPermissionStructure();
+    const isSuperuser = (group.name || '').toLowerCase() === SUPERUSER_GROUP_NAME;
+    let values = {};
+
+    if (isSuperuser) {
+      clearGroupPermissionValues(numericId);
+    } else {
+      values = getPermissionValuesByGroup(numericId);
+    }
+
+    res.json({ sections, values });
+  } catch (error) {
+    console.error(`⚠️ [Groups] Abruf der Gruppenberechtigungen fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_PERMISSIONS_FETCH_FAILED' });
+  }
+});
+
+app.put('/api/groups/:groupId/permissions', requirePermission('user-groups-edit', 'full'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    const group = getGroupById(numericId);
+    if (!group) {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+
+    const isSuperuser = (group.name || '').toLowerCase() === SUPERUSER_GROUP_NAME;
+    if (isSuperuser) {
+      clearGroupPermissionValues(numericId);
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    const valuesPayload = req.body?.values ?? {};
+    const savedValues = saveGroupPermissionValues(numericId, valuesPayload);
+
+    res.json({ success: true, values: savedValues });
+  } catch (error) {
+    const serverError = error?.code;
+    if (serverError === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (serverError === 'PERMISSION_INVALID_PAYLOAD') {
+      return res.status(400).json({ error: 'PERMISSION_INVALID_PAYLOAD' });
+    }
+    if (serverError === 'PERMISSION_INVALID_LEVEL') {
+      return res.status(400).json({ error: 'PERMISSION_INVALID_LEVEL', permissionKey: error.permissionKey, level: error.level });
+    }
+    if (serverError === 'PERMISSION_UNKNOWN_KEY') {
+      return res.status(400).json({ error: 'PERMISSION_UNKNOWN_KEY', permissionKey: error.permissionKey });
+    }
+    if (serverError === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+
+    console.error(`⚠️ [Groups] Aktualisierung der Berechtigungen fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_PERMISSIONS_UPDATE_FAILED' });
+  }
+});
+
+app.post('/api/groups', requirePermission('user-groups-edit', 'full'), (req, res) => {
+  const { name, description } = req.body ?? {};
+  try {
+    const group = createGroup({ name, description });
+    res.status(201).json({ item: group });
+  } catch (error) {
+    if (error.code === 'GROUP_NAME_REQUIRED') {
+      return res.status(400).json({ error: 'GROUP_NAME_REQUIRED' });
+    }
+    if (error.code === 'GROUP_NAME_TAKEN') {
+      return res.status(409).json({ error: 'GROUP_NAME_TAKEN' });
+    }
+    console.error('⚠️ [Groups] Anlegen der Benutzergruppe fehlgeschlagen:', error);
+    res.status(500).json({ error: 'GROUP_CREATE_FAILED' });
+  }
+});
+
+app.put('/api/groups/:groupId', requirePermission('user-groups-edit', 'full'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  const { name, description, avatarColor } = req.body ?? {};
+
+  try {
+    const updatedGroup = updateGroupDetails(numericId, { name, description, avatarColor });
+    res.json({ item: updatedGroup });
+  } catch (error) {
+    if (error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_NAME_REQUIRED') {
+      return res.status(400).json({ error: 'GROUP_NAME_REQUIRED' });
+    }
+    if (error.code === 'GROUP_NAME_TAKEN') {
+      return res.status(409).json({ error: 'GROUP_NAME_TAKEN' });
+    }
+    if (error.code === 'INVALID_AVATAR_COLOR') {
+      return res.status(400).json({ error: 'INVALID_AVATAR_COLOR' });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Groups] Aktualisierung der Gruppendaten fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_UPDATE_FAILED' });
+  }
+});
+
+app.delete('/api/groups/:groupId', requirePermission('user-groups-delete', 'full'), (req, res) => {
+  const { groupId } = req.params;
+  const numericId = Number(groupId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  }
+
+  try {
+    deleteGroup(numericId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'INVALID_GROUP_ID') {
+      return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(404).json({ error: 'GROUP_NOT_FOUND' });
+    }
+    if (error.code === 'GROUP_HAS_MEMBERS') {
+      return res.status(409).json({ error: 'GROUP_HAS_MEMBERS', memberCount: error.memberCount || 0 });
+    }
+    if (error.code === 'GROUP_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'GROUP_SUPERUSER_PROTECTED' });
+    }
+
+    console.error(`⚠️ [Groups] Löschen der Gruppe fehlgeschlagen (${groupId}):`, error);
+    res.status(500).json({ error: 'GROUP_DELETE_FAILED' });
+  }
+});
+
+// Superuser Setup
+app.get('/api/auth/superuser/status', (req, res) => {
+  const exists = hasSuperuser();
+  const user = exists ? getSuperuserSummary() : null;
+  res.json({ exists, user });
+});
+
+app.post('/api/auth/superuser/register', (req, res) => {
+  if (hasSuperuser()) {
+    return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+  }
+
+  const { username, email, password } = req.body || {};
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'MISSING_FIELDS' });
+  }
+
+  try {
+    const user = registerSuperuser({ username, email, password });
+    res.status(201).json({ user });
+  } catch (error) {
+    switch (error.code) {
+      case 'USERNAME_REQUIRED':
+        return res.status(400).json({ error: 'USERNAME_REQUIRED' });
+      case 'EMAIL_INVALID':
+        return res.status(400).json({ error: 'EMAIL_INVALID' });
+      case 'PASSWORD_TOO_SHORT':
+        return res.status(400).json({ error: 'PASSWORD_TOO_SHORT' });
+      case 'SUPERUSER_ALREADY_EXISTS':
+        return res.status(409).json({ error: 'SUPERUSER_EXISTS' });
+      default:
+        console.error('⚠️ Fehler beim Registrieren des Superusers:', error);
+        return res.status(500).json({ error: 'INTERNAL_ERROR' });
+    }
+  }
+});
+
+app.delete('/api/auth/superuser', requirePermission('maintenance-superuser-delete', 'full'), (req, res) => {
+  if (!hasSuperuser()) {
+    return res.status(404).json({ error: 'SUPERUSER_NOT_FOUND' });
+  }
+
+  try {
+    const result = removeSuperuser();
+    res.json({ success: true, usersRemoved: result.usersRemoved, groupRemoved: result.groupRemoved });
+  } catch (error) {
+    if (error.code === 'SUPERUSER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SUPERUSER_NOT_FOUND' });
+    }
+    console.error('⚠️ Fehler beim Löschen des Superusers:', error);
+    res.status(500).json({ error: 'INTERNAL_ERROR' });
+  }
+});
 
 // Stacks abrufen
 app.get('/api/stacks', maintenanceGuard, async (req, res) => {
@@ -1127,6 +2772,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
       console.warn(`⚠️ [API] GET /api/stacks: Doppelte Stack-Namen erkannt: ${duplicateNames.join(', ')}`);
     }
 
+    const currentSelfStackId = getSelfStackId();
     const stacksWithStatus = await Promise.all(
       canonicalStacks.map(async (stack) => {
         try {
@@ -1142,7 +2788,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
             redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployPhase,
             redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            redeployDisabled: currentSelfStackId ? String(stack.Id) === currentSelfStackId : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
         } catch (err) {
@@ -1155,7 +2801,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
             redeploying: redeployPhase === REDEPLOY_PHASES.STARTED || redeployPhase === REDEPLOY_PHASES.QUEUED,
             redeployPhase,
             redeployQueued: redeployPhase === REDEPLOY_PHASES.QUEUED,
-            redeployDisabled: SELF_STACK_ID ? String(stack.Id) === SELF_STACK_ID : false,
+            redeployDisabled: currentSelfStackId ? String(stack.Id) === currentSelfStackId : false,
             duplicateName: duplicateNameSet.has(stack.Name)
           };
         }
@@ -1167,11 +2813,14 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
     res.json(stacksWithStatus);
   } catch (err) {
     console.error(`❌ Fehler beim Abrufen der Stacks:`, err.message);
+    if (err.message === 'PORTAINER_URL_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PORTAINER_URL_NOT_CONFIGURED' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/maintenance/portainer-status', async (req, res) => {
+app.get('/api/maintenance/portainer-status', requirePermission('maintenance-portainer', 'read'), async (req, res) => {
   console.log("🧭 [Maintenance] GET /api/maintenance/portainer-status: Prüfung gestartet");
   try {
     const payload = await fetchPortainerStatusSummary();
@@ -1179,11 +2828,14 @@ app.get('/api/maintenance/portainer-status', async (req, res) => {
   } catch (err) {
     const message = err.response?.data?.message || err.message || 'Unbekannter Fehler';
     console.error(`❌ [Maintenance] Fehler beim Prüfen des Portainer-Status: ${message}`);
+    if (message === 'PORTAINER_URL_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PORTAINER_URL_NOT_CONFIGURED' });
+    }
     res.status(500).json({ error: message });
   }
 });
 
-app.post('/api/maintenance/mode', (req, res) => {
+app.post('/api/maintenance/mode', requirePermission('maintenance-access', 'full'), (req, res) => {
   try {
     const { active, message } = req.body ?? {};
     const normalizedMessage = typeof message === 'string' && message.trim() ? message.trim() : null;
@@ -1202,7 +2854,7 @@ app.post('/api/maintenance/mode', (req, res) => {
   }
 });
 
-app.get('/api/maintenance/config', (req, res) => {
+app.get('/api/maintenance/config', requirePermission('maintenance-server-manage', 'read'), (req, res) => {
   const custom = getCustomPortainerScript();
   const effective = getEffectivePortainerScript();
   const ssh = getPortainerSshConfig();
@@ -1228,7 +2880,7 @@ app.get('/api/maintenance/config', (req, res) => {
   });
 });
 
-app.put('/api/maintenance/ssh-config', (req, res) => {
+app.put('/api/maintenance/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   try {
     const config = savePortainerSshConfig(req.body || {});
     res.json({
@@ -1247,7 +2899,7 @@ app.put('/api/maintenance/ssh-config', (req, res) => {
   }
 });
 
-app.delete('/api/maintenance/ssh-config', (req, res) => {
+app.delete('/api/maintenance/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   const config = deletePortainerSshConfig();
   res.json({
     success: true,
@@ -1261,7 +2913,7 @@ app.delete('/api/maintenance/ssh-config', (req, res) => {
   });
 });
 
-app.post('/api/maintenance/test-ssh', async (req, res) => {
+app.post('/api/maintenance/test-ssh', requirePermission('maintenance-ssh-update', 'full'), async (req, res) => {
   try {
     const override = req.body && Object.keys(req.body).length ? req.body : null;
     const result = await testSshConnection(override);
@@ -1272,7 +2924,7 @@ app.post('/api/maintenance/test-ssh', async (req, res) => {
   }
 });
 
-app.put('/api/maintenance/update-script', (req, res) => {
+app.put('/api/maintenance/update-script', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.',
@@ -1303,7 +2955,7 @@ app.put('/api/maintenance/update-script', (req, res) => {
   });
 });
 
-app.delete('/api/maintenance/update-script', (req, res) => {
+app.delete('/api/maintenance/update-script', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.',
@@ -1327,14 +2979,14 @@ app.delete('/api/maintenance/update-script', (req, res) => {
   });
 });
 
-app.get('/api/maintenance/update-status', (req, res) => {
+app.get('/api/maintenance/update-status', requirePermission('maintenance-update', 'read'), (req, res) => {
   res.json({
     maintenance: getMaintenanceState(),
     update: getPortainerUpdateStatus()
   });
 });
 
-app.post('/api/maintenance/portainer-update', async (req, res) => {
+app.post('/api/maintenance/portainer-update', requirePermission('maintenance-update', 'full'), async (req, res) => {
   if (portainerUpdateState.running) {
     return res.status(409).json({
       error: 'Ein Portainer-Update läuft bereits.',
@@ -1400,7 +3052,11 @@ app.post('/api/maintenance/portainer-update', async (req, res) => {
   });
 });
 
-app.get('/api/maintenance/duplicates', maintenanceGuard, async (req, res) => {
+app.get(
+  '/api/maintenance/duplicates',
+  maintenanceGuard,
+  requirePermission('maintenance-duplicates', 'read'),
+  async (req, res) => {
   console.log("🧹 [Maintenance] GET /api/maintenance/duplicates: Abruf gestartet");
   try {
     const { duplicates } = await loadStackCollections();
@@ -1435,7 +3091,11 @@ app.get('/api/maintenance/duplicates', maintenanceGuard, async (req, res) => {
   }
 });
 
-app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, res) => {
+app.post(
+  '/api/maintenance/duplicates/cleanup',
+  maintenanceGuard,
+  requirePermission('maintenance-duplicates', 'full'),
+  async (req, res) => {
   const canonicalId = req.body?.canonicalId;
   const duplicateIdsInput = Array.isArray(req.body?.duplicateIds) ? req.body.duplicateIds : [];
   const duplicateIds = duplicateIdsInput
@@ -1467,13 +3127,15 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
       return res.status(400).json({ error: 'Keine passenden Duplikate gefunden' });
     }
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: target.canonical.Id,
       stackName: target.canonical.Name,
       status: 'started',
       message: `Bereinigung doppelter Stacks gestartet (${duplicatesToDelete.length} Einträge)`,
-      endpoint: target.canonical.EndpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      redeployType: REDEPLOY_TYPES.MAINTENANCE,
+      metadata: {
+        duplicateIds: duplicateIds
+      }
     });
 
     const results = [];
@@ -1488,7 +3150,6 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
         results.push({
           id: stack.Id,
           name: stack.Name,
-          endpointId: stack.EndpointId,
           status: 'deleted'
         });
       } catch (err) {
@@ -1498,7 +3159,6 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
         results.push({
           id: stack.Id,
           name: stack.Name,
-          endpointId: stack.EndpointId,
           status: 'error',
           message
         });
@@ -1507,41 +3167,43 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
 
     if (errors.length) {
       const failedIds = errors.map((entry) => entry.id).join(', ');
-      logRedeployEvent({
+      logStackEvent({
         stackId: target.canonical.Id,
         stackName: target.canonical.Name,
         status: 'error',
         message: `Bereinigung fehlgeschlagen für IDs: ${failedIds}`,
-        endpoint: target.canonical.EndpointId,
-        redeployType: REDEPLOY_TYPES.MAINTENANCE
+        redeployType: REDEPLOY_TYPES.MAINTENANCE,
+        metadata: {
+          duplicateIds: duplicateIds
+        }
       });
 
       return res.status(500).json({
         success: false,
         canonical: {
           id: target.canonical.Id,
-          name: target.canonical.Name,
-          endpointId: target.canonical.EndpointId
+          name: target.canonical.Name
         },
         results
       });
     }
 
-    logRedeployEvent({
+    logStackEvent({
       stackId: target.canonical.Id,
       stackName: target.canonical.Name,
       status: 'success',
       message: `Bereinigung abgeschlossen. Entfernte IDs: ${results.map((entry) => entry.id).join(', ')}`,
-      endpoint: target.canonical.EndpointId,
-      redeployType: REDEPLOY_TYPES.MAINTENANCE
+      redeployType: REDEPLOY_TYPES.MAINTENANCE,
+      metadata: {
+        removedDuplicates: results.filter((entry) => entry.status === 'deleted').map((entry) => entry.id)
+      }
     });
 
     res.json({
       success: true,
       canonical: {
         id: target.canonical.Id,
-        name: target.canonical.Name,
-        endpointId: target.canonical.EndpointId
+        name: target.canonical.Name
       },
       removed: results.length,
       results
@@ -1553,8 +3215,8 @@ app.post('/api/maintenance/duplicates/cleanup', maintenanceGuard, async (req, re
   }
 });
 
-// Redeploy-Logs abrufen
-app.get('/api/logs', (req, res) => {
+// Event-Logs abrufen
+app.get('/api/logs', requirePermission('logs-access', 'read'), (req, res) => {
   const perPageParam = req.query.perPage ?? req.query.limit;
   const perPage = perPageParam === 'all' ? 'all' : Math.min(parseInt(perPageParam, 10) || 50, 500);
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -1562,25 +3224,36 @@ app.get('/api/logs', (req, res) => {
   const limit = perPage === 'all' ? undefined : perPage;
   const offset = perPage === 'all' ? 0 : (page - 1) * perPage;
 
-  const { whereClause, params } = buildLogFilter(req.query);
+  const { whereClause, params } = buildEventLogFilter(req.query);
   const baseQuery = `
     SELECT
       id,
       timestamp,
-      stack_id AS stackId,
-      stack_name AS stackName,
+      category,
+      event_type AS eventType,
+      action,
       status,
+      severity,
+      entity_type AS entityType,
+      entity_id AS entityId,
+      entity_name AS entityName,
+      actor_type AS actorType,
+      actor_id AS actorId,
+      actor_name AS actorName,
+      source,
+      context_type AS contextType,
+      context_id AS contextId,
+      context_label AS contextLabel,
       message,
-      endpoint,
-      redeploy_type AS redeployType
-    FROM redeploy_logs
+      metadata
+    FROM event_logs
     ${whereClause}
     ORDER BY datetime(timestamp) DESC
   `;
 
   const countQuery = `
     SELECT COUNT(*) as total
-    FROM redeploy_logs
+    FROM event_logs
     ${whereClause}
   `;
 
@@ -1595,7 +3268,27 @@ app.get('/api/logs', (req, res) => {
 
   try {
     const stmt = db.prepare(query);
-    const logs = stmt.all(params);
+    const rawLogs = stmt.all(params);
+    const logs = rawLogs.map((row) => {
+      const metadata = parseJsonColumn(row.metadata);
+      const legacyStack = row.entityType === 'stack' ? (row.entityId ?? null) : null;
+      const legacyStackName = row.entityType === 'stack' ? (row.entityName ?? row.entityId ?? null) : null;
+      const serverContext = row.contextType === 'server'
+        ? (row.contextId ?? null)
+        : null;
+
+      return {
+        ...row,
+        entityId: row.entityId ?? null,
+        actorId: row.actorId ?? null,
+        contextId: row.contextId ?? null,
+        metadata,
+        stackId: legacyStack,
+        stackName: legacyStackName,
+        redeployType: row.eventType ?? null,
+        server: serverContext
+      };
+    });
     const total = db.prepare(countQuery).get(params)?.total ?? logs.length;
 
     res.json({
@@ -1605,61 +3298,58 @@ app.get('/api/logs', (req, res) => {
       perPage: perPage === 'all' ? 'all' : limit
     });
   } catch (err) {
-    console.error('❌ Fehler beim Abrufen der Redeploy-Logs:', err.message);
-    if (err.message.includes('no such table')) {
-      return res.status(500).json({ error: 'redeploy_logs table nicht gefunden. Bitte Migration ausführen.' });
-    }
-    res.status(500).json({ error: 'Fehler beim Abrufen der Redeploy-Logs' });
+    console.error('❌ Fehler beim Abrufen der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Abrufen der Logs' });
   }
 });
 
-app.delete('/api/logs/:id', (req, res) => {
+app.delete('/api/logs/:id', requirePermission('logs-delete', 'full'), (req, res) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) {
     return res.status(400).json({ error: 'Ungültige ID' });
   }
 
   try {
-    const changes = deleteLogById(id);
+    const changes = deleteEventLogById(id);
     if (!changes) {
       return res.status(404).json({ error: 'Eintrag nicht gefunden' });
     }
     res.json({ success: true, deleted: changes });
   } catch (err) {
-    console.error('❌ Fehler beim Löschen des Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Löschen des Redeploy-Logs' });
+    console.error('❌ Fehler beim Löschen des Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen des Logs' });
   }
 });
 
-app.delete('/api/logs', (req, res) => {
+app.delete('/api/logs', requirePermission('logs-delete', 'full'), (req, res) => {
   try {
-    const deleted = deleteLogsByFilters(req.query);
+    const deleted = deleteEventLogsByFilters(req.query);
     res.json({ success: true, deleted });
   } catch (err) {
-    console.error('❌ Fehler beim Löschen der Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Löschen der Redeploy-Logs' });
+    console.error('❌ Fehler beim Löschen der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Löschen der Logs' });
   }
 });
 
-app.get('/api/logs/export', (req, res) => {
+app.get('/api/logs/export', requirePermission('logs-export', 'full'), (req, res) => {
   const format = (req.query.format || 'txt').toLowerCase();
   if (!['txt', 'sql'].includes(format)) {
     return res.status(400).json({ error: 'Ungültiges Export-Format' });
   }
 
   try {
-    const payload = exportLogsByFilters(req.query, format);
+    const payload = exportEventLogsByFilters(req.query, format);
     res.setHeader('Content-Type', payload.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
     res.send(payload.content);
   } catch (err) {
-    console.error('❌ Fehler beim Export der Redeploy-Logs:', err.message);
-    res.status(500).json({ error: 'Fehler beim Export der Redeploy-Logs' });
+    console.error('❌ Fehler beim Export der Event-Logs:', err.message);
+    res.status(500).json({ error: 'Fehler beim Export der Logs' });
   }
 });
 
 // Einzel-Redeploy
-app.put('/api/stacks/:id/redeploy', async (req, res) => {
+app.put('/api/stacks/:id/redeploy', requirePermission('stacks-redeploy-single', 'full'), async (req, res) => {
   const { id } = req.params;
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
@@ -1675,12 +3365,18 @@ app.put('/api/stacks/:id/redeploy', async (req, res) => {
 });
 
 // Redeploy ALL
-app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
+app.put(
+  '/api/stacks/redeploy-all',
+  maintenanceGuard,
+  requirePermission('stacks-redeploy-all', 'full'),
+  async (req, res) => {
   console.log(`🚀 PUT /api/stacks/redeploy-all: Redeploy ALL gestartet`);
+
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
     const stacksRes = await axiosInstance.get('/api/stacks');
-    const filteredStacks = stacksRes.data.filter(stack => stack.EndpointId === ENDPOINT_ID);
+    const filteredStacks = Array.isArray(stacksRes.data) ? stacksRes.data : [];
 
     console.log("📦 Redeploy ALL für folgende Stacks:");
     filteredStacks.forEach(s => console.log(`   - ${s.Name}`));
@@ -1695,13 +3391,21 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
 
     const stackSummaryList = eligibleStacks.map((stack) => `${stack.Name} (${stack.Id})`);
     const stackSummary = stackSummaryList.length ? stackSummaryList.join(', ') : 'keine Stacks';
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
-      status: 'started',
-      message: `Redeploy ALL gestartet für: ${stackSummary}`,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.ALL
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
+      status: 'gestartet',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
+      message: `Redeploy ALLE gestartet für: ${stackSummary}`,
+      metadata: {
+        stacks: stackSummaryList
+      },
+      source: 'system'
     });
 
     if (!eligibleStacks.length) {
@@ -1726,33 +3430,50 @@ app.put('/api/stacks/redeploy-all', maintenanceGuard, async (req, res) => {
       }
     }
 
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
-      status: 'success',
-      message: 'Redeploy ALL abgeschlossen',
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.ALL
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
+      status: 'erfolgreich',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
+      message: 'Redeploy ALLE abgeschlossen',
+      metadata: {
+        processedStacks: stackSummaryList
+      },
+      source: 'system'
     });
 
     res.json({ success: true, message: 'Redeploy ALL abgeschlossen' });
   } catch (err) {
     const message = err.response?.data?.message || err.message;
-    logRedeployEvent({
-      stackId: '---',
-      stackName: '---',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.ALL,
+      action: 'redeploy-alle',
       status: 'error',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-alle',
+      entityName: 'Redeploy ALLE',
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.ALL
+      source: 'system'
     });
-    console.error('❌ Fehler bei Redeploy ALL:', message);
+    console.error('❌ Fehler bei Redeploy ALLE:', message);
     res.status(500).json({ error: message });
   }
 });
 
 // Redeploy selection
-app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => {
+app.put(
+  '/api/stacks/redeploy-selection',
+  maintenanceGuard,
+  requirePermission('stacks-redeploy-selection', 'full'),
+  async (req, res) => {
   const { stackIds } = req.body || {};
   const totalCount = Array.isArray(stackIds) ? stackIds.length : 0;
   console.log(`🚀 PUT /api/stacks/redeploy-selection: Redeploy Auswahl gestartet (${totalCount} Stacks)`);
@@ -1760,6 +3481,8 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
   if (!Array.isArray(stackIds) || stackIds.length === 0) {
     return res.status(400).json({ error: 'stackIds muss eine nicht leere Array sein' });
   }
+
+  const serverContextId = getActiveServerUrl() || null;
 
   try {
     const normalizedIds = stackIds.map((id) => String(id));
@@ -1787,23 +3510,40 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
     const summaryList = eligibleStacks.map((stack) => `${stack.Name} (${stack.Id})`);
     const summaryText = summaryList.length ? summaryList.join(', ') : 'keine Stacks';
 
-    logRedeployEvent({
-      stackId: stackIds.join(','),
-      stackName: `Auswahl (${stackIds.length})`,
-      status: 'started',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'gestartet',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${stackIds.length})`,
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: `Redeploy Auswahl gestartet für: ${summaryText}`,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        requestedStackIds: normalizedIds
+      },
+      source: 'system'
     });
 
     if (!eligibleStacks.length) {
-      logRedeployEvent({
-        stackId: stackIds.join(','),
-        stackName: `Auswahl (${stackIds.length})`,
-        status: 'success',
+      logEvent({
+        category: 'stack',
+        eventType: REDEPLOY_TYPES.SELECTION,
+        action: 'redeploy-auswahl',
+        status: 'erfolgreich',
+        entityType: 'bulk-operation',
+        entityId: 'redeploy-auswahl',
+        entityName: `Redeploy Auswahl (${stackIds.length})`,
+        contextType: serverContextId ? 'server' : null,
+        contextId: serverContextId,
         message: 'Redeploy Auswahl übersprungen: keine veralteten Stacks',
-        endpoint: ENDPOINT_ID,
-        redeployType: REDEPLOY_TYPES.SELECTION
+        metadata: {
+          requestedStackIds: normalizedIds,
+          skipped: true
+        },
+        source: 'system'
       });
       return res.json({ success: true, message: 'Keine veralteten Stacks in der Auswahl' });
     }
@@ -1825,25 +3565,42 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
       }
     }
 
-    logRedeployEvent({
-      stackId: stackIds.join(','),
-      stackName: `Auswahl (${stackIds.length})`,
-      status: 'success',
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'erfolgreich',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${stackIds.length})`,
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message: 'Redeploy Auswahl abgeschlossen',
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        processedStackIds: eligibleStacks.map((stack) => String(stack.Id))
+      },
+      source: 'system'
     });
 
     res.json({ success: true, message: 'Redeploy Auswahl abgeschlossen' });
   } catch (err) {
     const message = err.response?.data?.message || err.message;
-    logRedeployEvent({
-      stackId: Array.isArray(stackIds) ? stackIds.join(',') : String(stackIds ?? ''),
-      stackName: `Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
-      status: 'error',
+    const normalized = Array.isArray(stackIds) ? stackIds.map((id) => String(id)) : [];
+    logEvent({
+      category: 'stack',
+      eventType: REDEPLOY_TYPES.SELECTION,
+      action: 'redeploy-auswahl',
+      status: 'fehler',
+      entityType: 'bulk-operation',
+      entityId: 'redeploy-auswahl',
+      entityName: `Redeploy Auswahl (${Array.isArray(stackIds) ? stackIds.length : 0})`,
+      contextType: serverContextId ? 'server' : null,
+      contextId: serverContextId,
       message,
-      endpoint: ENDPOINT_ID,
-      redeployType: REDEPLOY_TYPES.SELECTION
+      metadata: {
+        requestedStackIds: normalized
+      },
+      source: 'system'
     });
     console.error('❌ Fehler bei Redeploy Auswahl:', message);
     res.status(500).json({ error: message });
@@ -1853,4 +3610,3 @@ app.put('/api/stacks/redeploy-selection', maintenanceGuard, async (req, res) => 
 server.listen(PORT, () => {
   console.log(`🚀 Server läuft auf Port ${PORT}`);
 });
-

@@ -1,4 +1,5 @@
 import { getJsonSetting, setJsonSetting } from '../db/settings.js';
+import { logEvent } from '../logging/eventLogs.js';
 
 const MAINTENANCE_KEY = 'maintenance_mode';
 
@@ -44,6 +45,19 @@ export function isMaintenanceModeActive() {
 }
 
 export function activateMaintenanceMode({ message = null, extra = null } = {}) {
+  logEvent({
+    category: 'wartung',
+    eventType: 'Wartungsmodus',
+    action: 'aktivieren',
+    status: 'gestartet',
+    entityType: 'system',
+    entityId: 'wartung',
+    entityName: 'StackPulse Wartung',
+    contextType: 'System',
+    contextId: 'System',
+    message: 'Wartungsmodus aktiviert',
+    source: 'system'
+  });
   const now = new Date().toISOString();
   return persistState({
     active: true,
@@ -54,6 +68,19 @@ export function activateMaintenanceMode({ message = null, extra = null } = {}) {
 }
 
 export function deactivateMaintenanceMode({ message = null } = {}) {
+  logEvent({
+    category: 'wartung',
+    eventType: 'wartungsmodus',
+    action: 'deaktivieren',
+    status: 'erfolgreich',
+    entityType: 'system',
+    entityId: 'wartung',
+    entityName: 'StackPulse Wartung',
+    contextType: 'System',
+    contextId: 'System',
+    message: 'Wartungsmodus deaktiviert',
+    source: 'system'
+  });
   return persistState({
     active: false,
     message,

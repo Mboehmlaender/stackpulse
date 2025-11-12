@@ -1,6 +1,6 @@
 ![StackPulse Logo](assets/images/stackpulse.png)
 
-# 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.2-blue.svg) 
+# 📦 StackPulse ![Release](https://img.shields.io/badge/release-v0.5-blue.svg) 
 
 **StackPulse** ist eine kleine Web-App, die über die Portainer-API deine Docker-Stacks verwaltet und aktualisiert.  
 Aktuell funktioniert StackPulse nur mit der Business-Edition von Portainer. Die Communitiy-Edition wird in einem späteren Release implementiert!
@@ -67,7 +67,7 @@ Ziel:
 
 </details>
 
-<details open>
+<details>
 <summary>✅ v0.4 – Release</summary>
 
 ### Backend
@@ -86,27 +86,35 @@ Ziel:
 </details>
 
 <details open>
-  <summary>🟡 v0.5 – In Entwicklung</summary>
+<summary>✅ v0.5 – Release</summary>
+
+### 🛠️ Backend
+- [x] Neue API-Endpunkte für Logging, Benutzer- und Gruppenverwaltung sowie Superuser-Registrierung  
+- [x] Authentifizierung und Log-In  
+- [x] Erweiterte Protokollierung und Datenbank-Migration  
+- [x] Präzisere Steuerung der globalen Benutzerrechte  
+
+### 💻 Frontend
+- [x] Neue Log-In-Seite  
+- [x] Benutzer- und Gruppenverwaltung mit granularen Rechteeinstellungen  
+- [x] Erweiterte Log-Ausgabe mit Filtern und Suchoptionen  
+- [x] Konsolidierte und vereinheitlichte Ansichten im Dashboard  
+
+### ✨ Features
+- [x] Vollständiges Authentifizierungs- und Berechtigungssystem  
+- [x] Erweiterte Logs in allen Bereichen  
+- [x] Speicherung von Server- und Superuser-Einstellungen in der Datenbank  
+</details>
+
+<details open>
+
+<summary>🟡 v0.6 – In Entwicklung</summary>
 
 ### Backend
-- [x] Neue API-Endpunkte für Logging, Benutzer- und Gruppenverwaltung und Superuser-Registrierung 
-- [x] Authentifizierung und Log-In
-- [x] erweitertes Logging
-- [x] Datenbank erweitert und Migration erweitert
-- [ ] Feinsteuerung der globalen Userrechte am Benutzer 
-
 
 ### Frontend
-- [x] Log-In-Seite 
-- [ ] Benutzer- und Gruppenverwaltung
-- [x] Erweiterte Log-Ausgabe
-- [x] Konsolidierung der Ansichten und Filter im Frontend
-- [ ] Benutzerverwaltung mit granularer Steuerung von Einzelrechten 
 
 ### Features
-- [ ] Authentifizierungssystem und Benutzerverwaltung mit Gruppenrechten
-- [x] Erweiterung der Logs auf alle Bereiche
-- [x] Speichern der Server- und Superusereinstellungen in die Datenbank
 
 </details>
 
@@ -117,10 +125,8 @@ Ziel:
 - Monitoring (Status, CPU/RAM)  
 - Verbesserte UI/UX  
 - Erweiterte Filterungen udn Sortierungen
-- Multi-Server/Endpoint Verwaltung
+- Multi-Server Verwaltung
 - Integration Community Edition
-- Integration Community Edition
-
 </details>
 
 ---
@@ -158,41 +164,29 @@ stackpulse/
 
 ### Mit Compose starten
 ```bash
-version: "2.4"
+version: '3.8'
 services:
-    stackpulse:
-        container_name: stackpulse
-        image: ghcr.io/mboehmlaender/stackpulse
-        ports:
-          - '4001:4001'
-        volumes:
-          - stackpulse_data:/app/backend/data
-        environment:
-          PORTAINER_URL: "Your_Portainer_Server_Address"
-          PORTAINER_API_KEY: "Your_Portainer_API_Key"
-          PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
-          SELF_STACK_ID: "Stackpulse ID"
-        restart: unless-stopped
-
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4001:4001"
+    volumes:
+      - stackpulse_data:/app/backend/data
+    restart: unless-stopped
+    environment:
+      - PORTAINER_URL=Your_Portainer_Server_Adress (optional)
+      - PORTAINER_API_KEY=Your_Portainer_API_Key (optional)
+      - SUPERUSER_USERNAME=Your_Superuser_Username (optional)
+      - SUPERUSER_EMAIL=Your_Superuser_Email (optional)
+      - SUPERUSER_PASSWORD=Your_Superuser_Password (optional)
+      - SELF_STACK_ID=Your_StackPulse_Stack_ID (optional)
 volumes:
   stackpulse_data:
 
+
 ```
-
-Die PORTAINER_ENDPOINT_ID erhältst du, wenn du die die URL im Browser ansiehst, wenn du das Dashboard in Portainer öffnest:
-
-![PORTAINER_ENDPOINT_ID](assets/images/ENDPOINT_ID.png)
-
-Die 3 wäre in diesem Fall Endpoint-ID.
-
-Die STACK_SELF_ID findest du, wenn du das Frontend von StackPulse öffnest:
-
-![SELF_STACK_ID](assets/images/SELF_STACK_ID.png)
-
-Diese ID kann erst nach dem Deploy von Stackpulse ausgelesen werden. Vergiss daher nicht, nach dem Hinterlegen der ID in den Variablen das Stack noch einmal zu redeployen!
-
----
-
 ## 📋 Voraussetzungen
 
 - Node.js >= 20  

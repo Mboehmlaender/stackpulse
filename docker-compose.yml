@@ -8,12 +8,13 @@ services:
       - "4001:4001"
     volumes:
       - stackpulse_data:/app/backend/data
-    environment:
-      PORTAINER_URL: "Your_Portainer_Server_Address"
-      PORTAINER_API_KEY: "Your_Portainer_API_Key"
-      PORTAINER_ENDPOINT_ID: "Your_Portainer_Endpoint_ID"
-      SELF_STACK_ID: "Stackpulse ID"
     restart: unless-stopped
-
+    environment:
+      - PORTAINER_URL=Your_Portainer_Server_Adress (optional)
+      - PORTAINER_API_KEY=Your_Portainer_API_Key (optional)
+      - SUPERUSER_USERNAME=Your_Superuser_Username (optional)
+      - SUPERUSER_EMAIL=Your_Superuser_Email (optional)
+      - SUPERUSER_PASSWORD=Your_Superuser_Password (optional)
+      - SELF_STACK_ID=Your_StackPulse_Stack_ID (optional)
 volumes:
   stackpulse_data:

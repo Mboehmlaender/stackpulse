@@ -1,18 +1,15 @@
 import PropTypes from "prop-types";
 import { Link, NavLink } from "react-router-dom";
 import { XMarkIcon } from "@heroicons/react/24/outline";
-import {
-  Avatar,
-  Button,
-  IconButton,
-  Typography,
-} from "@material-tailwind/react";
+import { Avatar, Button, IconButton, Typography } from "@material-tailwind/react";
 import { useMaterialTailwindController, setOpenSidenav } from "@/components";
+import { useAuth } from "@/components/AuthProvider.jsx";
 import logo from "@/assets/images/stackpulse.png";
 
 export function Sidenav({ brandImg, brandName, routes }) {
   const [controller, dispatch] = useMaterialTailwindController();
   const { sidenavColor, sidenavType, openSidenav } = controller;
+  const { initialized: authInitialized, hasPermission } = useAuth();
   const sidenavTypes = {
     dark: "bg-gradient-to-br from-gray-800 to-gray-900",
     white: "bg-white shadow-sm",
@@ -25,7 +22,7 @@ export function Sidenav({ brandImg, brandName, routes }) {
         } fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] w-72  rounded-xl transition-transform duration-300 xl:translate-x-0 border border-blue-gray-100`}
     >
       <div className="relative py-6 px-8 text-right">
-        <img src={logo} alt="StackPulse" className="w-auto" /><span className="mt-1 text-xs text-stormGrey-500 block antialiased font-sans">v0.4</span>
+        <img src={logo} alt="StackPulse" className="w-auto" /><span className="mt-1 text-xs text-stormGrey-500 block antialiased font-sans">v0.5</span>
 
         <IconButton
           variant="text"
@@ -38,8 +35,31 @@ export function Sidenav({ brandImg, brandName, routes }) {
         </IconButton>
       </div>
       <div className="m-4">
-        {routes.map(({ layout, title, pages }, key) => (
-          <ul key={key} className="mb-4 flex flex-col gap-1">
+        {routes.map(({ layout, title, pages }, key) => {
+          const visiblePages = pages.filter(({ permission, hidden }) => {
+            if (hidden) {
+              return false;
+            }
+            if (!permission || !permission.key) {
+              return true;
+            }
+            if (!authInitialized) {
+              return false;
+            }
+            const requiredLevel = permission.requiredLevel || permission.level || "full";
+            return hasPermission(permission.key, requiredLevel);
+          });
+
+          if (layout !== "dashboard" && layout !== "auth") {
+            return null;
+          }
+
+          if (visiblePages.length === 0 && !title) {
+            return null;
+          }
+
+          return (
+            <ul key={key} className="mb-4 flex flex-col gap-1">
             {title && (
               <li className="mx-3.5 mt-4 mb-2">
                 <Typography
@@ -51,7 +71,7 @@ export function Sidenav({ brandImg, brandName, routes }) {
                 </Typography>
               </li>
             )}
-            {pages.map(({ icon, name, path }) => (
+            {visiblePages.map(({ icon, name, path }) => (
               <li key={name}>
                 <NavLink to={`/${layout}${path}`}>
                   {({ isActive }) => (
@@ -78,9 +98,10 @@ export function Sidenav({ brandImg, brandName, routes }) {
                   )}
                 </NavLink>
               </li>
-            ))}
+              ))}
           </ul>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );
