@@ -1,0 +1,20 @@
+site_name: Stackpulse Dokumentation
+theme:
+  name: material
+
+nav:
+  - Start: index.md
+  - Benutzerhandbuch:
+      - Überblick: user-guide/index.md
+      - Setup: user-guide/setup.md
+      - Stacks: user-guide/stacks.md
+      - Logs: user-guide/logs.md
+      - Wartung: user-guide/maintenance.md
+      - Benutzer: user-guide/users.md
+      - Benutzergruppen & Rechte: user-guide/groups.md
+  - Technik:
+      - Getting Started: getting-started.md
+      - Architektur: architecture.md
+      - Backend & API: backend.md
+      - Frontend: frontend.md
+      - Operations & Wartung: operations.md
