@@ -633,8 +633,39 @@ const applySelfStackStatus = (status) => {
 
 const buildSetupStatusResponse = () => applySelfStackStatus(getSetupStatus());
 
-const PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
-const PORTAINER_SSH_CONFIG_KEY = 'portainer_ssh_config';
+const LEGACY_PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
+const LEGACY_PORTAINER_SSH_CONFIG_KEY = 'portainer_ssh_config';
+
+const selectPrimaryServerIdStmt = db.prepare('SELECT id FROM servers ORDER BY id ASC LIMIT 1');
+const selectServerSshConfigByServerStmt = db.prepare('SELECT * FROM server_ssh_configs WHERE server_id = ?');
+const selectAnyServerSshConfigStmt = db.prepare('SELECT * FROM server_ssh_configs ORDER BY server_id ASC LIMIT 1');
+const upsertServerSshConfigStmt = db.prepare(`
+  INSERT INTO server_ssh_configs (server_id, host, port, username, password_cipher, password_iv, password_tag, extra_args, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  ON CONFLICT(server_id) DO UPDATE SET
+    host = excluded.host,
+    port = excluded.port,
+    username = excluded.username,
+    password_cipher = excluded.password_cipher,
+    password_iv = excluded.password_iv,
+    password_tag = excluded.password_tag,
+    extra_args = excluded.extra_args,
+    updated_at = CURRENT_TIMESTAMP
+`);
+const deleteServerSshConfigStmt = db.prepare('DELETE FROM server_ssh_configs WHERE server_id = ?');
+const deleteAllServerSshConfigsStmt = db.prepare('DELETE FROM server_ssh_configs');
+
+const selectServerUpdateScriptStmt = db.prepare('SELECT * FROM server_update_scripts WHERE server_id = ?');
+const selectAnyServerUpdateScriptStmt = db.prepare('SELECT * FROM server_update_scripts ORDER BY server_id ASC LIMIT 1');
+const upsertServerUpdateScriptStmt = db.prepare(`
+  INSERT INTO server_update_scripts (server_id, custom_script, created_at, updated_at)
+  VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  ON CONFLICT(server_id) DO UPDATE SET
+    custom_script = excluded.custom_script,
+    updated_at = CURRENT_TIMESTAMP
+`);
+const deleteServerUpdateScriptStmt = db.prepare('DELETE FROM server_update_scripts WHERE server_id = ?');
+const deleteAllServerUpdateScriptsStmt = db.prepare('DELETE FROM server_update_scripts');
 
 const DEFAULT_PORTAINER_UPDATE_SCRIPT = [
   'docker stop portainer',
@@ -682,26 +713,88 @@ const getPortainerUpdateStatus = () => ({
   ...portainerUpdateState
 });
 
+const normalizeScriptText = (script) => String(script ?? '').replace(/\r\n/g, '\n');
+
+let legacyUpdateScriptMigrated = false;
+
+const migrateLegacyUpdateScript = (serverIdHint = null) => {
+  if (legacyUpdateScriptMigrated) return;
+
+  const stored = getSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
+  if (!stored) {
+    legacyUpdateScriptMigrated = true;
+    return;
+  }
+
+  const targetServerId = serverIdHint ?? resolvePrimaryServerId();
+  if (!targetServerId) {
+    return;
+  }
+
+  const raw = typeof stored.value === 'string' ? stored.value : '';
+  const normalized = normalizeScriptText(raw);
+  if (!normalized.trim()) {
+    deleteSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
+    legacyUpdateScriptMigrated = true;
+    return;
+  }
+
+  upsertServerUpdateScriptStmt.run(targetServerId, normalized);
+  deleteSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
+  legacyUpdateScriptMigrated = true;
+};
+
+const resolveStoredUpdateScriptRow = () => {
+  const primaryServerId = resolvePrimaryServerId();
+  migrateLegacyUpdateScript(primaryServerId);
+
+  if (primaryServerId) {
+    const row = selectServerUpdateScriptStmt.get(primaryServerId);
+    if (row) return row;
+  }
+
+  return selectAnyServerUpdateScriptStmt.get() ?? null;
+};
+
+const resolveTargetServerIdForUpdateScript = () => {
+  const primaryId = resolvePrimaryServerId();
+  if (primaryId) return primaryId;
+  const fallback = selectAnyServerUpdateScriptStmt.get();
+  return fallback?.server_id ?? null;
+};
+
 const getCustomPortainerScript = () => {
-  const row = getSetting(PORTAINER_SCRIPT_SETTING_KEY);
+  const row = resolveStoredUpdateScriptRow();
   if (!row) return null;
-  const raw = typeof row.value === 'string' ? row.value : '';
-  if (!raw.trim()) return null;
+  const normalized = normalizeScriptText(row.custom_script ?? '');
+  if (!normalized.trim()) return null;
   return {
-    script: normalizeScriptText(raw),
+    script: normalized,
     updatedAt: row.updated_at || null
   };
 };
 
-const normalizeScriptText = (script) => String(script ?? '').replace(/\r\n/g, '\n');
-
 const saveCustomPortainerScript = (script) => {
   const normalized = normalizeScriptText(script);
-  if (!normalized.trim()) {
-    deleteSetting(PORTAINER_SCRIPT_SETTING_KEY);
+  const trimmed = normalized.trim();
+  const serverId = resolveTargetServerIdForUpdateScript();
+
+  if (!trimmed) {
+    if (serverId) {
+      deleteServerUpdateScriptStmt.run(serverId);
+    } else {
+      deleteAllServerUpdateScriptsStmt.run();
+    }
+    deleteSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
     return null;
   }
-  setSetting(PORTAINER_SCRIPT_SETTING_KEY, normalized);
+
+  if (!serverId) {
+    throw new Error('SERVER_NOT_CONFIGURED');
+  }
+
+  upsertServerUpdateScriptStmt.run(serverId, normalized);
+  deleteSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
   return normalized;
 };
 
@@ -763,6 +856,24 @@ const DEFAULT_PORTAINER_SSH_CONFIG = {
   extraSshArgs: []
 };
 
+const deserializeSshExtraArgs = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (typeof parsed === 'string') {
+      return parsed.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+const serializeSshExtraArgs = (value) => JSON.stringify(normalizeExtraArgs(value));
+
 const normalizeString = (value, fallback = '') => {
   if (value === undefined || value === null) return fallback;
   return String(value).trim();
@@ -809,37 +920,119 @@ const normalizePassword = (value, fallback = DEFAULT_PORTAINER_SSH_CONFIG.passwo
   return String(value);
 };
 
-const getPortainerSshConfig = () => {
-  const stored = getSetting(PORTAINER_SSH_CONFIG_KEY);
-  if (!stored) {
-    return { ...DEFAULT_PORTAINER_SSH_CONFIG };
-  }
-  try {
-    const parsed = stored.value ? JSON.parse(stored.value) : {};
-    const decryptedPassword = parsed.passwordEncrypted ? decryptSensitive(parsed.passwordEncrypted) : null;
-    const fallbackPassword = parsed.password !== undefined ? parsed.password : null;
-    return {
-      host: normalizeString(parsed.host),
-      port: normalizePort(parsed.port),
-      username: normalizeString(parsed.username),
-      password: normalizePassword(decryptedPassword ?? fallbackPassword),
-      extraSshArgs: normalizeExtraArgs(parsed.extraSshArgs)
-    };
-  } catch (err) {
-    console.warn('⚠️ [Maintenance] Konnte Portainer SSH Konfiguration nicht parsen:', err.message);
-    return { ...DEFAULT_PORTAINER_SSH_CONFIG };
-  }
+const resolvePrimaryServerId = () => {
+  const row = selectPrimaryServerIdStmt.get();
+  return row?.id ?? null;
 };
 
-const persistPortainerSshConfig = (config) => {
-  const payload = {
-    host: config.host,
-    port: config.port,
-    username: config.username,
-    extraSshArgs: config.extraSshArgs,
-    passwordEncrypted: config.password ? encryptSensitive(config.password) : null
+let legacySshConfigMigrated = false;
+
+const migrateLegacySshConfig = (serverIdHint = null) => {
+  if (legacySshConfigMigrated) return;
+
+  const stored = getSetting(LEGACY_PORTAINER_SSH_CONFIG_KEY);
+  if (!stored) {
+    legacySshConfigMigrated = true;
+    return;
+  }
+
+  const targetServerId = serverIdHint ?? resolvePrimaryServerId();
+  if (!targetServerId) {
+    return;
+  }
+
+  let parsed = {};
+  try {
+    parsed = stored.value ? JSON.parse(stored.value) : {};
+  } catch (err) {
+    console.warn('⚠️ [Maintenance] Konnte Legacy SSH Konfiguration nicht parsen:', err.message);
+    legacySshConfigMigrated = true;
+    deleteSetting(LEGACY_PORTAINER_SSH_CONFIG_KEY);
+    return;
+  }
+
+  const decryptedPassword = parsed?.passwordEncrypted
+    ? decryptSensitive(parsed.passwordEncrypted)
+    : parsed?.password ?? null;
+
+  const normalizedPayload = {
+    host: normalizeString(parsed?.host),
+    port: normalizePort(parsed?.port),
+    username: normalizeString(parsed?.username),
+    password: normalizePassword(decryptedPassword),
+    extraSshArgs: normalizeExtraArgs(parsed?.extraSshArgs)
   };
-  setSetting(PORTAINER_SSH_CONFIG_KEY, JSON.stringify(payload));
+
+  const encryptedPassword = normalizedPayload.password ? encryptSensitive(normalizedPayload.password) : null;
+
+  upsertServerSshConfigStmt.run(
+    targetServerId,
+    normalizedPayload.host,
+    normalizedPayload.port,
+    normalizedPayload.username,
+    encryptedPassword?.content ?? null,
+    encryptedPassword?.iv ?? null,
+    encryptedPassword?.tag ?? null,
+    serializeSshExtraArgs(normalizedPayload.extraSshArgs)
+  );
+
+  deleteSetting(LEGACY_PORTAINER_SSH_CONFIG_KEY);
+  legacySshConfigMigrated = true;
+};
+
+const resolveStoredSshConfigRow = () => {
+  const primaryServerId = resolvePrimaryServerId();
+  migrateLegacySshConfig(primaryServerId);
+
+  if (primaryServerId) {
+    const row = selectServerSshConfigByServerStmt.get(primaryServerId);
+    if (row) return row;
+  }
+
+  return selectAnyServerSshConfigStmt.get() ?? null;
+};
+
+const persistPortainerSshConfig = (serverId, config) => {
+  if (!serverId) {
+    throw new Error('SSH_SERVER_NOT_AVAILABLE');
+  }
+
+  const encryptedPassword = config.password ? encryptSensitive(config.password) : null;
+  upsertServerSshConfigStmt.run(
+    serverId,
+    normalizeString(config.host),
+    normalizePort(config.port),
+    normalizeString(config.username),
+    encryptedPassword?.content ?? null,
+    encryptedPassword?.iv ?? null,
+    encryptedPassword?.tag ?? null,
+    serializeSshExtraArgs(config.extraSshArgs)
+  );
+};
+
+const getPortainerSshConfig = () => {
+  const row = resolveStoredSshConfigRow();
+  if (!row) {
+    return { ...DEFAULT_PORTAINER_SSH_CONFIG };
+  }
+
+  const passwordPayload = row.password_cipher
+    ? {
+        content: row.password_cipher,
+        iv: row.password_iv,
+        tag: row.password_tag
+      }
+    : null;
+
+  const decryptedPassword = passwordPayload ? decryptSensitive(passwordPayload) : '';
+
+  return {
+    host: normalizeString(row.host),
+    port: normalizePort(row.port),
+    username: normalizeString(row.username),
+    password: normalizePassword(decryptedPassword),
+    extraSshArgs: normalizeExtraArgs(deserializeSshExtraArgs(row.extra_args))
+  };
 };
 
 const mergeSshConfig = (base, overrides = {}) => ({
@@ -850,15 +1043,32 @@ const mergeSshConfig = (base, overrides = {}) => ({
   extraSshArgs: normalizeExtraArgs(overrides.extraSshArgs, base.extraSshArgs)
 });
 
+const resolveTargetServerIdForSshConfig = () => {
+  const primaryId = resolvePrimaryServerId();
+  if (primaryId) return primaryId;
+  const fallback = selectAnyServerSshConfigStmt.get();
+  return fallback?.server_id ?? null;
+};
+
 const savePortainerSshConfig = (payload = {}) => {
   const current = getPortainerSshConfig();
   const next = mergeSshConfig(current, payload);
-  persistPortainerSshConfig(next);
+  const serverId = resolveTargetServerIdForSshConfig();
+  if (!serverId) {
+    throw new Error('SERVER_NOT_CONFIGURED');
+  }
+  persistPortainerSshConfig(serverId, next);
   return next;
 };
 
 const deletePortainerSshConfig = () => {
-  deleteSetting(PORTAINER_SSH_CONFIG_KEY);
+  const serverId = resolveTargetServerIdForSshConfig();
+  if (serverId) {
+    deleteServerSshConfigStmt.run(serverId);
+  } else {
+    deleteAllServerSshConfigsStmt.run();
+  }
+  deleteSetting(LEGACY_PORTAINER_SSH_CONFIG_KEY);
   return { ...DEFAULT_PORTAINER_SSH_CONFIG };
 };
 
@@ -2937,22 +3147,27 @@ app.put('/api/maintenance/update-script', requirePermission('maintenance-ssh-upd
     return res.status(400).json({ error: 'Feld "script" (string) wird benötigt.' });
   }
 
-  saveCustomPortainerScript(incoming);
+  try {
+    saveCustomPortainerScript(incoming);
 
-  const custom = getCustomPortainerScript();
-  const effective = getEffectivePortainerScript();
+    const custom = getCustomPortainerScript();
+    const effective = getEffectivePortainerScript();
 
-  res.json({
-    success: true,
-    script: {
-      default: DEFAULT_PORTAINER_UPDATE_SCRIPT,
-      custom: custom?.script ?? null,
-      customUpdatedAt: custom?.updatedAt ?? null,
-      effective: effective.script,
-      source: effective.source,
-      updatedAt: effective.updatedAt
-    }
-  });
+    res.json({
+      success: true,
+      script: {
+        default: DEFAULT_PORTAINER_UPDATE_SCRIPT,
+        custom: custom?.script ?? null,
+        customUpdatedAt: custom?.updatedAt ?? null,
+        effective: effective.script,
+        source: effective.source,
+        updatedAt: effective.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ [Maintenance] Fehler beim Speichern des Update-Skripts:', err.message);
+    res.status(400).json({ error: err.message || 'Ungültiges Update-Skript' });
+  }
 });
 
 app.delete('/api/maintenance/update-script', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
@@ -2963,20 +3178,25 @@ app.delete('/api/maintenance/update-script', requirePermission('maintenance-ssh-
     });
   }
 
-  saveCustomPortainerScript('');
-  const effective = getEffectivePortainerScript();
+  try {
+    saveCustomPortainerScript('');
+    const effective = getEffectivePortainerScript();
 
-  res.json({
-    success: true,
-    script: {
-      default: DEFAULT_PORTAINER_UPDATE_SCRIPT,
-      custom: null,
-      customUpdatedAt: null,
-      effective: effective.script,
-      source: effective.source,
-      updatedAt: effective.updatedAt
-    }
-  });
+    res.json({
+      success: true,
+      script: {
+        default: DEFAULT_PORTAINER_UPDATE_SCRIPT,
+        custom: null,
+        customUpdatedAt: null,
+        effective: effective.script,
+        source: effective.source,
+        updatedAt: effective.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ [Maintenance] Fehler beim Zurücksetzen des Update-Skripts:', err.message);
+    res.status(400).json({ error: err.message || 'Update-Skript konnte nicht entfernt werden' });
+  }
 });
 
 app.get('/api/maintenance/update-status', requirePermission('maintenance-update', 'read'), (req, res) => {

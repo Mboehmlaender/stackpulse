@@ -185,6 +185,32 @@ CREATE TABLE server_api_keys (
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
 
+CREATE TABLE server_ssh_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL UNIQUE,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 22,
+  username TEXT NOT NULL,
+  password_cipher TEXT,
+  password_iv TEXT,
+  password_tag TEXT,
+  extra_args TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_server_ssh_configs_server ON server_ssh_configs (server_id);
+
+CREATE TABLE server_update_scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL UNIQUE,
+  custom_script TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_server_update_scripts_server ON server_update_scripts (server_id);
+
 CREATE TABLE user_settings (
   user_id INTEGER NOT NULL,
   setting_key TEXT NOT NULL,
