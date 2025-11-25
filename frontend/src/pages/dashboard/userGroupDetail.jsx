@@ -519,8 +519,12 @@ export function UserGroupDetail() {
     setPermissionSelection((prev) => {
       const shouldResetDelete =
         permissionKey === "maintenance-server-manage" && nextValue !== "full";
+      const shouldResetEdit =
+        permissionKey === "maintenance-server-manage" && nextValue === "none";
+      const shouldResetDeleteFromEdit =
+        permissionKey === "maintenance-server-edit" && nextValue !== "full";
 
-      if (!shouldResetDelete && prev[permissionKey] === nextValue) {
+      if (!shouldResetDelete && !shouldResetEdit && !shouldResetDeleteFromEdit && prev[permissionKey] === nextValue) {
         return prev;
       }
 
@@ -530,6 +534,12 @@ export function UserGroupDetail() {
       };
 
       if (shouldResetDelete) {
+        nextState["maintenance-server-delete"] = "none";
+      }
+      if (shouldResetEdit) {
+        nextState["maintenance-server-edit"] = "none";
+      }
+      if (shouldResetDeleteFromEdit) {
         nextState["maintenance-server-delete"] = "none";
       }
 
@@ -609,6 +619,7 @@ export function UserGroupDetail() {
     const currentValue = getPermissionValue(row.key) ?? "none";
     const displayValue = normalizePermissionLevel(row.key, currentValue);
     const serverManageLevel = getPermissionValue("maintenance-server-manage") ?? "none";
+    const serverEditLevel = getPermissionValue("maintenance-server-edit") ?? "none";
     const { addTopBorder = true } = options;
 
     const rowClasses = [
@@ -641,13 +652,18 @@ export function UserGroupDetail() {
               row.key === "maintenance-server-delete" &&
               option.value === "full" &&
               (LEVEL_PRIORITY[serverManageLevel] ?? 0) < LEVEL_PRIORITY.full;
+            const requiresEditFull =
+              row.key === "maintenance-server-delete" &&
+              option.value === "full" &&
+              (LEVEL_PRIORITY[serverEditLevel] ?? 0) < LEVEL_PRIORITY.full;
             const disabled =
               !availableLevels.has(option.value) ||
               permissionsLoading ||
               savingGroup ||
               !canAdjustPermissions ||
               isSuperuserGroup ||
-              requiresManageFull;
+              requiresManageFull ||
+              requiresEditFull;
 
             return (
               <ListItem

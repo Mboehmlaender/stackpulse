@@ -209,6 +209,16 @@ CREATE TABLE server_update_scripts (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
+
+CREATE TABLE server_agents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL UNIQUE,
+  agent_url TEXT,
+  agent_token TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
 CREATE INDEX idx_server_update_scripts_server ON server_update_scripts (server_id);
 
 CREATE TABLE user_settings (

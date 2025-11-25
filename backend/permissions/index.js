@@ -267,10 +267,12 @@ export function saveGroupPermissionValues(groupId, values = {}) {
   };
 
   const serverManageLevel = getSubmittedLevel('maintenance-server-manage');
+  const serverEditLevel = getSubmittedLevel('maintenance-server-edit');
   const serverDeleteLevel = getSubmittedLevel('maintenance-server-delete');
 
   if (getLevelPriority(serverDeleteLevel) >= getLevelPriority('full') &&
-    getLevelPriority(serverManageLevel) < getLevelPriority('full')) {
+    (getLevelPriority(serverManageLevel) < getLevelPriority('full') ||
+      getLevelPriority(serverEditLevel) < getLevelPriority('full'))) {
     const error = new Error('PERMISSION_DEPENDENCY_LEVEL');
     error.code = 'PERMISSION_DEPENDENCY_LEVEL';
     error.permissionKey = 'maintenance-server-delete';

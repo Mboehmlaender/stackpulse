@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useMaintenance } from "@/components/MaintenanceProvider";
 import { useAuth } from "@/components/AuthProvider.jsx";
@@ -11,8 +12,12 @@ import {
   Button,
   Switch,
   Input,
-  Alert
+  Alert,
+  Chip,
+  Select,
+  Option
 } from "@material-tailwind/react";
+import { PaginationControls, usePage } from "@/components/PageProvider.jsx";
 
 const UPDATE_STATUS_LABELS = {
   idle: "Bereit",
@@ -111,6 +116,7 @@ const createEmptySshDraft = () => ({
 });
 
 export function Maintenance() {
+  const navigate = useNavigate();
   const { hasPermission, user: authUser } = useAuth();
   const showToast = useCallback(() => { }, []);
   const {
@@ -139,7 +145,7 @@ export function Maintenance() {
   const canViewMaintenance = Boolean(isSuperuserAccount || hasPermission("maintenance-access", "read"));
   const canControlMaintenance = Boolean(isSuperuserAccount || hasPermission("maintenance-access", "full"));
   const canViewServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-manage", "read"));
-  const canEditServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-manage", "full"));
+  const canEditServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-edit", "full"));
   const canDeleteServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-delete", "full"));
   const canDeleteSuperuser = Boolean(isSuperuserAccount || hasPermission("maintenance-superuser-delete", "full"));
   const canViewPortainer = Boolean(isSuperuserAccount || hasPermission("maintenance-portainer", "read"));
@@ -148,6 +154,8 @@ export function Maintenance() {
   const canManageSsh = Boolean(isSuperuserAccount || hasPermission("maintenance-ssh-update", "full"));
   const canViewDuplicates = Boolean(isSuperuserAccount || hasPermission("maintenance-duplicates", "read"));
   const canManageDuplicates = Boolean(isSuperuserAccount || hasPermission("maintenance-duplicates", "full"));
+  const showPortainerSection = false;
+  const showDuplicateSection = false;
 
   const maintenanceActive = Boolean(maintenanceMeta?.active);
   const maintenanceMessage = maintenanceMeta?.message;
@@ -214,6 +222,11 @@ export function Maintenance() {
   const [setupResources, setSetupResources] = useState(null);
   const [setupResourcesLoading, setSetupResourcesLoading] = useState(true);
   const [setupResourcesError, setSetupResourcesError] = useState("");
+  const [createServerName, setCreateServerName] = useState("");
+  const [createServerUrl, setCreateServerUrl] = useState("");
+  const [createServerApiKey, setCreateServerApiKey] = useState("");
+  const [createServerError, setCreateServerError] = useState("");
+  const [creatingServer, setCreatingServer] = useState(false);
   const [apiKeyDrafts, setApiKeyDrafts] = useState({});
   const [apiKeyUpdatingId, setApiKeyUpdatingId] = useState(null);
   const [serverDeleteId, setServerDeleteId] = useState(null);
@@ -228,6 +241,35 @@ export function Maintenance() {
   const [activeCleanupId, setActiveCleanupId] = useState(null);
   const [duplicatesUpdatedAt, setDuplicatesUpdatedAt] = useState(null);
   const duplicatesRequestRef = useRef(null);
+
+  const [serverStatuses, setServerStatuses] = useState(new Map());
+  const [serverStatusesLoading, setServerStatusesLoading] = useState(false);
+  const [serverStatusesError, setServerStatusesError] = useState("");
+
+  const setupServers = useMemo(() => setupResources?.servers?.items ?? [], [setupResources]);
+  const apiKeyInfoMap = useMemo(() => {
+    const items = setupResources?.apiKeys?.items ?? [];
+    return new Map(items.map((entry) => [entry.serverId, entry]));
+  }, [setupResources]);
+  const setupComplete = useMemo(() => Boolean(setupResources?.setupComplete), [setupResources]);
+  const selfStackInfo = setupResources?.selfStack ?? null;
+  const currentSelfStackValue = selfStackInfo?.current ?? "";
+  const envSelfStackValue = setupResources?.envDefaults?.selfStackId ?? "";
+
+  const {
+    page,
+    perPage,
+    perPageOptions,
+    perPageIsAll,
+    handlePerPageChange,
+    setPage,
+    setTotals,
+    resetPagination
+  } = usePage();
+
+  useEffect(() => () => resetPagination(), [resetPagination]);
+
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [portainerStatus, setPortainerStatus] = useState(null);
   const [portainerLoading, setPortainerLoading] = useState(true);
@@ -385,15 +427,78 @@ export function Maintenance() {
     fetchDuplicates();
   }, [fetchDuplicates]);
 
-  const setupServers = useMemo(() => setupResources?.servers?.items ?? [], [setupResources]);
-  const apiKeyInfoMap = useMemo(() => {
-    const items = setupResources?.apiKeys?.items ?? [];
-    return new Map(items.map((entry) => [entry.serverId, entry]));
-  }, [setupResources]);
-  const setupComplete = useMemo(() => Boolean(setupResources?.setupComplete), [setupResources]);
-  const selfStackInfo = setupResources?.selfStack ?? null;
-  const currentSelfStackValue = selfStackInfo?.current ?? "";
-  const envSelfStackValue = setupResources?.envDefaults?.selfStackId ?? "";
+  useEffect(() => {
+    if (!canViewServers || setupResourcesLoading) {
+      return;
+    }
+    const fetchStatuses = async () => {
+      if (!setupServers.length) {
+        setServerStatuses(new Map());
+        return;
+      }
+      setServerStatusesLoading(true);
+      setServerStatusesError("");
+      try {
+        const entries = await Promise.all(
+          setupServers.map(async (server) => {
+            try {
+              const res = await axios.get(`/api/setup/servers/${server.id}/check`);
+              const payload = res.data ?? {};
+              return [
+                server.id,
+                {
+                  online: Boolean(payload.online),
+                  portainer: payload.portainer ?? {},
+                  error: null
+                }
+              ];
+            } catch (err) {
+              const message = err.response?.data?.error || err.message || "Status unbekannt";
+              return [
+                server.id,
+                {
+                  online: false,
+                  portainer: {},
+                  error: message
+                }
+              ];
+            }
+          })
+        );
+        setServerStatuses(new Map(entries));
+      } catch (err) {
+        const message = err.response?.data?.error || err.message || "Server-Status konnte nicht geladen werden.";
+        setServerStatusesError(message);
+      } finally {
+        setServerStatusesLoading(false);
+      }
+    };
+
+    fetchStatuses();
+  }, [canViewServers, setupResourcesLoading, setupServers, setTotals]);
+
+  const filteredServers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return setupServers;
+    }
+    return setupServers.filter((server) => {
+      const haystacks = [server.name, server.url].map((value) => String(value || "").toLowerCase());
+      return haystacks.some((value) => value.includes(query));
+    });
+  }, [searchQuery, setupServers]);
+
+  useEffect(() => {
+    setTotals(filteredServers.length);
+  }, [filteredServers.length, setTotals]);
+
+  const paginatedServers = useMemo(() => {
+    if (perPageIsAll) {
+      return filteredServers;
+    }
+    const start = (page - 1) * perPage;
+    return filteredServers.slice(start, start + perPage);
+  }, [filteredServers, page, perPage, perPageIsAll]);
 
   useEffect(() => {
     setSelfStackDraft(currentSelfStackValue || "");
@@ -401,6 +506,48 @@ export function Maintenance() {
   }, [currentSelfStackValue]);
 
   const selfStackDirty = selfStackDraft !== currentSelfStackValue;
+  const handleSearchChange = useCallback((event) => {
+    setSearchQuery(event.target.value);
+  }, []);
+
+  useEffect(() => {
+    if (page !== 1) {
+      setPage(1);
+    }
+  }, [searchQuery, page, setPage]);
+
+  const handleCreateServer = useCallback(async () => {
+    if (!canEditServers || creatingServer) return;
+    const name = (createServerName || "").trim();
+    const url = (createServerUrl || "").trim();
+    const apiKey = (createServerApiKey || "").trim();
+    if (!url || !apiKey) {
+      setCreateServerError("Bitte Name, URL und API-Key angeben.");
+      return;
+    }
+    setCreateServerError("");
+    setCreatingServer(true);
+    try {
+      await axios.post("/api/setup/servers", { name, url, apiKey });
+      setCreateServerName("");
+      setCreateServerUrl("");
+      setCreateServerApiKey("");
+      await loadSetupResources({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.message || err.response?.data?.error || err.message || "Server konnte nicht angelegt werden.";
+      setCreateServerError(message);
+    } finally {
+      setCreatingServer(false);
+    }
+  }, [canEditServers, createServerApiKey, createServerName, createServerUrl, creatingServer, loadSetupResources]);
+
+  const handleResetCreateServer = useCallback(() => {
+    if (creatingServer) return;
+    setCreateServerName("");
+    setCreateServerUrl("");
+    setCreateServerApiKey("");
+    setCreateServerError("");
+  }, [creatingServer]);
 
   const totals = useMemo(() => {
     const groups = Array.isArray(duplicates) ? duplicates.length : 0;
@@ -974,189 +1121,236 @@ export function Maintenance() {
       {canViewServers && (
         <Card>
           <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
-            <Typography
-              variant="h6"
-              color="white"
-              className="flex items-center justify-between"
-            >
-              <span>Server &amp; API-Keys</span>
-
+            <Typography variant="h6" color="white" className="flex items-center justify-between">
+              <span>Server</span>
+              <Typography variant="small" color="white">
+                {setupServers.length} vorhanden
+              </Typography>
             </Typography>
           </CardHeader>
-          <CardBody className="flex flex-col gap-4 p-4">
-            {setupResourcesLoading && (
-              <p className="text-sm text-stormGrey-500">Daten werden geladen…</p>
-            )}
-            {!setupResourcesLoading && setupResourcesError && (
-              <Alert color="red" className="border border-red-200 bg-red-50 text-red-700">
-                {setupResourcesError}
-              </Alert>
-            )}
-            {!setupResourcesLoading && !setupResourcesError && (
-              <div className="flex flex-col gap-6">
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
-                    <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                      Server
-                    </Typography>
-                    <Typography variant="small" color="blue-gray">
-                      {setupServers.length} vorhanden
-                    </Typography>
-                  </div>
-                  {setupServers.length === 0 ? (
-                    <p className="text-sm text-stormGrey-500">
-                      Es sind derzeit keine Server hinterlegt.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-3">
-                      {setupServers.map((server) => {
-                        const apiKeyInfo = apiKeyInfoMap.get(server.id) || null;
-                        const hasKey = Boolean(apiKeyInfo?.hasKey);
-                        const apiKeyUpdatedLabel = apiKeyInfo?.updatedAt
-                          ? new Date(apiKeyInfo.updatedAt).toLocaleString("de-DE", {
-                            year: "numeric",
-                            month: "2-digit",
-                            day: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit"
-                          })
-                          : null;
-
-                        return (
-                          <div
-                            key={server.id}
-                            className="flex flex-col gap-3 rounded-md border border-blue-gray-100 p-3 md:flex-row md:items-start md:justify-between"
-                          >
-                            <div className="flex flex-col gap-1">
-                              <p className="text-sm font-medium text-stormGrey-900">
-                                {server.name || "Ohne Namen"}
-                              </p>
-                              <p className="text-xs text-stormGrey-500 break-all">
-                                {server.url}
-                              </p>
-                              <p className="text-xs text-stormGrey-500">
-                                API-Key: {hasKey ? "vorhanden" : "nicht hinterlegt"}{apiKeyUpdatedLabel ? ` (aktualisiert am ${apiKeyUpdatedLabel})` : ""}
-                              </p>
-                            </div>
-                            <div className="flex w-full flex-col gap-2 md:max-w-xs">
-                              <Input
-                                type="password"
-                                label="Neuer API-Key"
-                                value={apiKeyDrafts[server.id] ?? ""}
-                                onChange={(event) => handleApiKeyDraftChange(server.id, event.target.value)}
-                                disabled={!canEditServers || setupResourcesLoading || apiKeyUpdatingId === server.id}
-                              />
-                              <div className="flex items-center gap-2 justify-end">
-                                <Button
-                                  variant="text"
-                                  color="red"
-                                  size="sm"
-                                  onClick={() => handleDeleteServer(server.id)}
-                                  disabled={maintenanceLocked || !canDeleteServers || setupResourcesLoading || serverDeleteId === server.id || apiKeyUpdatingId === server.id}
-                                >
-                                  {serverDeleteId === server.id ? "Lösche…" : "Löschen"}
-                                </Button>
-                                <Button
-                                  color="blue"
-                                  size="sm"
-                                  onClick={() => handleApiKeyUpdate(server.id)}
-                                  disabled={maintenanceLocked || !canEditServers || setupResourcesLoading || apiKeyUpdatingId === server.id}
-                                >
-                                  {apiKeyUpdatingId === server.id ? "Speichere…" : "API-Key speichern"}
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+          <CardBody className="p-4">
+            {canEditServers && (
+              <div className="mb-8 rounded-lg border border-blue-gray-50 p-4">
+                <Typography variant="h6" color="blue-gray" className="mb-2">
+                  Neuen Server hinzufügen
+                </Typography>
+                <p className="text-sm text-stormGrey-600 mb-4">
+                  Hinterlege deine Portainer-Instanz. Die Verbindung wird beim Speichern automatisch geprüft.
+                </p>
+                <div className="grid gap-4 md:grid-cols-3">
+                  <Input
+                    label="Servername"
+                    value={createServerName}
+                    onChange={(event) => setCreateServerName(event.target.value)}
+                    disabled={creatingServer || maintenanceLocked}
+                    crossOrigin=""
+                  />
+                  <Input
+                    label="Server-URL oder IP"
+                    value={createServerUrl}
+                    onChange={(event) => setCreateServerUrl(event.target.value)}
+                    disabled={creatingServer || maintenanceLocked}
+                    crossOrigin=""
+                  />
+                  <Input
+                    type="password"
+                    label="Portainer API-Key"
+                    value={createServerApiKey}
+                    onChange={(event) => setCreateServerApiKey(event.target.value)}
+                    disabled={creatingServer || maintenanceLocked}
+                    crossOrigin=""
+                  />
                 </div>
-
-                <div className="flex flex-col gap-3 border-t border-blue-gray-50 pt-4">
-                  <div className="flex flex-col gap-1">
-                    <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                      Self-Stack-ID
-                    </Typography>
-                    <p className="text-xs text-stormGrey-500">
-                      Optional – lass das Feld leer, wenn keine Self-Stack-ID benötigt wird.
-                    </p>
-                  </div>
-                  {selfStackInfo?.envProvided && (
-                    <p className="text-xs text-stormGrey-500">
-                      Hinweis: Eine Umgebungsvariable liefert bereits einen Standardwert.
-                    </p>
-                  )}
-                  <div className="flex flex-col gap-2 md:flex-row md:items-end">
-                    <div className="flex-1">
-                      <Input
-                        label="Self-Stack-ID"
-                        value={selfStackDraft}
-                        onChange={(event) => handleSelfStackDraftChange(event.target.value)}
-                        disabled={!canEditServers || setupResourcesLoading || selfStackSaving}
-                      />
-                    </div>
-                    {canEditServers && (
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="text"
-                          color="red"
-                          size="sm"
-                          onClick={handleSelfStackRemove}
-                          disabled={maintenanceLocked || selfStackSaving || (!currentSelfStackValue && !selfStackDraft)}
-                        >
-                          Entfernen
-                        </Button>
-                        <Button
-                          color="blue"
-                          size="sm"
-                          onClick={handleSelfStackSave}
-                          disabled={maintenanceLocked || selfStackSaving || setupResourcesLoading || !selfStackDirty}
-                        >
-                          {selfStackSaving ? "Speichere…" : "Self-Stack-ID speichern"}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  {!canEditServers && (
-                    <p className="text-xs text-stormGrey-500">
-                      Bearbeitung benötigt das Gruppenrecht „Server-Sektion“.
-                    </p>
-                  )}
-                  <p className="text-xs text-stormGrey-500">
-                    Aktuell gespeichert: {currentSelfStackValue || "nicht gesetzt"}
-                  </p>
-                  {envSelfStackValue && (
-                    <p className="text-xs text-stormGrey-500">
-                      Vorgabe aus Umgebung: {envSelfStackValue}
-                    </p>
-                  )}
-                  {selfStackError && (
-                    <Alert color="red" className="border border-red-200 bg-red-50 text-red-700">
-                      {selfStackError}
-                    </Alert>
-                  )}
-                </div>
-
-                {!setupComplete && (
-                  <Alert color="amber" className="border border-amber-200 bg-amber-50 text-amber-800">
-                    Das Setup ist aktuell unvollständig. Bitte öffne den Setup-Bereich, um Server und API-Key erneut festzulegen.
-                  </Alert>
-                )}
-
-                <div className="flex items-center justify-end">
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
                   <Button
-                    variant="outlined"
-                    color="gray"
-                    size="sm"
-                    onClick={() => loadSetupResources()}
-                    disabled={maintenanceLocked || setupResourcesLoading}
+                    color="green"
+                    onClick={handleCreateServer}
+                    disabled={creatingServer || maintenanceLocked}
                   >
-                    Aktualisieren
+                    {creatingServer ? "Verifiziere …" : "Server anlegen"}
+                  </Button>
+                  <Button
+                    variant="text"
+                    color="blue-gray"
+                    onClick={handleResetCreateServer}
+                    disabled={creatingServer}
+                  >
+                    Formular zurücksetzen
                   </Button>
                 </div>
+                {createServerError && (
+                  <p className="mt-2 text-sm text-sunsetCoral-600">{createServerError}</p>
+                )}
               </div>
             )}
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="md:flex-1">
+                <Input
+                  label="Suchen nach Name oder URL"
+                  value={searchQuery}
+                  onChange={handleSearchChange}
+                  crossOrigin=""
+                />
+              </div>
+              <div className="md:mt-0 mt-4 md:flex-1">
+                <Select variant="static" label="Einträge pro Seite" onChange={handlePerPageChange} value={perPage}>
+                  {perPageOptions.map(({ value, label }) => (
+                    <Option key={value} value={value}>
+                      {label}
+                    </Option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+
+            {setupResourcesError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {setupResourcesError}
+              </div>
+            )}
+            {serverStatusesError && !setupResourcesLoading && (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {serverStatusesError}
+              </div>
+            )}
+
+            <div className="overflow-x-auto rounded-lg border border-blue-gray-50 mt-6">
+              <table className="w-full min-w-[720px] table-auto text-left">
+                <thead>
+                  <tr className="bg-blue-gray-50/50 text-xs uppercase tracking-wide text-stormGrey-400">
+                    <th className="px-6 py-4 font-semibold">Name</th>
+                    <th className="px-6 py-4 font-semibold">IP / Host</th>
+                    <th className="px-6 py-4 font-semibold">Server Status</th>
+                    <th className="px-6 py-4 font-semibold">Portainer Status</th>
+                    <th className="px-6 py-4 font-semibold">Edition</th>
+                    <th className="px-6 py-4 font-semibold text-right">Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {setupResourcesLoading ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                        Server werden geladen ...
+                      </td>
+                    </tr>
+                  ) : filteredServers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-8 text-center text-blue-gray-400">
+                        Keine Server gefunden.
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedServers.map((server, index) => {
+                      const rowClass = index === paginatedServers.length - 1 ? "" : "border-b border-blue-gray-50";
+                      const statusEntry = serverStatuses.get(server.id) || {};
+                      const serverOnline = statusEntry.online === true;
+                      const portainer = statusEntry.portainer || {};
+                      const portainerStatus = portainer.updateAvailable === true
+                        ? "update"
+                        : portainer.updateAvailable === false
+                          ? "ok"
+                          : "unknown";
+                      const portainerEdition = portainer.edition || "-";
+                      const hostLabel = (() => {
+                        try {
+                          const parsed = new URL(server.url);
+                          return parsed.hostname || server.url;
+                        } catch {
+                          return server.url;
+                        }
+                      })();
+                      return (
+                        <tr key={server.id} className={`text-sm text-stormGrey-700 ${rowClass}`}>
+                          <td className="px-6 py-4">
+                            <Typography variant="small" className="font-medium text-stormGrey-900">
+                              {server.name || "–"}
+                            </Typography>
+                            <Typography variant="small" className="text-xs text-stormGrey-500">
+                              {server.url}
+                            </Typography>
+                          </td>
+                          <td className="px-6 py-4">
+                            <Typography variant="small">{hostLabel || "–"}</Typography>
+                          </td>
+                          <td className="px-6 py-4">
+                            {serverStatusesLoading && !statusEntry ? (
+                              <span className="text-xs text-stormGrey-400">Prüfe…</span>
+                            ) : (
+                              <Chip
+                                value={serverOnline ? "Online" : "Offline"}
+                                size="sm"
+                                color={serverOnline ? "green" : "red"}
+                                variant="ghost"
+                              />
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            {serverStatusesLoading && !statusEntry ? (
+                              <span className="text-xs text-stormGrey-400">Prüfe…</span>
+                            ) : (
+                              <Chip
+                                value={
+                                  portainerStatus === "update"
+                                    ? "Update vorhanden"
+                                    : portainerStatus === "ok"
+                                      ? "Aktuell"
+                                      : "Unbekannt"
+                                }
+                                size="sm"
+                                color={
+                                  portainerStatus === "update"
+                                    ? "amber"
+                                    : portainerStatus === "ok"
+                                      ? "green"
+                                      : "blue-gray"
+                                }
+                                variant="ghost"
+                              />
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            {serverStatusesLoading && !statusEntry ? (
+                              <span className="text-xs text-stormGrey-400">Prüfe…</span>
+                            ) : (
+                              <Typography variant="small">{portainerEdition}</Typography>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outlined"
+                                color="blue-gray"
+                                onClick={() => navigate(`/dashboard/maintenance/servers/${server.id}`)}
+                                disabled={!canEditServers}
+                              >
+                                Bearbeiten
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="text"
+                                color="red"
+                                onClick={() => handleDeleteServer(server.id)}
+                                disabled={maintenanceLocked || !canDeleteServers || serverDeleteId === server.id}
+                              >
+                                {serverDeleteId === server.id ? "Lösche…" : "Löschen"}
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <Typography variant="small" color="blue-gray" className="text-sm">
+                {perPageIsAll ? "Alle Server" : `${paginatedServers.length} von ${filteredServers.length}`} angezeigt
+              </Typography>
+              <PaginationControls />
+            </div>
           </CardBody>
         </Card>
       )}
@@ -1220,7 +1414,7 @@ export function Maintenance() {
         </Card>
       )}
 
-      {canViewPortainer && (
+      {showPortainerSection && canViewPortainer && (
         <Card>
           <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
             <Typography
@@ -1624,7 +1818,7 @@ export function Maintenance() {
         </Card>
       )}
 
-      {canViewDuplicates && (
+      {showDuplicateSection && canViewDuplicates && (
         <Card>
           <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
             <Typography

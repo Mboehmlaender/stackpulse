@@ -1,0 +1,13 @@
+{
+  "name": "stackpulse-agent",
+  "version": "0.0.1",
+  "description": "Stackpulse Agent for Docker metadata and update checks",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.2",
+    "express": "^4.19.2"
+  }
+}

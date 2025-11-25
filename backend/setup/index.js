@@ -14,6 +14,16 @@ const updateServer = db.prepare(`
   SET name = ?, url = ?, updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
+const selectAgentByServerId = db.prepare('SELECT * FROM server_agents WHERE server_id = ?');
+const selectAllAgents = db.prepare('SELECT * FROM server_agents');
+const upsertAgent = db.prepare(`
+  INSERT INTO server_agents (server_id, agent_url, agent_token, created_at, updated_at)
+  VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  ON CONFLICT(server_id) DO UPDATE SET
+    agent_url = excluded.agent_url,
+    agent_token = excluded.agent_token,
+    updated_at = CURRENT_TIMESTAMP
+`);
 
 const deleteServerStmt = db.prepare('DELETE FROM servers WHERE id = ?');
 
@@ -126,6 +136,96 @@ function ensureServer({ name, url }) {
   return created;
 }
 
+const generateAgentToken = () => `sp_${crypto.randomBytes(16).toString('hex')}`;
+
+function getAgentConfig(serverId, { autoCreate = false } = {}) {
+  const id = Number(serverId);
+  if (!Number.isFinite(id)) {
+    const error = new Error('SERVER_ID_INVALID');
+    error.code = 'SERVER_ID_INVALID';
+    throw error;
+  }
+  const server = getServerById(id);
+  let agent = selectAgentByServerId.get(server.id) || null;
+  if (!agent && autoCreate) {
+    const token = generateAgentToken();
+    upsertAgent.run(server.id, null, token);
+    agent = selectAgentByServerId.get(server.id) || null;
+  }
+  return agent ? { serverId: server.id, agentUrl: agent.agent_url, agentToken: agent.agent_token } : null;
+}
+
+function setAgentConfig(serverId, { agentUrl, agentToken } = {}) {
+  const id = Number(serverId);
+  if (!Number.isFinite(id)) {
+    const error = new Error('SERVER_ID_INVALID');
+    error.code = 'SERVER_ID_INVALID';
+    throw error;
+  }
+  const server = getServerById(id);
+  const normalizedUrl = typeof agentUrl === 'string' && agentUrl.trim().length
+    ? agentUrl.trim().replace(/\/+$/, '')
+    : null;
+  let normalizedToken = typeof agentToken === 'string' ? agentToken.trim() : '';
+  if (!normalizedToken) {
+    const existing = selectAgentByServerId.get(server.id);
+    normalizedToken = existing?.agent_token || generateAgentToken();
+  }
+  if (!normalizedToken.startsWith('sp_')) {
+    normalizedToken = `sp_${normalizedToken}`;
+  }
+  upsertAgent.run(server.id, normalizedUrl, normalizedToken);
+  const agent = selectAgentByServerId.get(server.id);
+  return { serverId: server.id, agentUrl: agent.agent_url, agentToken: agent.agent_token };
+}
+
+function getServerById(serverId) {
+  const id = Number(serverId);
+  if (!Number.isFinite(id)) {
+    const error = new Error('SERVER_ID_INVALID');
+    error.code = 'SERVER_ID_INVALID';
+    throw error;
+  }
+
+  const server = selectServerById.get(id);
+  if (!server) {
+    const error = new Error('SERVER_NOT_FOUND');
+    error.code = 'SERVER_NOT_FOUND';
+    throw error;
+  }
+
+  return server;
+}
+
+function updateServerDetails(serverId, { name, url }) {
+  const existing = getServerById(serverId);
+  const normalizedUrl = normalizeUrl(url || existing.url);
+  if (!normalizedUrl) {
+    const error = new Error('SERVER_URL_REQUIRED');
+    error.code = 'SERVER_URL_REQUIRED';
+    throw error;
+  }
+
+  const normalizedName = (name || deriveServerName(normalizedUrl)).trim();
+  if (!normalizedName) {
+    const error = new Error('SERVER_NAME_REQUIRED');
+    error.code = 'SERVER_NAME_REQUIRED';
+    throw error;
+  }
+
+  const other = selectServerByUrl.get(normalizedUrl);
+  if (other && other.id !== existing.id) {
+    const error = new Error('SERVER_URL_TAKEN');
+    error.code = 'SERVER_URL_TAKEN';
+    throw error;
+  }
+
+  updateServer.run(normalizedName, normalizedUrl, existing.id);
+  const updated = selectServerById.get(existing.id);
+  console.log(`ℹ️ [Setup] Server aktualisiert: ${updated.name} (${updated.id})`);
+  return updated;
+}
+
 function setServerApiKey({ serverId, apiKey }) {
   const id = Number(serverId);
   if (!Number.isFinite(id)) {
@@ -163,6 +263,13 @@ function setServerApiKey({ serverId, apiKey }) {
     serverId: server.id,
     updatedAt: new Date().toISOString()
   };
+}
+
+function getServerConnection(serverId) {
+  const server = getServerById(serverId);
+  const apiKeyRow = selectApiKeyByServerId.get(server.id);
+  const apiKey = decryptApiKey(apiKeyRow);
+  return { server, apiKey };
 }
 
 function getActiveApiKey() {
@@ -259,6 +366,21 @@ function ensureDefaultsFromEnv() {
       }
     }
   }
+}
+
+function getServerStatus(serverId) {
+  const server = getServerById(serverId);
+  const apiKeyMeta = selectApiKeyByServerId.get(server.id) || null;
+  const agent = getAgentConfig(server.id, { autoCreate: true });
+
+  return {
+    server,
+    apiKey: {
+      hasKey: Boolean(apiKeyMeta),
+      updatedAt: apiKeyMeta?.updated_at ?? null
+    },
+    agent
+  };
 }
 
 function getSetupStatus() {
@@ -361,7 +483,14 @@ function completeSetup({ server: serverInput }) {
 export {
   ensureDefaultsFromEnv,
   ensureServer,
+  getServerById,
   setServerApiKey,
+  getAgentConfig,
+  setAgentConfig,
+  generateAgentToken,
+  getServerConnection,
+  updateServerDetails,
+  getServerStatus,
   getActiveApiKey,
   getActiveServerUrl,
   hasServer,

@@ -12,6 +12,7 @@ import routes from "@/routes";
 import { UserDetails } from "@/pages/dashboard/userDetails.jsx";
 import { UserGroupDetail } from "@/pages/dashboard/userGroupDetail.jsx";
 import { SecurityPhrase } from "@/pages/dashboard/securityPhrase.jsx";
+import { ServerDetail } from "@/pages/dashboard/serverDetail.jsx";
 import { useMaterialTailwindController, setOpenConfigurator } from "@/components";
 import { useAuth } from "@/components/AuthProvider.jsx";
 import PermissionGate from "@/components/PermissionGate.jsx";
@@ -207,6 +208,14 @@ export function Dashboard() {
             element={
               <PermissionGate permission="user-groups-access" requiredLevel="read">
                 <UserGroupDetail />
+              </PermissionGate>
+            }
+          />
+          <Route
+            path="maintenance/servers/:serverId"
+            element={
+              <PermissionGate permission="maintenance-server-manage" requiredLevel="read">
+                <ServerDetail />
               </PermissionGate>
             }
           />

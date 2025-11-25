@@ -41,7 +41,15 @@ import {
   getSetupStatus,
   completeSetup,
   removeServer,
-  setServerApiKey
+  setServerApiKey,
+  getServerById,
+  ensureServer,
+  getServerConnection,
+  updateServerDetails,
+  getServerStatus,
+  getAgentConfig,
+  setAgentConfig,
+  generateAgentToken
 } from './setup/index.js';
 import {
   listUsers,
@@ -633,6 +641,36 @@ const applySelfStackStatus = (status) => {
 
 const buildSetupStatusResponse = () => applySelfStackStatus(getSetupStatus());
 
+const isCommunityEdition = async () => {
+  try {
+    const summary = await fetchPortainerStatusSummary();
+    const edition = (summary?.edition || '').toLowerCase();
+    return edition.includes('community');
+  } catch {
+    return false;
+  }
+};
+
+const pingAgent = async (agentUrl, agentToken) => {
+  if (!agentUrl) return { online: false, error: 'agent_url_missing' };
+  const url = agentUrl.replace(/\/+$/, '');
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(`${url}/info`, {
+      headers: { 'X-Agent-Token': agentToken || '' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) {
+      return { online: false, error: `status_${resp.status}` };
+    }
+    return { online: true, error: null };
+  } catch (err) {
+    return { online: false, error: err?.message || 'agent_unreachable' };
+  }
+};
+
 const LEGACY_PORTAINER_SCRIPT_SETTING_KEY = 'portainer_update_script';
 const LEGACY_PORTAINER_SSH_CONFIG_KEY = 'portainer_ssh_config';
 
@@ -667,12 +705,21 @@ const upsertServerUpdateScriptStmt = db.prepare(`
 const deleteServerUpdateScriptStmt = db.prepare('DELETE FROM server_update_scripts WHERE server_id = ?');
 const deleteAllServerUpdateScriptsStmt = db.prepare('DELETE FROM server_update_scripts');
 
-const DEFAULT_PORTAINER_UPDATE_SCRIPT = [
+const DEFAULT_PORTAINER_UPDATE_SCRIPT_BE = [
   'docker stop portainer',
   'docker rm portainer',
   'docker pull portainer/portainer-ee:lts',
   'docker run -d -p 8000:8000 -p 9443:9443 --name=portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ee:lts'
 ].join('\n');
+
+const DEFAULT_PORTAINER_UPDATE_SCRIPT_CE = [
+  'docker stop portainer',
+  'docker rm portainer',
+  'docker pull portainer/portainer-ce:lts',
+  'docker run -d -p 8000:8000 -p 9443:9443 --name=portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:lts'
+].join('\n');
+
+const DEFAULT_PORTAINER_UPDATE_SCRIPT = DEFAULT_PORTAINER_UPDATE_SCRIPT_BE;
 
 let portainerUpdateState = {
   running: false,
@@ -744,27 +791,45 @@ const migrateLegacyUpdateScript = (serverIdHint = null) => {
   legacyUpdateScriptMigrated = true;
 };
 
-const resolveStoredUpdateScriptRow = () => {
-  const primaryServerId = resolvePrimaryServerId();
+const resolveStoredUpdateScriptRow = (preferredServerId = null, fallbackToAny = true) => {
+  const primaryServerId = preferredServerId ?? resolvePrimaryServerId();
   migrateLegacyUpdateScript(primaryServerId);
 
   if (primaryServerId) {
     const row = selectServerUpdateScriptStmt.get(primaryServerId);
-    if (row) return row;
+    if (row) return { row, serverId: primaryServerId };
+    if (!fallbackToAny) {
+      return { row: null, serverId: primaryServerId };
+    }
   }
 
-  return selectAnyServerUpdateScriptStmt.get() ?? null;
+  if (!fallbackToAny) {
+    return { row: null, serverId: primaryServerId ?? null };
+  }
+
+  const fallback = selectAnyServerUpdateScriptStmt.get();
+  if (fallback) {
+    return { row: fallback, serverId: fallback.server_id };
+  }
+
+  return { row: null, serverId: primaryServerId ?? null };
 };
 
-const resolveTargetServerIdForUpdateScript = () => {
+const resolveTargetServerIdForUpdateScript = (preferredServerId = null, fallbackToAny = true) => {
+  if (preferredServerId) {
+    return preferredServerId;
+  }
+  if (!fallbackToAny) {
+    return null;
+  }
   const primaryId = resolvePrimaryServerId();
   if (primaryId) return primaryId;
   const fallback = selectAnyServerUpdateScriptStmt.get();
   return fallback?.server_id ?? null;
 };
 
-const getCustomPortainerScript = () => {
-  const row = resolveStoredUpdateScriptRow();
+const getCustomPortainerScript = (serverId = null) => {
+  const { row } = resolveStoredUpdateScriptRow(serverId, !serverId);
   if (!row) return null;
   const normalized = normalizeScriptText(row.custom_script ?? '');
   if (!normalized.trim()) return null;
@@ -774,14 +839,14 @@ const getCustomPortainerScript = () => {
   };
 };
 
-const saveCustomPortainerScript = (script) => {
+const saveCustomPortainerScript = (script, serverId = null) => {
   const normalized = normalizeScriptText(script);
   const trimmed = normalized.trim();
-  const serverId = resolveTargetServerIdForUpdateScript();
+  const targetServerId = resolveTargetServerIdForUpdateScript(serverId, !serverId);
 
   if (!trimmed) {
-    if (serverId) {
-      deleteServerUpdateScriptStmt.run(serverId);
+    if (targetServerId) {
+      deleteServerUpdateScriptStmt.run(targetServerId);
     } else {
       deleteAllServerUpdateScriptsStmt.run();
     }
@@ -789,17 +854,17 @@ const saveCustomPortainerScript = (script) => {
     return null;
   }
 
-  if (!serverId) {
+  if (!targetServerId) {
     throw new Error('SERVER_NOT_CONFIGURED');
   }
 
-  upsertServerUpdateScriptStmt.run(serverId, normalized);
+  upsertServerUpdateScriptStmt.run(targetServerId, normalized);
   deleteSetting(LEGACY_PORTAINER_SCRIPT_SETTING_KEY);
   return normalized;
 };
 
-const getEffectivePortainerScript = () => {
-  const custom = getCustomPortainerScript();
+const getEffectivePortainerScript = (serverId = null, defaultScript = DEFAULT_PORTAINER_UPDATE_SCRIPT) => {
+  const custom = getCustomPortainerScript(serverId);
   if (custom) {
     return {
       script: custom.script,
@@ -808,10 +873,28 @@ const getEffectivePortainerScript = () => {
     };
   }
   return {
-    script: DEFAULT_PORTAINER_UPDATE_SCRIPT,
+    script: defaultScript,
     source: 'default',
     updatedAt: null
   };
+};
+
+const resolveServerEdition = async (serverId) => {
+  try {
+    const { server, apiKey } = getServerConnection(serverId);
+    if (!server?.url || !apiKey) return 'Business Edition';
+    const client = createPortainerSetupClient({ baseURL: server.url, apiKey });
+    try {
+      const licenseInfoRes = await client.get('/api/licenses/info');
+      const licenseInfo = licenseInfoRes.data ?? {};
+      const edition = extractPortainerEdition(licenseInfo) ?? 'Business Edition';
+      return edition;
+    } catch {
+      return 'Community Edition';
+    }
+  } catch {
+    return 'Business Edition';
+  }
 };
 
 
@@ -980,16 +1063,30 @@ const migrateLegacySshConfig = (serverIdHint = null) => {
   legacySshConfigMigrated = true;
 };
 
-const resolveStoredSshConfigRow = () => {
-  const primaryServerId = resolvePrimaryServerId();
+const resolveStoredSshConfigRow = (preferredServerId = null, fallbackToAny = true) => {
+  const primaryServerId = preferredServerId ?? resolvePrimaryServerId();
   migrateLegacySshConfig(primaryServerId);
 
   if (primaryServerId) {
     const row = selectServerSshConfigByServerStmt.get(primaryServerId);
-    if (row) return row;
+    if (row) {
+      return { row, serverId: primaryServerId };
+    }
+    if (!fallbackToAny) {
+      return { row: null, serverId: primaryServerId };
+    }
   }
 
-  return selectAnyServerSshConfigStmt.get() ?? null;
+  if (!fallbackToAny) {
+    return { row: null, serverId: primaryServerId ?? null };
+  }
+
+  const fallback = selectAnyServerSshConfigStmt.get();
+  if (fallback) {
+    return { row: fallback, serverId: fallback.server_id };
+  }
+
+  return { row: null, serverId: primaryServerId ?? null };
 };
 
 const persistPortainerSshConfig = (serverId, config) => {
@@ -1010,8 +1107,8 @@ const persistPortainerSshConfig = (serverId, config) => {
   );
 };
 
-const getPortainerSshConfig = () => {
-  const row = resolveStoredSshConfigRow();
+const getPortainerSshConfig = (serverId = null) => {
+  const { row } = resolveStoredSshConfigRow(serverId, !serverId);
   if (!row) {
     return { ...DEFAULT_PORTAINER_SSH_CONFIG };
   }
@@ -1043,28 +1140,34 @@ const mergeSshConfig = (base, overrides = {}) => ({
   extraSshArgs: normalizeExtraArgs(overrides.extraSshArgs, base.extraSshArgs)
 });
 
-const resolveTargetServerIdForSshConfig = () => {
+const resolveTargetServerIdForSshConfig = (preferredServerId = null, fallbackToAny = true) => {
+  if (preferredServerId) {
+    return preferredServerId;
+  }
+  if (!fallbackToAny) {
+    return null;
+  }
   const primaryId = resolvePrimaryServerId();
   if (primaryId) return primaryId;
   const fallback = selectAnyServerSshConfigStmt.get();
   return fallback?.server_id ?? null;
 };
 
-const savePortainerSshConfig = (payload = {}) => {
-  const current = getPortainerSshConfig();
+const savePortainerSshConfig = (payload = {}, serverId = null) => {
+  const current = getPortainerSshConfig(serverId);
   const next = mergeSshConfig(current, payload);
-  const serverId = resolveTargetServerIdForSshConfig();
-  if (!serverId) {
+  const targetServerId = resolveTargetServerIdForSshConfig(serverId, !serverId);
+  if (!targetServerId) {
     throw new Error('SERVER_NOT_CONFIGURED');
   }
-  persistPortainerSshConfig(serverId, next);
+  persistPortainerSshConfig(targetServerId, next);
   return next;
 };
 
-const deletePortainerSshConfig = () => {
-  const serverId = resolveTargetServerIdForSshConfig();
-  if (serverId) {
-    deleteServerSshConfigStmt.run(serverId);
+const deletePortainerSshConfig = (serverId = null) => {
+  const targetServerId = resolveTargetServerIdForSshConfig(serverId, !serverId);
+  if (targetServerId) {
+    deleteServerSshConfigStmt.run(targetServerId);
   } else {
     deleteAllServerSshConfigsStmt.run();
   }
@@ -1150,17 +1253,19 @@ const buildSshCommandArgs = (config) => {
   return { args, sshConfig, cleanup, env: envOverrides };
 };
 
-const ensureSshConfigReady = () => getPortainerSshConfig();
-
-const testSshConnection = async (configOverride = null) => {
-  const baseConfig = configOverride
-    ? mergeSshConfig(getPortainerSshConfig(), configOverride)
-    : ensureSshConfigReady();
-  const hasHost = Boolean(baseConfig.host && baseConfig.username);
+const ensureSshConfigReady = (serverId = null) => {
+  const config = getPortainerSshConfig(serverId);
+  const hasHost = Boolean(config.host && config.username);
   if (!hasHost) {
     throw new Error('SSH-Konfiguration ist unvollständig (Host/Benutzer erforderlich).');
   }
+  return config;
+};
 
+const testSshConnection = async (configOverride = null, serverId = null) => {
+  const baseConfig = configOverride
+    ? mergeSshConfig(getPortainerSshConfig(serverId), configOverride)
+    : ensureSshConfigReady(serverId);
   const { args, env: envOverrides, cleanup } = buildSshCommandArgs(baseConfig);
   const sshArgs = [...args, 'echo', '__PORTAINER_SSH_TEST__'];
 
@@ -1299,9 +1404,25 @@ const compareSemver = (a, b) => {
   return 0;
 };
 
+const extractPortainerEdition = (payload) => {
+  if (!payload || typeof payload !== 'object') return null;
+  const enumType = payload.type ?? payload.Type;
+  if (enumType === 2 || enumType === 3) return 'Business Edition';
+  if (enumType === 1) return 'Community Edition';
+  return null;
+};
+
+const extractPortainerBuild = (payload) => {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.BuildNumber
+    ?? payload.Server?.Build
+    ?? payload.VersionInfo?.BuildNumber
+    ?? null;
+};
+
 const fetchPortainerStatusSummary = async () => {
   const statusRes = await axiosInstance.get('/api/status');
-  const statusData = statusRes.data ?? {};
+  let statusData = statusRes.data ?? {};
 
   const currentVersion = statusData.Version
     ?? statusData.ServerVersion
@@ -1309,8 +1430,31 @@ const fetchPortainerStatusSummary = async () => {
     ?? statusData.ServerInfo?.Version
     ?? statusData.ServerVersionNumber
     ?? null;
-  const edition = statusData.Edition ?? statusData.Server?.Edition ?? null;
-  const build = statusData.BuildNumber ?? statusData.Server?.Build ?? null;
+  let edition = null;
+  const build = extractPortainerBuild(statusData);
+
+  // Edition ausschließlich über Lizenz-Endpoint ableiten
+  let effectiveEdition = null;
+  let effectiveBuild = build;
+  try {
+    const licenseInfoRes = await axiosInstance.get('/api/licenses/info');
+    const licenseInfo = licenseInfoRes.data ?? {};
+    effectiveEdition = extractPortainerEdition(licenseInfo) ?? 'Business Edition';
+  } catch (err) {
+    // Endpoint fehlt -> Community Edition
+    effectiveEdition = 'Community Edition';
+  }
+
+  // optional: Build über /api/system/status ergänzen, falls leer
+  if (!effectiveBuild) {
+    try {
+      const systemStatusRes = await axiosInstance.get('/api/system/status');
+      const systemStatus = systemStatusRes.data ?? {};
+      effectiveBuild = extractPortainerBuild(systemStatus) ?? effectiveBuild;
+    } catch (err) {
+      // Build bleibt ggf. null
+    }
+  }
 
   const errors = {};
   let latestVersion = null;
@@ -2055,6 +2199,43 @@ app.post('/api/setup/portainer-stacks', async (req, res) => {
   }
 });
 
+app.get('/api/servers/:id/agent', requirePermission('maintenance-server-edit', 'read'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const config = getAgentConfig(id, { autoCreate: true });
+    const editionFlag = await isCommunityEdition();
+    const { online, error } = await pingAgent(config?.agentUrl, config?.agentToken);
+    res.json({
+      serverId: Number(id),
+      agentUrl: config?.agentUrl || null,
+      agentToken: config?.agentToken || null,
+      online,
+      agentError: error || null,
+      community: editionFlag
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.code || err.message || 'AGENT_CONFIG_FAILED' });
+  }
+});
+
+app.put('/api/servers/:id/agent', requirePermission('maintenance-server-edit', 'full'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const payload = {
+      agentUrl: req.body?.agentUrl,
+      agentToken: req.body?.agentToken
+    };
+    // Token ist systemgeneriert; wenn keiner übergeben, wird Auto-Token gesetzt
+    const config = setAgentConfig(id, {
+      agentUrl: payload.agentUrl,
+      agentToken: payload.agentToken || undefined
+    });
+    res.json(config);
+  } catch (err) {
+    res.status(400).json({ error: err.code || err.message || 'AGENT_CONFIG_FAILED' });
+  }
+});
+
 app.post('/api/setup/complete', (req, res) => {
   const { superuser: superuserInput, server: serverInput, apiKey: apiKeyInput, selfStackId: selfStackInput } = req.body ?? {};
   const hasSelfStackInput = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
@@ -2139,6 +2320,12 @@ app.post('/api/setup/complete', (req, res) => {
       return res.status(400).json({ error: 'API_KEY_REQUIRED' });
     }
 
+    if (targetServerId) {
+      // Ensure agent token exists for CE servers
+      const agent = setAgentConfig(targetServerId, { agentUrl: null, agentToken: undefined });
+      created.agent = agent;
+    }
+
     if (hasSelfStackInput) {
       const normalizedSelfStackId = typeof selfStackInput === 'string'
         ? selfStackInput.trim()
@@ -2182,6 +2369,450 @@ app.post('/api/setup/complete', (req, res) => {
   }
 });
 
+app.get('/api/setup/servers/:id', requirePermission('maintenance-server-manage', 'read'), (req, res) => {
+  const { id } = req.params;
+  try {
+    const detail = getServerStatus(id);
+    res.json({ success: true, ...detail });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      default:
+        console.error('⚠️ [Setup] Serverdetails konnten nicht geladen werden:', error);
+        return res.status(500).json({ error: 'SERVER_FETCH_FAILED' });
+    }
+  }
+});
+
+app.get('/api/setup/servers/:id/check', requirePermission('maintenance-server-manage', 'read'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { server, apiKey } = getServerConnection(id);
+    const agentConfig = getAgentConfig(id, { autoCreate: true });
+    if (!apiKey) {
+      return res.json({
+        success: true,
+        online: false,
+        portainer: {
+          currentVersion: null,
+          latestVersion: null,
+          updateAvailable: null,
+          edition: null,
+          build: null
+        }
+      });
+    }
+    const client = createPortainerSetupClient({ baseURL: server.url, apiKey });
+    const statusRes = await client.get('/api/status');
+    let statusData = statusRes.data ?? {};
+    const currentVersion = statusData.Version
+      ?? statusData.ServerVersion
+      ?? statusData.Server?.Version
+      ?? statusData.ServerInfo?.Version
+      ?? statusData.ServerVersionNumber
+      ?? null;
+    let edition = null;
+    let build = extractPortainerBuild(statusData);
+
+    // Edition ausschließlich über Lizenz-Endpoint ableiten
+    try {
+      const licenseInfoRes = await client.get('/api/licenses/info');
+      const licenseInfo = licenseInfoRes.data ?? {};
+      edition = extractPortainerEdition(licenseInfo) ?? 'Business Edition';
+    } catch (err) {
+      edition = 'Community Edition';
+    }
+
+    // optional: Build über /api/system/status ergänzen, falls leer
+    if (!build) {
+      try {
+        const systemStatusRes = await client.get('/api/system/status');
+        const systemStatus = systemStatusRes.data ?? {};
+        build = extractPortainerBuild(systemStatus) ?? build;
+      } catch (err) {
+        // Build bleibt ggf. null
+      }
+    }
+
+    // Hole Version/Edition analog BE über /system/version (falls verfügbar)
+    try {
+      const sysVerRes = await client.get('/api/system/version');
+      const sysVer = sysVerRes.data ?? {};
+      const apiVersion = sysVer.Version || sysVer.version || null;
+      const apiEdition = sysVer.Edition || sysVer.edition || null;
+      if (apiVersion) {
+        statusData = { ...statusData, Version: apiVersion };
+      }
+      if (apiEdition) {
+        edition = apiEdition;
+      }
+    } catch (err) {
+      // ignore, CE ohne endpoint oder Fehler
+    }
+
+    let agentOnline = null;
+    let agentError = null;
+    let agentVersion = null;
+
+    if ((edition || '').toLowerCase().includes('community') && agentConfig?.agentUrl) {
+      const { online, error } = await pingAgent(agentConfig.agentUrl, agentConfig.agentToken);
+      agentOnline = online;
+      agentError = error;
+      if (online) {
+        try {
+          const agentRes = await fetch(`${agentConfig.agentUrl.replace(/\/+$/, '')}/portainer/version`, {
+            headers: { 'X-Agent-Token': agentConfig.agentToken || '' }
+          });
+          if (agentRes.ok) {
+            agentVersion = await agentRes.json();
+          } else {
+            agentError = `agent_status_${agentRes.status}`;
+          }
+        } catch (err) {
+          agentError = err?.message || 'agent_fetch_failed';
+        }
+      }
+    }
+
+    const effectiveCurrentVersion = statusData.Version
+      ?? statusData.ServerVersion
+      ?? statusData.Server?.Version
+      ?? statusData.ServerInfo?.Version
+      ?? statusData.ServerVersionNumber
+      ?? currentVersion;
+
+    res.json({
+      success: true,
+      online: true,
+      portainer: {
+        currentVersion: effectiveCurrentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        edition,
+        build
+      },
+      agent: {
+        url: agentConfig?.agentUrl || null,
+        token: agentConfig?.agentToken || null,
+        online: agentOnline,
+        error: agentError
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_ID_INVALID') {
+      return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+    }
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    if (code === 'API_KEY_REQUIRED' || code === 'SERVER_URL_REQUIRED') {
+      return res.status(400).json({ error: code });
+    }
+    console.error('⚠️ [Setup] Server-Check fehlgeschlagen:', error);
+    return res.status(500).json({ error: 'SERVER_CHECK_FAILED' });
+  }
+});
+
+app.post('/api/setup/servers', requirePermission('maintenance-server-edit', 'full'), async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const urlRaw = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+  const apiKeyRaw = typeof req.body?.apiKey === 'string'
+    ? req.body.apiKey
+    : typeof req.body?.key === 'string'
+      ? req.body.key
+      : '';
+
+  const normalizedExternalUrl = normalizeExternalPortainerUrl(urlRaw);
+  if (!normalizedExternalUrl) {
+    return res.status(400).json({ error: 'SERVER_URL_INVALID' });
+  }
+  if (!apiKeyRaw.trim()) {
+    return res.status(400).json({ error: 'API_KEY_REQUIRED' });
+  }
+
+  try {
+    // verify connectivity
+    const client = createPortainerSetupClient({ baseURL: normalizedExternalUrl, apiKey: apiKeyRaw.trim() });
+    await client.get('/api/status');
+
+    const server = ensureServer({ name, url: normalizedExternalUrl });
+    setServerApiKey({ serverId: server.id, apiKey: apiKeyRaw.trim() });
+    const status = buildSetupStatusResponse();
+    res.status(201).json({ success: true, server, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_URL_REQUIRED' || code === 'SERVER_NAME_REQUIRED') {
+      return res.status(400).json({ error: code });
+    }
+    if (code === 'SERVER_URL_TAKEN') {
+      return res.status(409).json({ error: 'SERVER_URL_TAKEN' });
+    }
+    if (code === 'SERVER_ID_INVALID') {
+      return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+    }
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    if (error.response?.status === 401) {
+      return res.status(401).json({ error: 'API_KEY_INVALID', message: error.response?.data?.message || 'Portainer API-Key ungültig' });
+    }
+    if (error.response?.status === 404) {
+      return res.status(404).json({ error: 'SERVER_UNREACHABLE', message: error.response?.data?.message || 'Server nicht erreichbar' });
+    }
+    console.error('⚠️ [Setup] Server konnte nicht erstellt werden:', error);
+    return res.status(500).json({ error: 'SERVER_CREATE_FAILED' });
+  }
+});
+
+app.get('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-ssh-update', 'read'), (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  try {
+    getServerById(serverId);
+    const config = getPortainerSshConfig(serverId);
+    res.json({
+      success: true,
+      ssh: {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        extraSshArgs: config.extraSshArgs,
+        passwordStored: Boolean(config.password)
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    return res.status(500).json({ error: 'SSH_CONFIG_LOAD_FAILED' });
+  }
+});
+
+app.put('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  try {
+    getServerById(serverId);
+    const config = savePortainerSshConfig(req.body || {}, serverId);
+    res.json({
+      success: true,
+      ssh: {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        extraSshArgs: config.extraSshArgs,
+        passwordStored: Boolean(config.password)
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] Server-spezifische SSH-Konfiguration konnte nicht gespeichert werden:', error);
+    return res.status(400).json({ error: code || 'SSH_CONFIG_SAVE_FAILED' });
+  }
+});
+
+app.delete('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-ssh-update', 'full'), (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  try {
+    getServerById(serverId);
+    const config = deletePortainerSshConfig(serverId);
+    res.json({
+      success: true,
+      ssh: {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        extraSshArgs: config.extraSshArgs,
+        passwordStored: false
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] Server-spezifische SSH-Konfiguration konnte nicht gelöscht werden:', error);
+    return res.status(500).json({ error: 'SSH_CONFIG_DELETE_FAILED' });
+  }
+});
+
+app.post('/api/setup/servers/:id/test-ssh', requirePermission('maintenance-ssh-update', 'full'), async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  try {
+    getServerById(serverId);
+    const override = req.body && Object.keys(req.body).length ? req.body : null;
+    const result = await testSshConnection(override, serverId);
+    res.json({ success: true, result });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] SSH Test für Server fehlgeschlagen:', error);
+    res.status(500).json({ error: code || 'SSH_TEST_FAILED' });
+  }
+});
+
+app.get('/api/setup/servers/:id/update-script', requirePermission('maintenance-ssh-update', 'read'), async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  try {
+    getServerById(serverId);
+    const edition = (await resolveServerEdition(serverId) || '').toLowerCase();
+    const defaultScript = edition.includes('community')
+      ? DEFAULT_PORTAINER_UPDATE_SCRIPT_CE
+      : DEFAULT_PORTAINER_UPDATE_SCRIPT_BE;
+    const script = getEffectivePortainerScript(serverId, defaultScript);
+    const custom = getCustomPortainerScript(serverId);
+    res.json({
+      success: true,
+      script: {
+        default: defaultScript,
+        custom: custom?.script ?? null,
+        customUpdatedAt: custom?.updatedAt ?? null,
+        effective: script.script,
+        source: script.source,
+        updatedAt: script.updatedAt
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] Update-Skript konnte nicht geladen werden:', error);
+    res.status(500).json({ error: 'UPDATE_SCRIPT_LOAD_FAILED' });
+  }
+});
+
+app.put('/api/setup/servers/:id/update-script', requirePermission('maintenance-ssh-update', 'full'), async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (portainerUpdateState.running) {
+    return res.status(409).json({ error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.' });
+  }
+  const incoming = req.body?.script;
+  if (typeof incoming !== 'string') {
+    return res.status(400).json({ error: 'Feld "script" (string) wird benötigt.' });
+  }
+  try {
+    getServerById(serverId);
+    saveCustomPortainerScript(incoming, serverId);
+    const custom = getCustomPortainerScript(serverId);
+    const edition = (await resolveServerEdition(serverId) || '').toLowerCase();
+    const defaultScript = edition.includes('community')
+      ? DEFAULT_PORTAINER_UPDATE_SCRIPT_CE
+      : DEFAULT_PORTAINER_UPDATE_SCRIPT_BE;
+    const effective = getEffectivePortainerScript(serverId, defaultScript);
+    res.json({
+      success: true,
+      script: {
+        default: defaultScript,
+        custom: custom?.script ?? null,
+        customUpdatedAt: custom?.updatedAt ?? null,
+        effective: effective.script,
+        source: effective.source,
+        updatedAt: effective.updatedAt
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] Update-Skript konnte nicht gespeichert werden:', error);
+    res.status(400).json({ error: code || 'UPDATE_SCRIPT_SAVE_FAILED' });
+  }
+});
+
+app.delete('/api/setup/servers/:id/update-script', requirePermission('maintenance-ssh-update', 'full'), async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId)) {
+    return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (portainerUpdateState.running) {
+    return res.status(409).json({ error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.' });
+  }
+  try {
+    getServerById(serverId);
+    saveCustomPortainerScript('', serverId);
+    const edition = (await resolveServerEdition(serverId) || '').toLowerCase();
+    const defaultScript = edition.includes('community')
+      ? DEFAULT_PORTAINER_UPDATE_SCRIPT_CE
+      : DEFAULT_PORTAINER_UPDATE_SCRIPT_BE;
+    const effective = getEffectivePortainerScript(serverId, defaultScript);
+    res.json({
+      success: true,
+      script: {
+        default: defaultScript,
+        custom: null,
+        customUpdatedAt: null,
+        effective: effective.script,
+        source: effective.source,
+        updatedAt: effective.updatedAt
+      }
+    });
+  } catch (error) {
+    const code = error.code || error.message;
+    if (code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    console.error('❌ [Setup] Update-Skript konnte nicht gelöscht werden:', error);
+    res.status(400).json({ error: code || 'UPDATE_SCRIPT_DELETE_FAILED' });
+  }
+});
+
+app.put('/api/setup/servers/:id', requirePermission('maintenance-server-edit', 'full'), (req, res) => {
+  const { id } = req.params;
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+
+  try {
+    const server = updateServerDetails(id, { name, url });
+    const status = buildSetupStatusResponse();
+    res.json({ success: true, server, status });
+  } catch (error) {
+    const code = error.code || error.message;
+    switch (code) {
+      case 'SERVER_ID_INVALID':
+        return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+      case 'SERVER_NOT_FOUND':
+        return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+      case 'SERVER_URL_REQUIRED':
+      case 'SERVER_NAME_REQUIRED':
+        return res.status(400).json({ error: code });
+      case 'SERVER_URL_TAKEN':
+        return res.status(409).json({ error: 'SERVER_URL_TAKEN' });
+      default:
+        console.error('⚠️ [Setup] Server konnte nicht aktualisiert werden:', error);
+        return res.status(500).json({ error: 'SERVER_UPDATE_FAILED' });
+    }
+  }
+});
+
 app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delete', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
@@ -2201,13 +2832,13 @@ app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delet
       case 'SERVER_NOT_FOUND':
         return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
       default:
-        console.error('⚠️ [Setup] Server konnte nicht gelöscht werden:', error);
-        return res.status(500).json({ error: 'SERVER_DELETE_FAILED' });
+      console.error('⚠️ [Setup] Server konnte nicht gelöscht werden:', error);
+      return res.status(500).json({ error: 'SERVER_DELETE_FAILED' });
     }
   }
 });
 
-app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
+app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-edit', 'full'), (req, res) => {
   const { id } = req.params;
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) {
@@ -2234,12 +2865,12 @@ app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-
         return res.status(500).json({ error: 'API_KEY_ENCRYPT_FAILED' });
       default:
         console.error('⚠️ [Setup] API-Key konnte nicht aktualisiert werden:', error);
-        return res.status(500).json({ error: 'API_KEY_UPDATE_FAILED' });
+      return res.status(500).json({ error: 'API_KEY_UPDATE_FAILED' });
     }
   }
 });
 
-app.put('/api/setup/self-stack', requirePermission('maintenance-server-manage', 'full'), (req, res) => {
+app.put('/api/setup/self-stack', requirePermission('maintenance-server-edit', 'full'), (req, res) => {
   const hasPayload = req.body ? Object.prototype.hasOwnProperty.call(req.body, 'selfStackId') : false;
   if (!hasPayload) {
     return res.status(400).json({ error: 'SELF_STACK_ID_MISSING' });

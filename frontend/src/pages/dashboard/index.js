@@ -6,3 +6,4 @@ export * from "@/pages/dashboard/usergroups";
 export * from "@/pages/dashboard/userDetails";
 export * from "@/pages/dashboard/userGroupDetail";
 export * from "@/pages/dashboard/securityPhrase";
+export * from "@/pages/dashboard/serverDetail";

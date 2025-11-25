@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { db } from './index.js';
+import crypto from 'crypto';
 
 const BLUEPRINT_FILENAME = 'dbs';
 const PERMISSION_BLUEPRINT = [
@@ -191,14 +192,26 @@ const PERMISSION_BLUEPRINT = [
             ]
           },
           {
-            key: 'maintenance-server-delete',
-            label: 'Server löschen',
+            key: 'maintenance-server-edit',
+            label: 'Server bearbeiten',
             sortOrder: 1,
             defaultLevel: 'none',
             levels: ['full', 'none'],
             dependencies: [
               { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
               { dependsOnKey: 'maintenance-server-manage', requiredLevel: '!=none' }
+            ]
+          },
+          {
+            key: 'maintenance-server-delete',
+            label: 'Server löschen',
+            sortOrder: 2,
+            defaultLevel: 'none',
+            levels: ['full', 'none'],
+            dependencies: [
+              { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
+              { dependsOnKey: 'maintenance-server-manage', requiredLevel: 'full' },
+              { dependsOnKey: 'maintenance-server-edit', requiredLevel: '=full' }
             ]
           }
         ]
@@ -722,6 +735,25 @@ const ensurePermissionSeeds = () => {
   });
 };
 
+const ensureServerAgentEntries = () => {
+  if (!tableExists('server_agents')) return;
+  const servers = db.prepare('SELECT id FROM servers').all();
+  const insertAgent = db.prepare(`
+    INSERT OR IGNORE INTO server_agents (server_id, agent_url, agent_token, created_at, updated_at)
+    VALUES (?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `);
+  const updateMissingToken = db.prepare(`
+    UPDATE server_agents
+    SET agent_token = ?
+    WHERE server_id = ? AND (agent_token IS NULL OR agent_token = '')
+  `);
+  servers.forEach((server) => {
+    const token = `sp_${crypto.randomBytes(16).toString('hex')}`;
+    insertAgent.run(server.id, token);
+    updateMissingToken.run(token, server.id);
+  });
+};
+
 export const ensureDatabaseSchema = () => {
   try {
     const statements = loadBlueprintStatements();
@@ -730,6 +762,7 @@ export const ensureDatabaseSchema = () => {
 
     dropDeprecatedArtifacts();
     ensureTablesAndColumns(tableDefinitions);
+    ensureServerAgentEntries();
     ensureIndexes(indexDefinitions);
     ensurePermissionSeeds();
   } catch (error) {
