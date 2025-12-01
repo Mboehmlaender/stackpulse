@@ -14,7 +14,6 @@ import {
 } from "@material-tailwind/react";
 
 import { useToast } from "@/components/ToastProvider.jsx";
-import { platformSettingsData } from "@/data";
 import { AVATAR_COLORS } from "@/data/avatarColors.js";
 import { useMaintenance } from "@/components/MaintenanceProvider.jsx";
 import { useAuth } from "@/components/AuthProvider.jsx";
@@ -68,6 +67,47 @@ const mapUser = (item) => ({
     groups: normalizeUserGroups(item?.groups),
     securityPhraseDownloadedAt: item?.securityPhraseDownloadedAt || null
 });
+
+const normalizeServer = (item) => {
+    if (!item || typeof item !== "object") {
+        return null;
+    }
+    const id = Number(item.id ?? item.serverId ?? item.server_id);
+    if (!Number.isFinite(id)) {
+        return null;
+    }
+    const name = item.name || item.serverName || item.server_name || `Server ${id}`;
+    return {
+        id,
+        name,
+        url: item.url || item.serverUrl || item.server_url || ""
+    };
+};
+
+const normalizeAssignmentsList = (list, servers = []) => {
+    const serverMap = new Map(servers.map((server) => [server.id, server]));
+    if (!Array.isArray(list)) {
+        return [];
+    }
+    return list
+        .map((entry) => {
+            const serverId = Number(entry?.serverId ?? entry?.server_id);
+            if (!Number.isFinite(serverId)) {
+                return null;
+            }
+            const groupId = Number(entry?.groupId ?? entry?.group_id);
+            const serverFallback = serverMap.get(serverId);
+            return {
+                serverId,
+                serverName: entry?.serverName || entry?.server_name || serverFallback?.name || "",
+                serverUrl: entry?.serverUrl || entry?.server_url || serverFallback?.url || "",
+                groupId: Number.isFinite(groupId) ? groupId : null,
+                groupName: entry?.groupName || entry?.group_name || "",
+                useGlobalGroup: Boolean(entry?.useGlobalGroup ?? entry?.use_global_group)
+            };
+        })
+        .filter(Boolean);
+};
 
 const extractPrimaryGroupId = (user) => {
     if (!user || !Array.isArray(user.groups) || user.groups.length === 0) {
@@ -123,6 +163,11 @@ export function UserDetails() {
     const [securityPhraseLoading, setSecurityPhraseLoading] = useState(false);
     const [securityPhraseError, setSecurityPhraseError] = useState("");
     const [renewingSecurityPhrase, setRenewingSecurityPhrase] = useState(false);
+    const [serverAssignments, setServerAssignments] = useState([]);
+    const [availableServers, setAvailableServers] = useState([]);
+    const [assignmentsError, setAssignmentsError] = useState("");
+    const [savingAssignments, setSavingAssignments] = useState(false);
+    const initialAssignmentsRef = useRef([]);
 
     const maintenanceActive = Boolean(maintenanceMeta?.active);
     const maintenanceMessage = maintenanceMeta?.message;
@@ -172,11 +217,22 @@ export function UserDetails() {
             if (!item.id) {
                 throw new Error("USER_NOT_FOUND");
             }
+            const normalizedServers = Array.isArray(response.data?.servers)
+                ? response.data.servers.map(normalizeServer).filter(Boolean)
+                : [];
+            setAvailableServers(normalizedServers);
+            const normalizedAssignments = normalizeAssignmentsList(
+                response.data?.item?.serverAssignments ?? response.data?.serverAssignments ?? [],
+                normalizedServers
+            );
+            initialAssignmentsRef.current = normalizedAssignments;
+            setServerAssignments(normalizedAssignments);
+            setAssignmentsError("");
             setUser(item);
             setSecurityPhraseWords([]);
             setSecurityPhraseDownloadedAt(item.securityPhraseDownloadedAt || null);
             setSecurityPhraseError("");
-        const initialValues = buildInitialFormValues(item);
+            const initialValues = buildInitialFormValues(item);
             initialFormValuesRef.current = { ...initialValues };
             setFormValues(initialValues);
             setSaveError("");
@@ -195,6 +251,9 @@ export function UserDetails() {
             setUser(null);
             initialFormValuesRef.current = buildInitialFormValues(null);
             setFormValues(buildInitialFormValues(null));
+            setServerAssignments([]);
+            setAvailableServers([]);
+            setAssignmentsError("");
             setError(message);
             showToast({
                 variant: "error",
@@ -340,6 +399,208 @@ export function UserDetails() {
             avatarColor: value || ""
         }));
     }, [canEditUsers]);
+
+    const assignmentsChanged = useMemo(() => {
+        const serialize = (list) =>
+            JSON.stringify(
+                list
+                    .map((entry) => ({
+                        serverId: Number(entry.serverId) || null,
+                        groupId: entry.useGlobalGroup ? null : (Number(entry.groupId) || null),
+                        useGlobalGroup: Boolean(entry.useGlobalGroup)
+                    }))
+                    .sort((a, b) => (a.serverId || 0) - (b.serverId || 0))
+            );
+        return serialize(serverAssignments) !== serialize(initialAssignmentsRef.current);
+    }, [serverAssignments]);
+
+    const usedServerIds = useMemo(
+        () =>
+            new Set(
+                serverAssignments
+                    .map((entry) => Number(entry.serverId))
+                    .filter((value) => Number.isFinite(value) && value > 0)
+            ),
+        [serverAssignments]
+    );
+
+    const getServerOptionsForRow = useCallback(
+        (currentServerId) => {
+            return availableServers.filter(
+                (server) => server.id === currentServerId || !usedServerIds.has(server.id)
+            );
+        },
+        [availableServers, usedServerIds]
+    );
+
+    const handleAddAssignment = useCallback(() => {
+        if (!canEditUsers || isSuperuserUser) return;
+        const usedServerIds = new Set(
+            serverAssignments
+                .map((entry) => Number(entry.serverId))
+                .filter((value) => Number.isFinite(value) && value > 0)
+        );
+        const nextServer = availableServers.find((server) => !usedServerIds.has(server.id));
+        if (!nextServer) {
+            setAssignmentsError("Alle verfügbaren Server sind bereits zugeordnet.");
+            return;
+        }
+        setAssignmentsError("");
+        setServerAssignments((prev) => [
+            ...prev,
+            {
+                serverId: nextServer.id,
+                serverName: nextServer.name ?? "",
+                serverUrl: nextServer.url ?? "",
+                groupId: null,
+                groupName: "",
+                useGlobalGroup: true
+            }
+        ]);
+    }, [canEditUsers, serverAssignments, availableServers]);
+
+    const handleAssignmentServerChange = useCallback(
+        (index, value) => {
+            if (!canEditUsers || isSuperuserUser) return;
+            const numeric = Number(value);
+            const server = availableServers.find((item) => item.id === numeric);
+            setServerAssignments((prev) =>
+                prev.map((entry, idx) =>
+                    idx === index
+                        ? {
+                              ...entry,
+                              serverId: Number.isFinite(numeric) ? numeric : null,
+                              serverName: server?.name || entry.serverName,
+                              serverUrl: server?.url || entry.serverUrl
+                          }
+                        : entry
+                )
+            );
+        },
+        [availableServers, canEditUsers]
+    );
+
+    const handleAssignmentGroupChange = useCallback(
+        (index, value) => {
+            if (!canEditUsers || isSuperuserUser) return;
+            const numeric = Number(value);
+            setServerAssignments((prev) =>
+                prev.map((entry, idx) =>
+                    idx === index
+                        ? {
+                              ...entry,
+                              groupId: Number.isFinite(numeric) ? numeric : null,
+                              useGlobalGroup: false
+                          }
+                        : entry
+                )
+            );
+        },
+        [canEditUsers]
+    );
+
+    const handleAssignmentUseGlobalToggle = useCallback(
+        (index, checked) => {
+            if (!canEditUsers || isSuperuserUser) return;
+            setServerAssignments((prev) =>
+                prev.map((entry, idx) =>
+                    idx === index
+                        ? {
+                              ...entry,
+                              useGlobalGroup: Boolean(checked),
+                              groupId: checked ? null : entry.groupId
+                          }
+                        : entry
+                )
+            );
+        },
+        [canEditUsers]
+    );
+
+    const handleRemoveAssignment = useCallback(
+        (index) => {
+            if (!canEditUsers || isSuperuserUser) return;
+            setServerAssignments((prev) => prev.filter((_, idx) => idx !== index));
+        },
+        [canEditUsers, isSuperuserUser]
+    );
+
+    const handleSaveAssignments = useCallback(async () => {
+        if (!canEditUsers || !numericUserId || !assignmentsChanged || isSuperuserUser) {
+            return;
+        }
+
+        const normalizedPayload = [];
+        const seenServers = new Set();
+        for (const assignment of serverAssignments) {
+            const serverId = Number(assignment.serverId);
+            if (!Number.isFinite(serverId) || serverId <= 0) {
+                setAssignmentsError("Bitte wähle für jede Zuordnung einen Server aus.");
+                return;
+            }
+            if (seenServers.has(serverId)) {
+                setAssignmentsError("Jeder Server kann nur einmal zugeordnet werden.");
+                return;
+            }
+            seenServers.add(serverId);
+            const useGlobalGroup = Boolean(assignment.useGlobalGroup);
+            const groupId = Number(assignment.groupId);
+            if (!useGlobalGroup && (!Number.isFinite(groupId) || groupId <= 0)) {
+                setAssignmentsError("Bitte wähle eine Rechtegruppe oder aktiviere die globale Gruppe.");
+                return;
+            }
+            normalizedPayload.push({
+                serverId,
+                groupId: useGlobalGroup ? null : groupId,
+                useGlobalGroup
+            });
+        }
+
+        setAssignmentsError("");
+        setSavingAssignments(true);
+
+        try {
+            const response = await axios.put(
+                `/api/users/${numericUserId}/server-assignments`,
+                { assignments: normalizedPayload }
+            );
+            const normalizedAssignments = normalizeAssignmentsList(
+                response.data?.items ?? [],
+                availableServers
+            );
+            initialAssignmentsRef.current = normalizedAssignments;
+            setServerAssignments(normalizedAssignments);
+            showToast({
+                variant: "success",
+                title: "Serverzuordnungen gespeichert",
+                description: "Die Zuordnungen wurden erfolgreich aktualisiert."
+            });
+        } catch (err) {
+            const serverError = err.response?.data?.error;
+            let message = "Die Serverzuordnungen konnten nicht gespeichert werden.";
+            if (serverError === "USER_NOT_FOUND") {
+                message = "Der Benutzer wurde nicht gefunden.";
+            } else if (serverError === "INVALID_USER_ID") {
+                message = "Die Benutzer-ID ist ungültig.";
+            } else if (serverError === "USER_SUPERUSER_PROTECTED") {
+                message = "Für den Superuser können keine Server-Zuordnungen gesetzt werden.";
+            } else if (serverError === "SERVER_NOT_FOUND") {
+                message = "Ein ausgewählter Server existiert nicht mehr.";
+            } else if (serverError === "GROUP_NOT_FOUND") {
+                message = "Eine ausgewählte Rechtegruppe existiert nicht mehr.";
+            } else if (serverError === "INSUFFICIENT_PERMISSIONS") {
+                message = "Keine Berechtigung zum Ändern der Zuordnungen.";
+            }
+            setAssignmentsError(message);
+            showToast({
+                variant: "error",
+                title: "Speichern fehlgeschlagen",
+                description: message
+            });
+        } finally {
+            setSavingAssignments(false);
+        }
+    }, [canEditUsers, numericUserId, serverAssignments, availableServers, assignmentsChanged, showToast]);
 
     const handleSaveUser = useCallback(async () => {
         if (!canEditUsers || !user || !hasChanges) {
@@ -775,30 +1036,171 @@ export function UserDetails() {
                             </div>
                             <div>
                                 <Typography variant="h6" color="blue-gray" className="mb-3">
-                                    Platform Settings
+                                    Server-Zuordnungen
                                 </Typography>
-                                <div className="flex flex-col gap-12">
-                                    {platformSettingsData.map(({ title, options }) => (
-                                        <div key={title}>
-                                            <Typography className="mb-4 block text-xs font-semibold uppercase text-blue-gray-500">
-                                                {title}
-                                            </Typography>
-                                            <div className="flex flex-col gap-6">
-                                                {options.map(({ checked, label }) => (
-                                                    <Switch
-                                                        key={label}
-                                                        id={label}
-                                                        label={label}
-                                                        defaultChecked={checked}
-                                                        labelProps={{
-                                                            className: "text-sm font-normal text-blue-gray-500",
-                                                        }}
-                                                    />
-                                                ))}
+                                {isSuperuserUser ? (
+                                    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                                        Für den Superuser gelten immer alle Rechte und es können keine server-spezifischen Zuordnungen gesetzt werden.
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Typography className="mb-4 text-sm text-blue-gray-500">
+                                            Ohne Zuordnungen hat der Benutzer Zugriff auf alle Server mit seinen globalen Rechten.
+                                            Lege hier Server-spezifische Gruppen fest oder markiere den Server explizit zur Nutzung der globalen Gruppe.
+                                        </Typography>
+                                        {assignmentsError && (
+                                            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                                                {assignmentsError}
                                             </div>
+                                        )}
+                                        <div className="flex flex-col gap-4">
+                                            {serverAssignments.length === 0 ? (
+                                                <div className="rounded-lg border border-blue-gray-100 bg-blue-gray-50/60 px-4 py-3 text-sm text-blue-gray-600">
+                                                    Keine Server zugeordnet. Die globalen Gruppen gelten für alle Server.
+                                                </div>
+                                            ) : (
+                                                serverAssignments.map((assignment, index) => {
+                                                    const serverOptions = getServerOptionsForRow(assignment.serverId);
+                                                    const groupSelectValue =
+                                                        assignment.useGlobalGroup || !assignment.groupId
+                                                            ? ""
+                                                            : String(assignment.groupId);
+                                                    return (
+                                                        <div
+                                                            key={`assignment-${assignment.serverId ?? index}-${index}`}
+                                                            className="rounded-lg border border-blue-gray-100 bg-white px-4 py-3 shadow-sm"
+                                                        >
+                                                            <div className="grid gap-4 md:grid-cols-2">
+                                                                <div>
+                                                                    <Typography className="mb-2 block text-xs font-semibold uppercase text-blue-gray-500">
+                                                                        Server
+                                                                    </Typography>
+                                                                    <Select
+                                                                        label="Server auswählen"
+                                                                        value={
+                                                                            assignment.serverId
+                                                                                ? String(assignment.serverId)
+                                                                                : ""
+                                                                        }
+                                                                        onChange={(value) =>
+                                                                            handleAssignmentServerChange(index, value)
+                                                                        }
+                                                                        disabled={
+                                                                            maintenanceLocked ||
+                                                                            savingAssignments ||
+                                                                            !canEditUsers
+                                                                        }
+                                                                        variant="outlined"
+                                                                    >
+                                                                        {serverOptions.map((server) => (
+                                                                            <Option key={server.id} value={String(server.id)}>
+                                                                                {server.name}
+                                                                            </Option>
+                                                                        ))}
+                                                                    </Select>
+                                                                </div>
+                                                                <div>
+                                                                    <Typography className="mb-2 block text-xs font-semibold uppercase text-blue-gray-500">
+                                                                        Rechtegruppe
+                                                                    </Typography>
+                                                                    <div className="flex flex-col gap-2">
+                                                                        <Switch
+                                                                            id={`assignment-global-${index}`}
+                                                                            label="Globale Gruppe verwenden"
+                                                                            checked={assignment.useGlobalGroup}
+                                                                            onChange={({ target }) =>
+                                                                                handleAssignmentUseGlobalToggle(
+                                                                                    index,
+                                                                                    target?.checked
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                maintenanceLocked ||
+                                                                                savingAssignments ||
+                                                                                !canEditUsers
+                                                                            }
+                                                                            labelProps={{
+                                                                                className: "text-sm font-normal text-blue-gray-600"
+                                                                            }}
+                                                                        />
+                                                                        <Select
+                                                                            label="Server-Gruppe wählen"
+                                                                            value={groupSelectValue}
+                                                                            onChange={(value) =>
+                                                                                handleAssignmentGroupChange(index, value)
+                                                                            }
+                                                                            disabled={
+                                                                                maintenanceLocked ||
+                                                                                savingAssignments ||
+                                                                                !canEditUsers ||
+                                                                                assignment.useGlobalGroup
+                                                                            }
+                                                                            variant="outlined"
+                                                                            className="max-w-xl"
+                                                                        >
+                                                                            <Option value="">Globale Gruppe</Option>
+                                                                            {availableGroups.map((group) => (
+                                                                                <Option key={group.id} value={String(group.id)}>
+                                                                                    {group.name}
+                                                                                </Option>
+                                                                            ))}
+                                                                        </Select>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            <div className="mt-3 flex justify-end">
+                                                                <Button
+                                                                    variant="text"
+                                                                    color="red"
+                                                                    className="normal-case"
+                                                                    onClick={() => handleRemoveAssignment(index)}
+                                                                    disabled={
+                                                                        maintenanceLocked ||
+                                                                        savingAssignments ||
+                                                                        !canEditUsers
+                                                                    }
+                                                                >
+                                                                    Entfernen
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
                                         </div>
-                                    ))}
-                                </div>
+                                        <div className="mt-4 flex flex-wrap items-center gap-3">
+                                            <Button
+                                                variant="outlined"
+                                                color="blue"
+                                                className="normal-case"
+                                                onClick={handleAddAssignment}
+                                                disabled={
+                                                    maintenanceLocked ||
+                                                    savingAssignments ||
+                                                    !canEditUsers ||
+                                                    availableServers.length === 0 ||
+                                                    usedServerIds.size >= availableServers.length
+                                                }
+                                            >
+                                                Server hinzufügen
+                                            </Button>
+                                            <Button
+                                                color="green"
+                                                className="normal-case"
+                                                onClick={handleSaveAssignments}
+                                                disabled={
+                                                    maintenanceLocked ||
+                                                    savingAssignments ||
+                                                    !canEditUsers ||
+                                                    !assignmentsChanged
+                                                }
+                                            >
+                                                {savingAssignments ? "Speichert ..." : "Zuordnungen speichern"}
+                                            </Button>
+                                            {savingAssignments && <Spinner className="h-4 w-4" />}
+                                        </div>
+                                    </>
+                                )}
                             </div>
                         </div>
 

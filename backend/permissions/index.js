@@ -13,7 +13,7 @@ const selectSections = db.prepare(`
 `);
 
 const selectGroups = db.prepare(`
-  SELECT id, section_id, key, title, sort_order
+  SELECT id, section_id, parent_group_id, key, title, sort_order
   FROM permission_groups
   ORDER BY section_id ASC, sort_order ASC, id ASC
 `);
@@ -28,6 +28,7 @@ const selectItems = db.prepare(`
     sort_order,
     default_level,
     available_levels,
+    is_global_scope,
     is_required
   FROM permission_items
   ORDER BY section_id ASC, COALESCE(group_id, 0) ASC, sort_order ASC, id ASC
@@ -39,7 +40,7 @@ const selectDependencies = db.prepare(`
 `);
 
 const selectPermissionItemsForMap = db.prepare(`
-  SELECT id, key, available_levels, default_level
+  SELECT id, key, available_levels, default_level, is_global_scope
   FROM permission_items
 `);
 
@@ -81,6 +82,8 @@ const getLevelPriority = (level) => {
 };
 
 let cachedPermissionItems = null;
+let cachedServerScopedKeys = null;
+let cachedScopeByKey = null;
 
 const getPermissionItems = () => {
   if (!cachedPermissionItems) {
@@ -91,6 +94,24 @@ const getPermissionItems = () => {
 
 const resetPermissionItemsCache = () => {
   cachedPermissionItems = null;
+  cachedServerScopedKeys = null;
+  cachedScopeByKey = null;
+};
+
+const getScopeCache = () => {
+  if (!cachedScopeByKey || !cachedServerScopedKeys) {
+    const items = getPermissionItems();
+    cachedScopeByKey = new Map();
+    cachedServerScopedKeys = new Set();
+    items.forEach((item) => {
+      const isGlobal = item.is_global_scope !== 0;
+      cachedScopeByKey.set(item.key, { isGlobal });
+      if (!isGlobal) {
+        cachedServerScopedKeys.add(item.key);
+      }
+    });
+  }
+  return { scopeByKey: cachedScopeByKey, serverScopedKeys: cachedServerScopedKeys };
 };
 
 export function getPermissionStructure() {
@@ -109,10 +130,23 @@ export function getPermissionStructure() {
   });
 
   const groupsBySectionId = new Map();
-  groups.forEach((group) => {
-    const list = groupsBySectionId.get(group.section_id) || [];
-    list.push(group);
-    groupsBySectionId.set(group.section_id, list);
+  const groupsByParentId = new Map();
+  const sortedGroups = [...groups].sort((a, b) => {
+    const sortDiff = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+    if (sortDiff !== 0) return sortDiff;
+    return a.id - b.id;
+  });
+
+  sortedGroups.forEach((group) => {
+    if (group.parent_group_id) {
+      const list = groupsByParentId.get(group.parent_group_id) || [];
+      list.push(group);
+      groupsByParentId.set(group.parent_group_id, list);
+    } else {
+      const list = groupsBySectionId.get(group.section_id) || [];
+      list.push(group);
+      groupsBySectionId.set(group.section_id, list);
+    }
   });
 
   const itemsBySectionId = new Map();
@@ -154,18 +188,26 @@ export function getPermissionStructure() {
       defaultLevel: item.default_level || 'none',
       availableLevels,
       isRequired: Boolean(item.is_required),
+      isGlobal: item.is_global_scope !== 0,
       dependencies: formattedDependencies
+    };
+  };
+
+  const buildGroupTree = (group) => {
+    const children = groupsByParentId.get(group.id) || [];
+    return {
+      key: group.key,
+      title: group.title,
+      sortOrder: group.sort_order ?? 0,
+      items: (itemsByGroupId.get(group.id) || []).map(formatItem),
+      groups: children.map(buildGroupTree)
     };
   };
 
   const formattedSections = sections.map((section) => {
     const sectionItems = (itemsBySectionId.get(section.id) || []).map(formatItem);
-    const sectionGroups = (groupsBySectionId.get(section.id) || []).map((group) => ({
-      key: group.key,
-      title: group.title,
-      sortOrder: group.sort_order ?? 0,
-      items: (itemsByGroupId.get(group.id) || []).map(formatItem)
-    }));
+    const rootGroups = groupsBySectionId.get(section.id) || [];
+    const sectionGroups = rootGroups.map(buildGroupTree);
 
     return {
       key: section.key,
@@ -270,13 +312,24 @@ export function saveGroupPermissionValues(groupId, values = {}) {
   const serverEditLevel = getSubmittedLevel('maintenance-server-edit');
   const serverDeleteLevel = getSubmittedLevel('maintenance-server-delete');
 
-  if (getLevelPriority(serverDeleteLevel) >= getLevelPriority('full') &&
-    (getLevelPriority(serverManageLevel) < getLevelPriority('full') ||
-      getLevelPriority(serverEditLevel) < getLevelPriority('full'))) {
-    const error = new Error('PERMISSION_DEPENDENCY_LEVEL');
-    error.code = 'PERMISSION_DEPENDENCY_LEVEL';
-    error.permissionKey = 'maintenance-server-delete';
-    throw error;
+  // Enforce dependency: "server löschen" darf maximal so hoch sein wie manage/edit.
+  const deletePriority = getLevelPriority(serverDeleteLevel);
+  const allowedDeletePriority = Math.min(
+    getLevelPriority(serverManageLevel),
+    getLevelPriority(serverEditLevel)
+  );
+  if (deletePriority > allowedDeletePriority) {
+    const allowedLevelEntry = Object.entries(LEVEL_PRIORITY).find(([, priority]) => priority === allowedDeletePriority);
+    const allowedLevel = allowedLevelEntry ? allowedLevelEntry[0] : 'none';
+    const deleteEntry = normalizedEntries.find((entry) => entry.item.key === 'maintenance-server-delete');
+    if (deleteEntry) {
+      deleteEntry.level = allowedLevel;
+    } else {
+      normalizedEntries.push({
+        item: itemMap.get('maintenance-server-delete'),
+        level: allowedLevel
+      });
+    }
   }
 
   const runSave = db.transaction(() => {
@@ -322,6 +375,32 @@ export function getSuperuserPermissionMap() {
   });
 
   return result;
+}
+
+export function getServerScopedPermissionKeys() {
+  const { serverScopedKeys } = getScopeCache();
+  return Array.from(serverScopedKeys);
+}
+
+export function isServerScopedPermission(permissionKey) {
+  if (!permissionKey) return false;
+  const { serverScopedKeys, scopeByKey } = getScopeCache();
+  if (serverScopedKeys.has(permissionKey)) {
+    return true;
+  }
+  const scope = scopeByKey.get(permissionKey);
+  return scope ? scope.isGlobal === false : false;
+}
+
+export function applyServerScopedOverride(basePermissions = {}, overridePermissions = {}) {
+  const merged = { ...basePermissions };
+  const { serverScopedKeys } = getScopeCache();
+  serverScopedKeys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(overridePermissions, key)) {
+      merged[key] = overridePermissions[key];
+    }
+  });
+  return merged;
 }
 
 export function getEffectivePermissionsForGroup(groupId) {

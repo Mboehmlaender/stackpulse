@@ -14,17 +14,6 @@ const updateServer = db.prepare(`
   SET name = ?, url = ?, updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
-const selectAgentByServerId = db.prepare('SELECT * FROM server_agents WHERE server_id = ?');
-const selectAllAgents = db.prepare('SELECT * FROM server_agents');
-const upsertAgent = db.prepare(`
-  INSERT INTO server_agents (server_id, agent_url, agent_token, created_at, updated_at)
-  VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  ON CONFLICT(server_id) DO UPDATE SET
-    agent_url = excluded.agent_url,
-    agent_token = excluded.agent_token,
-    updated_at = CURRENT_TIMESTAMP
-`);
-
 const deleteServerStmt = db.prepare('DELETE FROM servers WHERE id = ?');
 
 const selectApiKeyByServerId = db.prepare('SELECT * FROM server_api_keys WHERE server_id = ?');
@@ -43,6 +32,10 @@ const deleteApiKeyByServerId = db.prepare('DELETE FROM server_api_keys WHERE ser
 
 const countServersStmt = db.prepare('SELECT COUNT(*) as count FROM servers');
 const selectFirstServerStmt = db.prepare('SELECT * FROM servers ORDER BY id ASC LIMIT 1');
+
+function listServers() {
+  return selectAllServers.all();
+}
 
 const API_KEY_SECRET = crypto.createHash('sha256')
   .update(process.env.PORTAINER_API_SECRET || process.env.PORTAINER_API_KEY || 'stackpulse-portainer-api-key')
@@ -134,49 +127,6 @@ function ensureServer({ name, url }) {
   const created = selectServerById.get(result.lastInsertRowid);
   console.log(`✅ [Setup] Server angelegt: ${created.name} (${created.id})`);
   return created;
-}
-
-const generateAgentToken = () => `sp_${crypto.randomBytes(16).toString('hex')}`;
-
-function getAgentConfig(serverId, { autoCreate = false } = {}) {
-  const id = Number(serverId);
-  if (!Number.isFinite(id)) {
-    const error = new Error('SERVER_ID_INVALID');
-    error.code = 'SERVER_ID_INVALID';
-    throw error;
-  }
-  const server = getServerById(id);
-  let agent = selectAgentByServerId.get(server.id) || null;
-  if (!agent && autoCreate) {
-    const token = generateAgentToken();
-    upsertAgent.run(server.id, null, token);
-    agent = selectAgentByServerId.get(server.id) || null;
-  }
-  return agent ? { serverId: server.id, agentUrl: agent.agent_url, agentToken: agent.agent_token } : null;
-}
-
-function setAgentConfig(serverId, { agentUrl, agentToken } = {}) {
-  const id = Number(serverId);
-  if (!Number.isFinite(id)) {
-    const error = new Error('SERVER_ID_INVALID');
-    error.code = 'SERVER_ID_INVALID';
-    throw error;
-  }
-  const server = getServerById(id);
-  const normalizedUrl = typeof agentUrl === 'string' && agentUrl.trim().length
-    ? agentUrl.trim().replace(/\/+$/, '')
-    : null;
-  let normalizedToken = typeof agentToken === 'string' ? agentToken.trim() : '';
-  if (!normalizedToken) {
-    const existing = selectAgentByServerId.get(server.id);
-    normalizedToken = existing?.agent_token || generateAgentToken();
-  }
-  if (!normalizedToken.startsWith('sp_')) {
-    normalizedToken = `sp_${normalizedToken}`;
-  }
-  upsertAgent.run(server.id, normalizedUrl, normalizedToken);
-  const agent = selectAgentByServerId.get(server.id);
-  return { serverId: server.id, agentUrl: agent.agent_url, agentToken: agent.agent_token };
 }
 
 function getServerById(serverId) {
@@ -371,15 +321,12 @@ function ensureDefaultsFromEnv() {
 function getServerStatus(serverId) {
   const server = getServerById(serverId);
   const apiKeyMeta = selectApiKeyByServerId.get(server.id) || null;
-  const agent = getAgentConfig(server.id, { autoCreate: true });
-
   return {
     server,
     apiKey: {
       hasKey: Boolean(apiKeyMeta),
       updatedAt: apiKeyMeta?.updated_at ?? null
-    },
-    agent
+    }
   };
 }
 
@@ -484,10 +431,8 @@ export {
   ensureDefaultsFromEnv,
   ensureServer,
   getServerById,
+  listServers,
   setServerApiKey,
-  getAgentConfig,
-  setAgentConfig,
-  generateAgentToken,
   getServerConnection,
   updateServerDetails,
   getServerStatus,

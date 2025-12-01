@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import https from 'https';
 import axios from 'axios';
 import http from 'http';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
@@ -43,13 +43,11 @@ import {
   removeServer,
   setServerApiKey,
   getServerById,
+  listServers,
   ensureServer,
   getServerConnection,
   updateServerDetails,
-  getServerStatus,
-  getAgentConfig,
-  setAgentConfig,
-  generateAgentToken
+  getServerStatus
 } from './setup/index.js';
 import {
   listUsers,
@@ -64,7 +62,9 @@ import {
   markSecurityPhraseDownloaded,
   ensureSecurityPhrasesForExistingUsers,
   verifySecurityPhraseForUsername,
-  setUserPassword
+  setUserPassword,
+  getUserServerAssignments,
+  setUserServerAssignments
 } from './users/index.js';
 import { listGroups, createGroup, getGroupById, updateGroupDetails, deleteGroup } from './groups/index.js';
 import {
@@ -73,8 +73,11 @@ import {
   saveGroupPermissionValues,
   clearGroupPermissionValues,
   getSuperuserPermissionMap,
+  getEffectivePermissionsForGroup,
   getEffectivePermissionsForGroups,
-  hasRequiredPermission
+  hasRequiredPermission,
+  applyServerScopedOverride,
+  isServerScopedPermission
 } from './permissions/index.js';
 
 dotenv.config();
@@ -105,8 +108,90 @@ app.get('*', (req, res, next) => {
 });
 
 const PORT = 4001;
-
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+const crc32 = (buffer) => {
+  let crc = ~0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    crc ^= buffer[i];
+    for (let j = 0; j < 8; j += 1) {
+      const mask = -(crc & 1);
+      crc = (crc >>> 1) ^ (0xedb88320 & mask);
+    }
+  }
+  return (~crc) >>> 0;
+};
+
+const buildZipBuffer = (files = []) => {
+  const encoder = new TextEncoder();
+  const entries = files.map(({ name, content }) => {
+    const filenameBuf = encoder.encode(name);
+    const dataBuf = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+    const crc = crc32(dataBuf);
+    const size = dataBuf.length;
+    const offset = 0; // placeholder, compute later
+    return { filenameBuf, dataBuf, crc, size, offset };
+  });
+
+  const localParts = [];
+  let offset = 0;
+  entries.forEach((entry) => {
+    entry.offset = offset;
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0); // local file header signature
+    localHeader.writeUInt16LE(20, 4); // version needed
+    localHeader.writeUInt16LE(0, 6); // flags
+    localHeader.writeUInt16LE(0, 8); // compression (0 = store)
+    localHeader.writeUInt16LE(0, 10); // mod time
+    localHeader.writeUInt16LE(0, 12); // mod date
+    localHeader.writeUInt32LE(entry.crc, 14); // crc32
+    localHeader.writeUInt32LE(entry.size, 18); // compressed size
+    localHeader.writeUInt32LE(entry.size, 22); // uncompressed size
+    localHeader.writeUInt16LE(entry.filenameBuf.length, 26); // file name length
+    localHeader.writeUInt16LE(0, 28); // extra length
+
+    localParts.push(localHeader, entry.filenameBuf, entry.dataBuf);
+    offset += localHeader.length + entry.filenameBuf.length + entry.dataBuf.length;
+  });
+
+  const centralParts = [];
+  entries.forEach((entry) => {
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0); // central dir signature
+    centralHeader.writeUInt16LE(20, 4); // version made by
+    centralHeader.writeUInt16LE(20, 6); // version needed
+    centralHeader.writeUInt16LE(0, 8); // flags
+    centralHeader.writeUInt16LE(0, 10); // compression
+    centralHeader.writeUInt16LE(0, 12); // mod time
+    centralHeader.writeUInt16LE(0, 14); // mod date
+    centralHeader.writeUInt32LE(entry.crc, 16); // crc32
+    centralHeader.writeUInt32LE(entry.size, 20); // compressed size
+    centralHeader.writeUInt32LE(entry.size, 24); // uncompressed size
+    centralHeader.writeUInt16LE(entry.filenameBuf.length, 28); // file name length
+    centralHeader.writeUInt16LE(0, 30); // extra length
+    centralHeader.writeUInt16LE(0, 32); // comment length
+    centralHeader.writeUInt16LE(0, 34); // disk number start
+    centralHeader.writeUInt16LE(0, 36); // internal attrs
+    centralHeader.writeUInt32LE(0, 38); // external attrs
+    centralHeader.writeUInt32LE(entry.offset, 42); // local header offset
+    centralParts.push(centralHeader, entry.filenameBuf);
+  });
+
+  const centralSize = centralParts.reduce((sum, buf) => sum + buf.length, 0);
+  const centralOffset = localParts.reduce((sum, buf) => sum + buf.length, 0);
+
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0); // end of central dir signature
+  endRecord.writeUInt16LE(0, 4); // number of this disk
+  endRecord.writeUInt16LE(0, 6); // disk where central dir starts
+  endRecord.writeUInt16LE(entries.length, 8); // number of central records on this disk
+  endRecord.writeUInt16LE(entries.length, 10); // total central records
+  endRecord.writeUInt32LE(centralSize, 12); // size of central dir
+  endRecord.writeUInt32LE(centralOffset, 16); // offset of central dir
+  endRecord.writeUInt16LE(0, 20); // comment length
+
+  return Buffer.concat([...localParts, ...centralParts, endRecord]);
+};
 
 const resolvePortainerBaseUrl = () => {
   const envUrl = typeof process.env.PORTAINER_URL === 'string' ? process.env.PORTAINER_URL.trim() : '';
@@ -299,13 +384,72 @@ const sanitizeUser = (user) => ({
   avatarColor: user.avatar_color || null
 });
 
-const buildUserSessionPayload = (userId) => {
-  const record = getUserById(userId);
-  if (!record || !record.isActive) {
-    return null;
+const resolveServerIdFromRequest = (req) => {
+  if (!req || typeof req !== 'object') return null;
+  const candidates = [
+    req.params?.serverId,
+    req.params?.id,
+    req.body?.serverId,
+    req.query?.serverId
+  ];
+  for (const candidate of candidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
+};
+
+const buildServerPermissionMap = ({ basePermissions, assignments = [], isSuperuser = false }) => {
+  if (isSuperuser) {
+    return {};
   }
 
-  const groups = Array.isArray(record.groups) ? record.groups : [];
+  const list = Array.isArray(assignments) ? assignments : [];
+  const result = {};
+
+  list.forEach((assignment) => {
+    const serverId = Number(assignment?.serverId ?? assignment?.server_id);
+    if (!Number.isFinite(serverId) || serverId <= 0) {
+      return;
+    }
+
+    const useGlobalGroup =
+      assignment?.useGlobalGroup === true ||
+      assignment?.use_global_group === true ||
+      assignment?.use_global_group === 1;
+
+    const rawGroupId = assignment?.groupId ?? assignment?.group_id;
+    const groupId = Number(rawGroupId);
+    const normalizedGroupId = Number.isFinite(groupId) && groupId > 0 ? groupId : null;
+
+    if (useGlobalGroup || normalizedGroupId === null) {
+      result[serverId] = {
+        permissions: basePermissions,
+        useGlobalGroup: true,
+        groupId: normalizedGroupId
+      };
+      return;
+    }
+
+    const overridePermissions = getEffectivePermissionsForGroup(normalizedGroupId);
+    const merged = applyServerScopedOverride(basePermissions, overridePermissions);
+
+    result[serverId] = {
+      permissions: merged,
+      useGlobalGroup: false,
+      groupId: normalizedGroupId
+    };
+  });
+
+  return result;
+};
+
+const buildPermissionContextForUser = (userRecord) => {
+  if (!userRecord) return null;
+
+  const groups = Array.isArray(userRecord.groups) ? userRecord.groups : [];
   const groupIds = groups
     .map((group) => Number(group.id))
     .filter((groupId) => Number.isFinite(groupId) && groupId > 0);
@@ -314,9 +458,60 @@ const buildUserSessionPayload = (userId) => {
     (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
   );
 
-  const permissions = isSuperuser
+  const permissionsMap = isSuperuser
     ? getSuperuserPermissionMap()
     : getEffectivePermissionsForGroups(groupIds);
+
+  const serverAssignments = isSuperuser ? [] : getUserServerAssignments(userRecord.id);
+  const serverPermissions = buildServerPermissionMap({
+    basePermissions: permissionsMap,
+    assignments: serverAssignments,
+    isSuperuser
+  });
+
+  return {
+    groups,
+    groupIds,
+    isSuperuser,
+    permissions: permissionsMap,
+    serverPermissions,
+    serverAssignments
+  };
+};
+
+const getAccessibleServerIds = (req) => {
+  if (req?.user?.isSuperuser) {
+    return null; // null = alle
+  }
+  const assignments = Array.isArray(req?.userServerAssignments) ? req.userServerAssignments : [];
+  const ids = assignments
+    .map((entry) => Number(entry?.serverId ?? entry?.server_id))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (ids.length === 0) {
+    return null; // keine Zuordnung -> Zugriff auf alle
+  }
+  return new Set(ids);
+};
+
+const userHasServerAccess = (req, serverId) => {
+  if (req?.user?.isSuperuser) return true;
+  const numericId = Number(serverId);
+  if (!Number.isFinite(numericId) || numericId <= 0) return false;
+  const allowed = getAccessibleServerIds(req);
+  if (allowed === null) return true;
+  return allowed.has(numericId);
+};
+
+const buildUserSessionPayload = (userId) => {
+  const record = getUserById(userId);
+  if (!record || !record.isActive) {
+    return null;
+  }
+
+  const context = buildPermissionContextForUser(record);
+  if (!context) {
+    return null;
+  }
 
   return {
     user: {
@@ -324,12 +519,14 @@ const buildUserSessionPayload = (userId) => {
       username: record.username,
       email: record.email || null,
       avatarColor: record.avatarColor || null,
-      groups,
-      isSuperuser,
+      groups: context.groups,
+      isSuperuser: context.isSuperuser,
       securityPhraseDownloadedAt: record.securityPhraseDownloadedAt || null,
       requiresSecurityPhraseDownload: !record.securityPhraseDownloadedAt
     },
-    permissions
+    permissions: context.permissions,
+    serverPermissions: context.serverPermissions,
+    serverAssignments: context.serverAssignments
   };
 };
 
@@ -639,7 +836,39 @@ const applySelfStackStatus = (status) => {
   };
 };
 
+const filterStatusForServerAccess = (status, req) => {
+  if (!status || req?.user?.isSuperuser) {
+    return status;
+  }
+
+  const allowed = getAccessibleServerIds(req);
+  if (allowed === null) {
+    return status;
+  }
+
+  const servers = Array.isArray(status.servers?.items) ? status.servers.items : [];
+  const filteredServers = servers.filter((server) => allowed.has(Number(server.id)));
+
+  const apiKeys = Array.isArray(status.apiKeys?.items) ? status.apiKeys.items : [];
+  const filteredApiKeys = apiKeys.filter((entry) => allowed.has(Number(entry.serverId ?? entry.server_id)));
+
+  return {
+    ...status,
+    servers: {
+      ...(status.servers || {}),
+      items: filteredServers,
+      count: filteredServers.length
+    },
+    apiKeys: {
+      ...(status.apiKeys || {}),
+      items: filteredApiKeys,
+      count: filteredApiKeys.length
+    }
+  };
+};
+
 const buildSetupStatusResponse = () => applySelfStackStatus(getSetupStatus());
+const buildSetupStatusResponseForUser = (req) => filterStatusForServerAccess(buildSetupStatusResponse(), req);
 
 const isCommunityEdition = async () => {
   try {
@@ -648,26 +877,6 @@ const isCommunityEdition = async () => {
     return edition.includes('community');
   } catch {
     return false;
-  }
-};
-
-const pingAgent = async (agentUrl, agentToken) => {
-  if (!agentUrl) return { online: false, error: 'agent_url_missing' };
-  const url = agentUrl.replace(/\/+$/, '');
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch(`${url}/info`, {
-      headers: { 'X-Agent-Token': agentToken || '' },
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) {
-      return { online: false, error: `status_${resp.status}` };
-    }
-    return { online: true, error: null };
-  } catch (err) {
-    return { online: false, error: err?.message || 'agent_unreachable' };
   }
 };
 
@@ -1457,26 +1666,11 @@ const fetchPortainerStatusSummary = async () => {
   }
 
   const errors = {};
-  let latestVersion = null;
+  const latestVersion = null;
 
   const { summary: containerSummary, error: containerError } = await detectPortainerContainer();
   if (containerError) {
     errors.container = containerError;
-  }
-
-  try {
-    const githubRes = await axios.get('https://api.github.com/repos/portainer/portainer/releases/latest', {
-      headers: {
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'StackPulse-Maintenance'
-      },
-      timeout: 5000
-    });
-    latestVersion = githubRes.data?.tag_name ?? githubRes.data?.tagName ?? null;
-  } catch (err) {
-    const message = err.response?.data?.message || err.message;
-    console.warn(`⚠️ [Maintenance] Konnte Portainer-Latest-Version nicht ermitteln: ${message}`);
-    errors.latestVersion = message;
   }
 
   if (!currentVersion) {
@@ -1530,6 +1724,45 @@ const maintenanceGuard = (req, res, next) => {
   });
 };
 
+const verifyCurrentUserPassword = (req, password) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return { ok: false, code: 'UNAUTHORIZED' };
+  }
+  const authRow = db
+    .prepare('SELECT password_hash, password_salt FROM users WHERE id = ? LIMIT 1')
+    .get(userId);
+  if (!authRow || !authRow.password_hash || !authRow.password_salt) {
+    return { ok: false, code: 'USER_NOT_FOUND' };
+  }
+  const valid = verifyPassword(password || '', authRow.password_hash, authRow.password_salt);
+  return { ok: valid, code: valid ? null : 'INVALID_PASSWORD' };
+};
+
+const resolvePermissionsForRequest = (req, permissionKey) => {
+  if (!req) return {};
+  if (req.user?.isSuperuser) {
+    return req.userPermissions || {};
+  }
+
+  if (!isServerScopedPermission(permissionKey)) {
+    return req.userPermissions || {};
+  }
+
+  const serverId = resolveServerIdFromRequest(req);
+  if (!serverId) {
+    return req.userPermissions || {};
+  }
+
+  const serverPermissions = req.userServerPermissions || {};
+  const override = serverPermissions[serverId] || serverPermissions[String(serverId)];
+  if (override?.permissions && typeof override.permissions === 'object') {
+    return override.permissions;
+  }
+
+  return req.userPermissions || {};
+};
+
 const requirePermission = (permissionKey, requiredLevel = 'full') => (req, res, next) => {
   if (!permissionKey) {
     return next();
@@ -1539,7 +1772,7 @@ const requirePermission = (permissionKey, requiredLevel = 'full') => (req, res, 
     return next();
   }
 
-  const permissions = req.userPermissions || {};
+  const permissions = resolvePermissionsForRequest(req, permissionKey);
   if (hasRequiredPermission(permissions, permissionKey, requiredLevel)) {
     return next();
   }
@@ -1830,9 +2063,35 @@ const performPortainerUpdate = async ({ script, scriptSource, targetVersion }) =
   }
 };
 
-const fetchPortainerStacks = async () => {
-  const stacksRes = await axiosInstance.get('/api/stacks');
-  return Array.isArray(stacksRes.data) ? stacksRes.data : [];
+const fetchPortainerStacksForServer = async (serverId) => {
+  try {
+    const { server, apiKey } = getServerConnection(serverId);
+    if (!server?.url || !apiKey) return [];
+    const client = createPortainerSetupClient({ baseURL: server.url, apiKey });
+    const stacksRes = await client.get('/api/stacks');
+    const list = Array.isArray(stacksRes.data) ? stacksRes.data : [];
+    return list.map((stack) => ({
+      ...stack,
+      __serverId: Number(serverId)
+    }));
+  } catch (error) {
+    console.warn(`⚠️ [Stacks] Portainer-Stacks für Server ${serverId} konnten nicht geladen werden: ${error.message}`);
+    return [];
+  }
+};
+
+const fetchStacksForUser = async (req) => {
+  const allowed = getAccessibleServerIds(req);
+  const servers = listServers();
+  const targetServers = allowed ? servers.filter((server) => allowed.has(Number(server.id))) : servers;
+
+  const results = [];
+  for (const server of targetServers) {
+    console.log(`ℹ️ [Stacks] Lade Stacks über Portainer für Server ${server.id}`);
+    const businessStacks = await fetchPortainerStacksForServer(server.id);
+    results.push(...businessStacks);
+  }
+  return results;
 };
 
 const buildStackCollections = (stacks = []) => {
@@ -1894,8 +2153,8 @@ const buildStackCollections = (stacks = []) => {
   return { canonicalStacks, duplicates };
 };
 
-const loadStackCollections = async () => {
-  const filteredStacks = await fetchPortainerStacks();
+const loadStackCollections = async (req) => {
+  const filteredStacks = await fetchStacksForUser(req);
   return {
     filteredStacks,
     ...buildStackCollections(filteredStacks)
@@ -1915,12 +2174,14 @@ const isStackOutdated = async (stackId) => {
 const filterOutdatedStacks = async (stacks = []) => {
   const currentSelfStackId = getSelfStackId();
   const results = await Promise.all(
-    stacks.map(async (stack) => ({
-      stack,
-      outdated: currentSelfStackId && String(stack.Id) === currentSelfStackId
-        ? false
-        : await isStackOutdated(stack.Id)
-    }))
+    stacks.map(async (stack) => {
+      return {
+        stack,
+        outdated: currentSelfStackId && String(stack.Id) === currentSelfStackId
+          ? false
+          : await isStackOutdated(stack.Id)
+      };
+    })
   );
 
   return {
@@ -1948,14 +2209,30 @@ const shouldFallbackToStackFile = (message) => {
   return normalized.includes('not created from git') || normalized.includes('no git configuration');
 };
 
-const redeployStackById = async (stackId, redeployType) => {
-  let stack;
+const redeployStackById = async (stackId, redeployType, stackContext = null) => {
+  let stack = stackContext || null;
   const messages = getRedeployMessages(redeployType);
+  const resolveClientForStack = (candidate) => {
+    if (candidate?.__serverId) {
+      try {
+        const { server, apiKey } = getServerConnection(candidate.__serverId);
+        if (server?.url && apiKey) {
+          return createPortainerSetupClient({ baseURL: server.url, apiKey });
+        }
+      } catch {
+        // ignore, fallback to default
+      }
+    }
+    return axiosInstance;
+  };
 
   try {
-    const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
-    stack = stackRes.data;
+    if (!stack) {
+      const stackRes = await axiosInstance.get(`/api/stacks/${stackId}`);
+      stack = stackRes.data;
+    }
 
+    const client = resolveClientForStack(stack);
     const targetId = stack.Id || stackId;
     const targetName = stack.Name || `Stack ${stackId}`;
 
@@ -1974,7 +2251,7 @@ const redeployStackById = async (stackId, redeployType) => {
     });
 
     const redeployViaStackFile = async () => {
-      const fileRes = await axiosInstance.get(`/api/stacks/${stack.Id}/file`);
+      const fileRes = await client.get(`/api/stacks/${stack.Id}/file`);
       const stackFileContent = fileRes.data?.StackFileContent;
       if (!stackFileContent) {
         throw new Error('Stack file konnte nicht geladen werden');
@@ -1987,7 +2264,7 @@ const redeployStackById = async (stackId, redeployType) => {
           if (!imageName) continue;
           try {
             console.log(`🖼️ Pulling image "${imageName}" für Service "${serviceName}"`);
-            await axiosInstance.post(
+            await client.post(
               `/api/endpoints/${stack.EndpointId}/docker/images/create?fromImage=${encodeURIComponent(imageName)}`
             );
           } catch (err) {
@@ -2008,7 +2285,7 @@ const redeployStackById = async (stackId, redeployType) => {
         updatePayload.SwarmID = swarmId;
       }
 
-      await axiosInstance.put(
+      await client.put(
         `/api/stacks/${stack.Id}`,
         updatePayload,
         { params: { endpointId: stack.EndpointId } }
@@ -2021,7 +2298,7 @@ const redeployStackById = async (stackId, redeployType) => {
     if (isGitStack) {
       try {
         console.log(`🔄 [Redeploy] Git Stack "${stack.Name}" (${stack.Id}) wird redeployed`);
-        await axiosInstance.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
+        await client.put(`/api/stacks/${stack.Id}/git/redeploy?endpointId=${stack.EndpointId}`);
         gitRedeploySucceeded = true;
       } catch (err) {
         const gitErrorMessage = err.response?.data?.message || err.message;
@@ -2118,21 +2395,21 @@ app.use((req, res, next) => {
     (group) => typeof group?.name === 'string' && group.name.toLowerCase() === SUPERUSER_GROUP_NAME
   );
 
-  const permissionsMap = isSuperuser
-    ? getSuperuserPermissionMap()
-    : getEffectivePermissionsForGroups(groupIds);
+  const permissionContext = buildPermissionContextForUser(userRecord);
 
   req.user = {
     id: userRecord.id,
     username: userRecord.username,
     email: userRecord.email,
     avatarColor: userRecord.avatarColor || null,
-    groups: userGroups,
-    isSuperuser,
+    groups: permissionContext?.groups || userGroups,
+    isSuperuser: permissionContext?.isSuperuser ?? isSuperuser,
     securityPhraseDownloadedAt: userRecord.securityPhraseDownloadedAt || null,
     requiresSecurityPhraseDownload: !userRecord.securityPhraseDownloadedAt
   };
-  req.userPermissions = permissionsMap;
+  req.userPermissions = permissionContext?.permissions || {};
+  req.userServerPermissions = permissionContext?.serverPermissions || {};
+  req.userServerAssignments = permissionContext?.serverAssignments || [];
   req.authToken = token;
   touchSession(token);
   setAuthCookie(res, token);
@@ -2143,7 +2420,7 @@ app.use((req, res, next) => {
 
 app.get('/api/setup/status', (req, res) => {
   try {
-    const status = buildSetupStatusResponse();
+    const status = buildSetupStatusResponseForUser(req);
     res.json(status);
   } catch (error) {
     console.error('⚠️ [Setup] Statusabfrage fehlgeschlagen:', error);
@@ -2196,43 +2473,6 @@ app.post('/api/setup/portainer-stacks', async (req, res) => {
     const message = error.response?.data?.message || error.message || 'PORTAINER_STACK_FETCH_FAILED';
     const status = error.response?.status ?? 400;
     res.status(status === 401 ? 401 : 400).json({ error: 'PORTAINER_STACK_FETCH_FAILED', message });
-  }
-});
-
-app.get('/api/servers/:id/agent', requirePermission('maintenance-server-edit', 'read'), async (req, res) => {
-  const { id } = req.params;
-  try {
-    const config = getAgentConfig(id, { autoCreate: true });
-    const editionFlag = await isCommunityEdition();
-    const { online, error } = await pingAgent(config?.agentUrl, config?.agentToken);
-    res.json({
-      serverId: Number(id),
-      agentUrl: config?.agentUrl || null,
-      agentToken: config?.agentToken || null,
-      online,
-      agentError: error || null,
-      community: editionFlag
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.code || err.message || 'AGENT_CONFIG_FAILED' });
-  }
-});
-
-app.put('/api/servers/:id/agent', requirePermission('maintenance-server-edit', 'full'), async (req, res) => {
-  const { id } = req.params;
-  try {
-    const payload = {
-      agentUrl: req.body?.agentUrl,
-      agentToken: req.body?.agentToken
-    };
-    // Token ist systemgeneriert; wenn keiner übergeben, wird Auto-Token gesetzt
-    const config = setAgentConfig(id, {
-      agentUrl: payload.agentUrl,
-      agentToken: payload.agentToken || undefined
-    });
-    res.json(config);
-  } catch (err) {
-    res.status(400).json({ error: err.code || err.message || 'AGENT_CONFIG_FAILED' });
   }
 });
 
@@ -2320,12 +2560,6 @@ app.post('/api/setup/complete', (req, res) => {
       return res.status(400).json({ error: 'API_KEY_REQUIRED' });
     }
 
-    if (targetServerId) {
-      // Ensure agent token exists for CE servers
-      const agent = setAgentConfig(targetServerId, { agentUrl: null, agentToken: undefined });
-      created.agent = agent;
-    }
-
     if (hasSelfStackInput) {
       const normalizedSelfStackId = typeof selfStackInput === 'string'
         ? selfStackInput.trim()
@@ -2337,7 +2571,7 @@ app.post('/api/setup/complete', (req, res) => {
       created.selfStackId = nextSelfStackId || null;
     }
 
-    const finalStatus = buildSetupStatusResponse();
+    const finalStatus = buildSetupStatusResponseForUser(req);
     res.status(201).json({
       success: finalStatus.setupComplete,
       status: finalStatus,
@@ -2371,6 +2605,9 @@ app.post('/api/setup/complete', (req, res) => {
 
 app.get('/api/setup/servers/:id', requirePermission('maintenance-server-manage', 'read'), (req, res) => {
   const { id } = req.params;
+  if (!userHasServerAccess(req, id)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   try {
     const detail = getServerStatus(id);
     res.json({ success: true, ...detail });
@@ -2390,9 +2627,11 @@ app.get('/api/setup/servers/:id', requirePermission('maintenance-server-manage',
 
 app.get('/api/setup/servers/:id/check', requirePermission('maintenance-server-manage', 'read'), async (req, res) => {
   const { id } = req.params;
+  if (!userHasServerAccess(req, id)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   try {
     const { server, apiKey } = getServerConnection(id);
-    const agentConfig = getAgentConfig(id, { autoCreate: true });
     if (!apiKey) {
       return res.json({
         success: true,
@@ -2454,30 +2693,6 @@ app.get('/api/setup/servers/:id/check', requirePermission('maintenance-server-ma
       // ignore, CE ohne endpoint oder Fehler
     }
 
-    let agentOnline = null;
-    let agentError = null;
-    let agentVersion = null;
-
-    if ((edition || '').toLowerCase().includes('community') && agentConfig?.agentUrl) {
-      const { online, error } = await pingAgent(agentConfig.agentUrl, agentConfig.agentToken);
-      agentOnline = online;
-      agentError = error;
-      if (online) {
-        try {
-          const agentRes = await fetch(`${agentConfig.agentUrl.replace(/\/+$/, '')}/portainer/version`, {
-            headers: { 'X-Agent-Token': agentConfig.agentToken || '' }
-          });
-          if (agentRes.ok) {
-            agentVersion = await agentRes.json();
-          } else {
-            agentError = `agent_status_${agentRes.status}`;
-          }
-        } catch (err) {
-          agentError = err?.message || 'agent_fetch_failed';
-        }
-      }
-    }
-
     const effectiveCurrentVersion = statusData.Version
       ?? statusData.ServerVersion
       ?? statusData.Server?.Version
@@ -2494,12 +2709,6 @@ app.get('/api/setup/servers/:id/check', requirePermission('maintenance-server-ma
         updateAvailable: false,
         edition,
         build
-      },
-      agent: {
-        url: agentConfig?.agentUrl || null,
-        token: agentConfig?.agentToken || null,
-        online: agentOnline,
-        error: agentError
       }
     });
   } catch (error) {
@@ -2540,9 +2749,34 @@ app.post('/api/setup/servers', requirePermission('maintenance-server-edit', 'ful
     const client = createPortainerSetupClient({ baseURL: normalizedExternalUrl, apiKey: apiKeyRaw.trim() });
     await client.get('/api/status');
 
+    // Edition prüfen – nur Business Edition zulassen
+    let editionLabel = 'Community Edition';
+    try {
+      const licenseInfoRes = await client.get('/api/licenses/info');
+      editionLabel = extractPortainerEdition(licenseInfoRes.data ?? {}) || 'Business Edition';
+    } catch {
+      editionLabel = 'Community Edition';
+    }
+    if ((editionLabel || '').toLowerCase().includes('community')) {
+      return res.status(400).json({ error: 'PORTAINER_EDITION_UNSUPPORTED', message: 'Nur Business Edition wird unterstützt.' });
+    }
+
     const server = ensureServer({ name, url: normalizedExternalUrl });
     setServerApiKey({ serverId: server.id, apiKey: apiKeyRaw.trim() });
-    const status = buildSetupStatusResponse();
+    logEvent({
+      category: 'setup',
+      eventType: 'server',
+      action: 'create',
+      status: 'erfolgreich',
+      severity: 'info',
+      entityType: 'server',
+      entityId: String(server.id),
+      entityName: server.name,
+      message: 'Server angelegt und API-Key gespeichert',
+      contextType: 'server',
+      contextId: String(server.id)
+    });
+    const status = buildSetupStatusResponseForUser(req);
     res.status(201).json({ success: true, server, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -2557,6 +2791,9 @@ app.post('/api/setup/servers', requirePermission('maintenance-server-edit', 'ful
     }
     if (code === 'SERVER_NOT_FOUND') {
       return res.status(404).json({ error: 'SERVER_NOT_FOUND' });
+    }
+    if (code === 'PORTAINER_EDITION_UNSUPPORTED') {
+      return res.status(400).json({ error: 'PORTAINER_EDITION_UNSUPPORTED' });
     }
     if (error.response?.status === 401) {
       return res.status(401).json({ error: 'API_KEY_INVALID', message: error.response?.data?.message || 'Portainer API-Key ungültig' });
@@ -2573,6 +2810,9 @@ app.get('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-ssh-
   const serverId = Number(req.params.id);
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
   }
   try {
     getServerById(serverId);
@@ -2600,6 +2840,9 @@ app.put('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-ssh-
   const serverId = Number(req.params.id);
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
   }
   try {
     getServerById(serverId);
@@ -2629,6 +2872,9 @@ app.delete('/api/setup/servers/:id/ssh-config', requirePermission('maintenance-s
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
   }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   try {
     getServerById(serverId);
     const config = deletePortainerSshConfig(serverId);
@@ -2657,6 +2903,9 @@ app.post('/api/setup/servers/:id/test-ssh', requirePermission('maintenance-ssh-u
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
   }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   try {
     getServerById(serverId);
     const override = req.body && Object.keys(req.body).length ? req.body : null;
@@ -2676,6 +2925,9 @@ app.get('/api/setup/servers/:id/update-script', requirePermission('maintenance-s
   const serverId = Number(req.params.id);
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
   }
   try {
     getServerById(serverId);
@@ -2710,6 +2962,9 @@ app.put('/api/setup/servers/:id/update-script', requirePermission('maintenance-s
   const serverId = Number(req.params.id);
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
+  }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
   }
   if (portainerUpdateState.running) {
     return res.status(409).json({ error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.' });
@@ -2753,6 +3008,9 @@ app.delete('/api/setup/servers/:id/update-script', requirePermission('maintenanc
   if (!Number.isFinite(serverId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
   }
+  if (!userHasServerAccess(req, serverId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   if (portainerUpdateState.running) {
     return res.status(409).json({ error: 'Aktualisierung läuft. Skript kann derzeit nicht geändert werden.' });
   }
@@ -2787,12 +3045,28 @@ app.delete('/api/setup/servers/:id/update-script', requirePermission('maintenanc
 
 app.put('/api/setup/servers/:id', requirePermission('maintenance-server-edit', 'full'), (req, res) => {
   const { id } = req.params;
+  if (!userHasServerAccess(req, id)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
 
   try {
     const server = updateServerDetails(id, { name, url });
-    const status = buildSetupStatusResponse();
+    logEvent({
+      category: 'setup',
+      eventType: 'server',
+      action: 'update',
+      status: 'erfolgreich',
+      severity: 'info',
+      entityType: 'server',
+      entityId: String(server.id),
+      entityName: server.name,
+      message: 'Serverdetails aktualisiert',
+      contextType: 'server',
+      contextId: String(server.id)
+    });
+    const status = buildSetupStatusResponseForUser(req);
     res.json({ success: true, server, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -2819,10 +3093,26 @@ app.delete('/api/setup/servers/:id', requirePermission('maintenance-server-delet
   if (!Number.isFinite(numericId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
   }
+  if (!userHasServerAccess(req, numericId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
 
   try {
     const result = removeServer(numericId);
-    const status = buildSetupStatusResponse();
+    logEvent({
+      category: 'setup',
+      eventType: 'server',
+      action: 'delete',
+      status: 'erfolgreich',
+      severity: 'info',
+      entityType: 'server',
+      entityId: String(numericId),
+      entityName: result?.name || `Server ${numericId}`,
+      message: 'Server gelöscht',
+      contextType: 'server',
+      contextId: String(numericId)
+    });
+    const status = buildSetupStatusResponseForUser(req);
     res.json({ success: true, removed: result, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -2844,12 +3134,28 @@ app.put('/api/setup/servers/:id/api-key', requirePermission('maintenance-server-
   if (!Number.isFinite(numericId)) {
     return res.status(400).json({ error: 'SERVER_ID_INVALID' });
   }
+  if (!userHasServerAccess(req, numericId)) {
+    return res.status(403).json({ error: 'SERVER_ACCESS_DENIED' });
+  }
 
   const rawValue = typeof req.body?.apiKey === 'string' ? req.body.apiKey : typeof req.body?.key === 'string' ? req.body.key : '';
 
   try {
     const result = setServerApiKey({ serverId: numericId, apiKey: rawValue });
-    const status = buildSetupStatusResponse();
+    logEvent({
+      category: 'setup',
+      eventType: 'server',
+      action: 'api-key-update',
+      status: 'erfolgreich',
+      severity: 'info',
+      entityType: 'server',
+      entityId: String(numericId),
+      entityName: `Server ${numericId}`,
+      message: 'API-Key aktualisiert',
+      contextType: 'server',
+      contextId: String(numericId)
+    });
+    const status = buildSetupStatusResponseForUser(req);
     res.json({ success: true, updated: result, status });
   } catch (error) {
     const code = error.code || error.message;
@@ -2885,7 +3191,7 @@ app.put('/api/setup/self-stack', requirePermission('maintenance-server-edit', 'f
 
   try {
     const nextValue = persistSelfStackId(normalizedSelfStackId) || null;
-    const status = buildSetupStatusResponse();
+    const status = buildSetupStatusResponseForUser(req);
     res.json({
       success: true,
       value: nextValue,
@@ -3147,7 +3453,9 @@ app.get('/api/users/:userId', requirePermission('users-access', 'read'), (req, r
     if (!user) {
       return res.status(404).json({ error: 'USER_NOT_FOUND' });
     }
-    res.json({ item: user });
+    const serverAssignments = getUserServerAssignments(numericId);
+    const servers = listServers();
+    res.json({ item: { ...user, serverAssignments }, servers });
   } catch (error) {
     console.error(`⚠️ [Users] Abruf der Benutzerdetails fehlgeschlagen (${userId}):`, error);
     res.status(500).json({ error: 'USER_FETCH_FAILED' });
@@ -3174,6 +3482,40 @@ app.get('/api/users/:userId/security-phrase', requirePermission('users-security-
     }
     console.error(`⚠️ [Users] Sicherheitsschlüssel konnte nicht geladen werden (${userId}):`, error);
     res.status(500).json({ error: 'USER_SECURITY_PHRASE_FETCH_FAILED' });
+  }
+});
+
+app.put('/api/users/:userId/server-assignments', requirePermission('users-edit', 'full'), (req, res) => {
+  const { userId } = req.params;
+  const numericId = Number(userId);
+
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: 'INVALID_USER_ID' });
+  }
+
+  const assignments = req.body?.assignments;
+
+  try {
+    const updated = setUserServerAssignments(numericId, Array.isArray(assignments) ? assignments : [], { actor: req.user });
+    res.json({ items: updated, total: updated.length });
+  } catch (error) {
+    if (error.code === 'INVALID_USER_ID') {
+      return res.status(400).json({ error: 'INVALID_USER_ID' });
+    }
+    if (error.code === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    }
+    if (error.code === 'USER_SUPERUSER_PROTECTED') {
+      return res.status(403).json({ error: 'USER_SUPERUSER_PROTECTED' });
+    }
+    if (error.code === 'SERVER_NOT_FOUND') {
+      return res.status(404).json({ error: 'SERVER_NOT_FOUND', missingServerIds: error.missingServerIds || [] });
+    }
+    if (error.code === 'GROUP_NOT_FOUND') {
+      return res.status(400).json({ error: 'GROUP_NOT_FOUND', missingServerIds: error.missingServerIds || [] });
+    }
+    console.error(`⚠️ [Users] Server-Zuordnung konnte nicht aktualisiert werden (${userId}):`, error);
+    res.status(500).json({ error: 'USER_SERVER_ASSIGNMENTS_UPDATE_FAILED' });
   }
 });
 
@@ -3452,6 +3794,13 @@ app.put('/api/groups/:groupId/permissions', requirePermission('user-groups-edit'
     if (serverError === 'PERMISSION_UNKNOWN_KEY') {
       return res.status(400).json({ error: 'PERMISSION_UNKNOWN_KEY', permissionKey: error.permissionKey });
     }
+    if (serverError === 'PERMISSION_DEPENDENCY_LEVEL') {
+      return res.status(400).json({
+        error: 'PERMISSION_DEPENDENCY_LEVEL',
+        permissionKey: error.permissionKey,
+        level: error.level
+      });
+    }
     if (serverError === 'INVALID_GROUP_ID') {
       return res.status(400).json({ error: 'INVALID_GROUP_ID' });
     }
@@ -3605,7 +3954,7 @@ app.delete('/api/auth/superuser', requirePermission('maintenance-superuser-delet
 app.get('/api/stacks', maintenanceGuard, async (req, res) => {
   console.log("ℹ️ [API] GET /api/stacks: Abruf gestartet");
   try {
-    const { canonicalStacks, duplicates } = await loadStackCollections();
+    const { canonicalStacks, duplicates } = await loadStackCollections(req);
     const duplicateNames = duplicates.map((entry) => entry.name);
     const duplicateNameSet = new Set(duplicateNames);
 
@@ -3616,13 +3965,23 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
     const currentSelfStackId = getSelfStackId();
     const stacksWithStatus = await Promise.all(
       canonicalStacks.map(async (stack) => {
+        const redeployMeta = redeployingStacks.get(String(stack.Id));
+        const redeployPhase = redeployMeta?.phase || null;
+
         try {
-          const statusRes = await axiosInstance.get(
+          const serverId = stack.__serverId;
+          let client = axiosInstance;
+          if (serverId) {
+            const { server, apiKey } = getServerConnection(serverId);
+            if (server?.url && apiKey) {
+              client = createPortainerSetupClient({ baseURL: server.url, apiKey });
+            }
+          }
+
+          const statusRes = await client.get(
             `/api/stacks/${stack.Id}/images_status?refresh=true`
           );
           const statusEmoji = statusRes.data.Status === 'outdated' ? '⚠️' : '✅';
-          const redeployMeta = redeployingStacks.get(String(stack.Id));
-          const redeployPhase = redeployMeta?.phase || null;
           return {
             ...stack,
             updateStatus: statusEmoji,
@@ -3634,8 +3993,6 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
           };
         } catch (err) {
           console.error(`❌ Fehler beim Abrufen des Status für Stack ${stack.Id}:`, err.message);
-          const redeployMeta = redeployingStacks.get(String(stack.Id));
-          const redeployPhase = redeployMeta?.phase || null;
           return {
             ...stack,
             updateStatus: '❌',
@@ -3661,7 +4018,7 @@ app.get('/api/stacks', maintenanceGuard, async (req, res) => {
   }
 });
 
-app.get('/api/maintenance/portainer-status', requirePermission('maintenance-portainer', 'read'), async (req, res) => {
+app.get('/api/maintenance/portainer-status', requirePermission('maintenance-server-edit', 'full'), async (req, res) => {
   console.log("🧭 [Maintenance] GET /api/maintenance/portainer-status: Prüfung gestartet");
   try {
     const payload = await fetchPortainerStatusSummary();
@@ -3910,7 +4267,7 @@ app.get(
   async (req, res) => {
   console.log("🧹 [Maintenance] GET /api/maintenance/duplicates: Abruf gestartet");
   try {
-    const { duplicates } = await loadStackCollections();
+    const { duplicates } = await loadStackCollections(req);
 
     const payload = duplicates
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -3965,7 +4322,7 @@ app.post(
   console.log(`🧹 [Maintenance] Bereinigung angefordert für Stack ${canonicalIdStr}. Ziel-IDs: ${duplicateIds.join(', ')}`);
 
   try {
-    const { duplicates } = await loadStackCollections();
+    const { duplicates } = await loadStackCollections(req);
     const target = duplicates.find((entry) => String(entry.canonical.Id) === canonicalIdStr);
 
     if (!target) {
@@ -4205,7 +4562,14 @@ app.put('/api/stacks/:id/redeploy', requirePermission('stacks-redeploy-single', 
   console.log(`🔄 PUT /api/stacks/${id}/redeploy: Redeploy gestartet`);
 
   try {
-    await redeployStackById(id, REDEPLOY_TYPES.SINGLE);
+    const { filteredStacks } = await loadStackCollections(req);
+    const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
+    const stackEntry = stacksById.get(String(id)) || null;
+    if (!stackEntry) {
+      return res.status(404).json({ error: 'STACK_NOT_FOUND' });
+    }
+
+    await redeployStackById(id, REDEPLOY_TYPES.SINGLE, stackEntry);
     console.log(`✅ PUT /api/stacks/${id}/redeploy: Redeploy erfolgreich abgeschlossen`);
     res.json({ success: true, message: 'Stack redeployed' });
   } catch (err) {
@@ -4226,8 +4590,7 @@ app.put(
   const serverContextId = getActiveServerUrl() || null;
 
   try {
-    const stacksRes = await axiosInstance.get('/api/stacks');
-    const filteredStacks = Array.isArray(stacksRes.data) ? stacksRes.data : [];
+    const { filteredStacks } = await loadStackCollections(req);
 
     console.log("📦 Redeploy ALL für folgende Stacks:");
     filteredStacks.forEach(s => console.log(`   - ${s.Name}`));
@@ -4274,7 +4637,7 @@ app.put(
 
     for (const stack of eligibleStacks) {
       try {
-        await redeployStackById(stack.Id, REDEPLOY_TYPES.ALL);
+        await redeployStackById(stack.Id, REDEPLOY_TYPES.ALL, stack);
         console.log(`✅ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) erfolgreich`);
       } catch (err) {
         console.error(`❌ Redeploy ALL -> Stack ${stack.Name} (${stack.Id}) fehlgeschlagen:`, err.message);
@@ -4337,7 +4700,7 @@ app.put(
 
   try {
     const normalizedIds = stackIds.map((id) => String(id));
-    const { filteredStacks } = await loadStackCollections();
+    const { filteredStacks } = await loadStackCollections(req);
     const stacksById = new Map(filteredStacks.map((stack) => [String(stack.Id), stack]));
 
     const missingIds = normalizedIds.filter((id) => !stacksById.has(id));
@@ -4409,7 +4772,7 @@ app.put(
 
     for (const stack of eligibleStacks) {
       try {
-        await redeployStackById(stack.Id, REDEPLOY_TYPES.SELECTION);
+        await redeployStackById(stack.Id, REDEPLOY_TYPES.SELECTION, stack);
         console.log(`✅ Redeploy Auswahl -> Stack ${stack.Name} (${stack.Id}) erfolgreich`);
       } catch (err) {
         console.error(`❌ Redeploy Auswahl -> Stack ${stack.Name} (${stack.Id}) fehlgeschlagen:`, err.message);

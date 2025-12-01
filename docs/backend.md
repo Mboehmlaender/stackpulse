@@ -11,10 +11,10 @@ Das Backend implementiert alle Anwendungsfälle über Express-Routen, Socket.IO 
 | Modul | Pfad | Aufgabe |
 |-------|------|---------|
 | Auth/Superuser | `auth/superuser.js` | Registrieren/Verifizieren von Superusern, Login, Passwortvalidierung, Sicherheitsphrasen. |
-| Users & Groups | `users/*`, `groups/*`, `permissions/*` | CRUD für Benutzer, Gruppen, Rechtezuweisung, Ableitung effektiver Berechtigungen. |
+| Users & Groups | `users/*`, `groups/*`, `permissions/*` | CRUD für Benutzer, Gruppen, Rechtezuweisung, Ableitung effektiver Berechtigungen. Rechte-Labels z. B. `Bereich & Navigation`, `Benutzergruppen bearbeiten`, `Benutzer löschen`. |
 | Setup | `setup/index.js` | Verwaltung registrierter Portainer-Server, sichere Ablage der API-Keys, Setup-Status. |
 | Logging | `logging/eventLogs.js` | Einheitliches Ereignislogging (Insert, Filter, Delete, Export). |
-| Maintenance | `maintenance/state.js` + helper in `index.js` | Wartungsmodus, SSH-Konfiguration, Update-Skripte und Ausführung. |
+| Maintenance | `maintenance/state.js` + Helper in `index.js` | Wartungsmodus, SSH-Konfiguration, Update-Skripte und Ausführung. |
 | Portainer Proxy | Funktionen in `index.js` | Kommunikation mit Portainer (`axiosInstance` + dynamische `baseURL`), Environment-Erkennung und Redeploy-Strecke. |
 
 ## API-Überblick (Auszug)
@@ -56,7 +56,7 @@ Das Backend implementiert alle Anwendungsfälle über Express-Routen, Socket.IO 
 | GET | `/api/stacks` | Aggregierte Liste inkl. Filter, Self-Stack-Blockade und Redeploy-Status. |
 | PUT | `/api/stacks/:id/redeploy` | Redeploy eines einzelnen Stacks. |
 | PUT | `/api/stacks/redeploy-selection` | Redeploy einer Liste übermittelter `stackIds`. |
-| PUT | `/api/stacks/redeploy-all` | Redeploy aller Stacks (Permission `stacks-redeploy-all`). |
+| PUT | `/api/stacks/redeploy-all` | Redeploy aller Stacks (Recht `Redeploy Alle`). |
 
 Das Backend veröffentlicht den Redeploy-Fortschritt parallel über Socket.IO (`redeployStatus` Event) und unterscheidet die Phasen `queued`, `started`, `success`, `error`, `info`.
 
@@ -75,7 +75,7 @@ Das Backend veröffentlicht den Redeploy-Fortschritt parallel über Socket.IO (`
 
 ## Datenbank & Schema
 - `ensureDatabaseSchema()` erzeugt Tabellen bei jedem Start, inklusive Default-Gruppen, Permissions, Settings, Server-Einträge und Trigger.
-- Permissions werden anhand der Blueprint-Datei `backend/db/dbs` eingelesen. Jede Permission definiert Key, Label, Level (`full`, `read`, `none`) und Abhängigkeiten.
+- Permissions werden anhand der Blueprint-Datei `backend/db/dbs` eingelesen. Jede Permission definiert Key, Label (z. B. `Bereich & Navigation`, `Server bearbeiten`, `SSH/Update-Skript`, `Update durchführen`, `Doppelte Stacks`), Level (`full`, `read`, `none`) und Abhängigkeiten.
 - Events werden in `event_logs` gespeichert. Relevante Felder:
   - `category`, `event_type`, `action`, `status`, `severity`
   - `entity_type`, `entity_id`, `entity_name`
@@ -85,13 +85,14 @@ Das Backend veröffentlicht den Redeploy-Fortschritt parallel über Socket.IO (`
 - Filter-Parameter (`ids`, `categories`, `eventTypes`, `status`, `stackIds`, Zeitfenster) werden in `buildEventLogFilter` zentral verarbeitet.
 
 ## Berechtigungssystem
-- Jeder Benutzer gehört zu beliebig vielen Gruppen; die effektiven Rechte ergeben sich aus der höchsten Ausprägung pro Permission.
+- Jeder Benutzer gehört zu beliebig vielen Gruppen; die effektiven Rechte ergeben sich aus der höchsten Ausprägung pro Permission (Labels wie `Bereich & Navigation`, `Server bearbeiten`, `SSH/Update-Skript`, `Update durchführen`, `Doppelte Stacks`).
 - Superuser erhalten alle Berechtigungen und können nicht über das UI entzogen werden.
 - `PermissionGate` im Frontend spiegelt die gleichen Keys. Wichtigste Bereiche:
-  - `stacks-*` (Redeploy)
-  - `logs-*`
-  - `users-*` & `user-groups-*`
-  - `maintenance-*` (inkl. Unterrechte `maintenance-server-*`, `maintenance-ssh-update`, `maintenance-update`)
+  - `Redeploy einzeln/Auswahl/Alle`
+  - `Bereich & Navigation (Logs)`, `Logs Exportieren`, `Logs löschen`
+  - `Bereich & Navigation (Benutzer)`, `Benutzer bearbeiten/löschen`, `Sicherheitsschlüssel`
+  - `Bereich & Navigation (Benutzergruppen)`, `Benutzergruppen bearbeiten/löschen`
+  - Wartung: `Bereich & Navigation (Wartung)`, `Server-Sektion`, `Server bearbeiten/löschen`, `SSH/Update-Skript`, `Update durchführen`, `Doppelte Stacks`
 
 ## Redeploy-Workflow
 1. Eingehender Request wird mit `maintenanceGuard` geprüft (Maintenance-Modus blockiert optional Redeploys).

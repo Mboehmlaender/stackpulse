@@ -1,6 +1,6 @@
 # Setup-Assistent
 
-Beim ersten Start erscheint automatisch der Setup-Bereich. Du erreichst ihn später jederzeit über `/setup`, solange nicht alle Schritte abgeschlossen sind.
+Beim ersten Start erscheint automatisch der Setup-Bereich und führt dich durch alle Schritte, bis die Einrichtung abgeschlossen ist.
 
 ## Voraussetzungen
 - Portainer Business Edition mit gültigem API-Key
@@ -31,5 +31,5 @@ Beim ersten Start erscheint automatisch der Setup-Bereich. Du erreichst ihn spä
 
 ## Setup wiederholen oder ändern
 - Über das Dashboard → **Wartung** → Abschnitt *Serververwaltung* kannst du zusätzliche Portainer-Server hinzufügen oder entfernen.
-- Superuser lässt sich im Bereich **Benutzer** löschen, sofern du `maintenance-superuser-delete` besitzt.
+- Superuser lässt sich im Bereich **Benutzer** löschen, sofern du das Recht `Superuser löschen` besitzt.
 - Der Self-Stack (StackPulse-eigener Stack) kann in der Wartung gepflegt werden, damit er nicht versehentlich redeployed wird.

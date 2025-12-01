@@ -2,6 +2,11 @@
 
 Die Stacks-Ansicht ist der Startpunkt nach dem Login und liefert einen Überblick über alle Stacks der angebundenen Portainer-Instanz.
 
+**Relevante Rechte**
+- `Redeploy einzeln`
+- `Redeploy Auswahl`
+- `Redeploy Alle`
+
 ## Aufbau
 - **Header** mit Suchfeld, Filterchips für Status sowie Buttons für Redeploy-Aktionen.
 - **Tabelle** mit Name, Endpoint, Status, letzte Aktion, Redeploy-Status und verfügbaren Buttons.
@@ -15,9 +20,9 @@ Die Stacks-Ansicht ist der Startpunkt nach dem Login und liefert einen Überblic
 ## Redeploy-Aktionen
 | Aktion | Voraussetzung | Vorgehen |
 |--------|---------------|----------|
-| **Einzelner Stack** | Permission `stacks-redeploy-single` | Button **Redeploy** in der jeweiligen Zeile klicken und bestätigen. |
-| **Mehrere Stacks** | `stacks-redeploy-selection` | Checkboxen der gewünschten Stacks aktivieren, anschließend **Redeploy Auswahl**. |
-| **Alle Stacks** | `stacks-redeploy-all` | Button **Redeploy alle** auslösen. Nutze vorher Filter, um sicherzugehen, dass alle Stacks korrekt angezeigt werden. |
+| **Einzelner Stack** | Recht `Redeploy einzeln` | Button **Redeploy** in der jeweiligen Zeile klicken und bestätigen. |
+| **Mehrere Stacks** | Recht `Redeploy Auswahl` | Checkboxen der gewünschten Stacks aktivieren, anschließend **Redeploy Auswahl**. |
+| **Alle Stacks** | Recht `Redeploy Alle` | Button **Redeploy alle** auslösen. Nutze vorher Filter, um sicherzugehen, dass alle Stacks korrekt angezeigt werden. |
 
 Während eines Redeploys erscheint pro Stack ein Fortschrittsbadge. Du kannst das Panel schließen; beim nächsten Besuch wird der aktuelle Status aus dem Backend gelesen.
 

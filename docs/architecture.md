@@ -8,13 +8,18 @@ StackPulse folgt einer klassischen Client/Server-Architektur, bei der das Backen
 │ (React)    │ ◀───── Auth-Cookie + JSON ─ │ (Express)     │ ◀─────────────── │  Business Ed.  │
 └────────────┘      Redeploy Events       └───────────────┘   (Axios Proxy)   └────────────────┘
                                              │
+                              mTLS (optional)│
+                                             ▼
+                                   StackPulse Agent
+                                             │
                                              ▼
                                      SQLite Datenbank
 ```
 
 ## Hauptschichten
-- **Frontend** (Vite + Material Tailwind): stellt alle Views, Formulare, Tabellen und Echtzeit-Widgets bereit. Die `AuthProvider`-Komponente verwaltet Session, Permissions und Socket-Verbindungen.
-- **Backend** (Express + better-sqlite3): aggregiert Daten aus Portainer, persistiert Benutzer/Gruppen/Logs, verwaltet Sessions und stößt Redeploy- sowie Wartungsprozesse an.
+- **Frontend** (Vite + Material Tailwind): stellt Views, Tabellen, Setup-Wizard und Echtzeit-Widgets bereit. `AuthProvider` verwaltet Session, Permissions und Socket-Verbindungen.
+- **Backend** (Express + better-sqlite3): aggregiert Daten aus Portainer, persistiert Benutzer/Gruppen/Logs, verwaltet Sessions, Redeploy-Queue und Maintenance/Agent-Funktionen.
+- **Agent (optional)**: kleiner Node-Dienst, der lokal auf dem Portainer-Host läuft. Liefert Stack-/Portainer-Metadaten per REST, authentifiziert via `X-Agent-Token` und kann mTLS-Zertifikate aus dem Backend beziehen.
 - **Persistenz** (SQLite): Datei `backend/data/stackpulse.db`, WAL-Modus aktiviert. Tabellen umfassen u. a. `users`, `groups`, `permissions`, `servers`, `server_api_keys`, `event_logs`, `settings` sowie Hilfstabellen für Tokens und Sicherheitspassphrasen.
 
 ## Datenflüsse
@@ -23,7 +28,7 @@ StackPulse folgt einer klassischen Client/Server-Architektur, bei der das Backen
 3. **Stack-Übersicht**: Frontend ruft `/api/stacks` auf. Das Backend proxyt `Portainer /api/endpoints/:id/docker/stacks`, ergänzt Caching, interne Metadaten und liefert Redeploy-Status.
 4. **Redeploy**: UI stößt `/api/stacks/:id/redeploy`, `/api/stacks/redeploy-selection` oder `/api/stacks/redeploy-all` an. Das Backend ruft Portainer-Endpoints, protokolliert Events und broadcastet Fortschritt via Socket.IO `redeployStatus`.
 5. **Logging**: Jeder relevante Vorgang erzeugt Einträge in `event_logs` (siehe `logging/eventLogs.js`). Frontend filtert/paginiert über `/api/logs` und kann Exporte `/api/logs/export` herunterladen.
-6. **Wartung**: `/api/maintenance/*` verwaltet Maintenance-Mode, SSH-Zugänge, Update-Skripte und serverseitige Settings (`db/settings.js`).
+6. **Wartung**: `/api/maintenance/*` verwaltet Maintenance-Mode, SSH-Zugänge, Update-Skripte sowie weitere Wartungsfunktionen.
 
 ## Verzeichnis-Referenz
 | Pfad | Inhalt |

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/components/AuthProvider.jsx";
@@ -54,6 +54,12 @@ const formatCreatedAt = (value) => {
   });
 };
 
+const resolveStackType = (type) => {
+  if (type === 1) return "Git";
+  if (type === 2) return "Compose";
+  return type ?? "-";
+};
+
 const createEmptySshDraft = () => ({
   host: "",
   port: "22",
@@ -70,16 +76,34 @@ export function ServerDetail() {
     return Number.isFinite(numeric) ? numeric : null;
   }, [serverId]);
 
-  const { hasPermission, user: authUser } = useAuth();
+  const { hasServerPermission, user: authUser } = useAuth();
   const { deleteSetupServer, updateSetupApiKey } = useMaintenance();
   const { showToast } = useToast();
 
   const isSuperuserAccount = Boolean(authUser?.isSuperuser);
-  const canViewServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-manage", "read"));
-  const canEditServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-edit", "full"));
-  const canDeleteServers = Boolean(isSuperuserAccount || hasPermission("maintenance-server-delete", "full"));
-  const canViewSsh = Boolean(isSuperuserAccount || hasPermission("maintenance-ssh-update", "read"));
-  const canManageSsh = Boolean(isSuperuserAccount || hasPermission("maintenance-ssh-update", "full"));
+  const canViewServers = Boolean(
+    isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-server-manage", "read")
+  );
+  const canEditServers = Boolean(
+    isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-server-edit", "full")
+  );
+  const canReadServers = Boolean(
+    isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-server-edit", "read")
+  );
+  const canDeleteServers = Boolean(
+    isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-server-delete", "full")
+  );
+  const canViewPortainer = Boolean(
+    isSuperuserAccount
+      || hasServerPermission(selectedServerId, "maintenance-server-edit", "read")
+      || hasServerPermission(selectedServerId, "maintenance-server-manage", "read")
+  );
+  const canViewDuplicates = Boolean(isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-duplicates", "read"));
+  const canManageDuplicates = Boolean(isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-duplicates", "full"));
+  const canViewSsh = Boolean(isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-ssh-update", "read"));
+  const canManageSsh = Boolean(isSuperuserAccount || hasServerPermission(selectedServerId, "maintenance-ssh-update", "full"));
+  const canViewScript = canViewSsh;
+  const canManageScript = canManageSsh;
 
   const [serverDetail, setServerDetail] = useState(null);
   const [apiKeyMeta, setApiKeyMeta] = useState(null);
@@ -104,11 +128,13 @@ export function ServerDetail() {
   const [scriptError, setScriptError] = useState("");
   const [scriptConfig, setServerScriptConfig] = useState(null);
 
-  const [agentConfig, setAgentConfig] = useState(null);
-  const [agentDraft, setAgentDraft] = useState({ agentUrl: "", agentToken: "" });
-  const [agentLoading, setAgentLoading] = useState(false);
-  const [agentError, setAgentError] = useState("");
-  const [agentSaving, setAgentSaving] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
+  const [duplicatesLoading, setDuplicatesLoading] = useState(false);
+  const [duplicatesRefreshing, setDuplicatesRefreshing] = useState(false);
+  const [duplicatesError, setDuplicatesError] = useState("");
+  const [duplicatesUpdatedAt, setDuplicatesUpdatedAt] = useState(null);
+  const [activeCleanupId, setActiveCleanupId] = useState(null);
+  const duplicatesRequestRef = useRef(null);
 
   const [serverSshConfig, setServerSshConfig] = useState(null);
   const [sshDraft, setSshDraft] = useState(() => createEmptySshDraft());
@@ -134,17 +160,26 @@ export function ServerDetail() {
       setServerDetail(response.data?.server ?? null);
       setApiKeyMeta(response.data?.apiKey ?? null);
     } catch (err) {
+      const status = err.response?.status;
       const message = err.response?.data?.error || err.message || "Serverdetails konnten nicht geladen werden";
       setServerError(message);
       setServerDetail(null);
       setApiKeyMeta(null);
+      if (status === 403 || message === "SERVER_ACCESS_DENIED") {
+        showToast({
+          variant: "error",
+          title: "Kein Zugriff",
+          description: "Du hast keine Berechtigung für diesen Server."
+        });
+        navigate(-1);
+      }
     } finally {
       setServerLoading(false);
     }
-  }, [selectedServerId]);
+  }, [selectedServerId, showToast, navigate]);
 
   const loadServerStatus = useCallback(async ({ silent = false } = {}) => {
-    if (!selectedServerId) {
+    if (!selectedServerId || !canViewPortainer) {
       setStatusData(null);
       setStatusError("");
       setStatusFetchedAt(null);
@@ -159,43 +194,26 @@ export function ServerDetail() {
       setStatusData(response.data ?? null);
       setStatusFetchedAt(new Date());
     } catch (err) {
+      const status = err.response?.status;
       const message = err.response?.data?.error || err.message || "Status konnte nicht ermittelt werden";
       setStatusError(message);
       setStatusData(null);
       setStatusFetchedAt(null);
+      if (status === 403 || message === "SERVER_ACCESS_DENIED") {
+        showToast({
+          variant: "error",
+          title: "Kein Zugriff",
+          description: "Du hast keine Berechtigung für diesen Server."
+        });
+        navigate(-1);
+      }
     } finally {
       setStatusLoading(false);
     }
-  }, [selectedServerId]);
-
-  const loadAgentConfig = useCallback(async () => {
-    if (!selectedServerId) {
-      setAgentConfig(null);
-      setAgentDraft({ agentUrl: "", agentToken: "" });
-      return;
-    }
-    setAgentLoading(true);
-    setAgentError("");
-    try {
-      const response = await axios.get(`/api/servers/${selectedServerId}/agent`);
-      const payload = response.data ?? null;
-      setAgentConfig(payload);
-      setAgentDraft({
-        agentUrl: payload?.agentUrl ?? "",
-        agentToken: payload?.agentToken ?? ""
-      });
-    } catch (err) {
-      const message = err.response?.data?.error || err.message || "Agent konnte nicht geladen werden";
-      setAgentError(message);
-      setAgentConfig(null);
-      setAgentDraft({ agentUrl: "", agentToken: "" });
-    } finally {
-      setAgentLoading(false);
-    }
-  }, [selectedServerId]);
+  }, [selectedServerId, canViewPortainer, showToast, navigate]);
 
   const loadServerScript = useCallback(async () => {
-    if (!selectedServerId) {
+    if (!selectedServerId || !canViewSsh) {
       setServerScriptConfig(null);
       setScriptDraft("");
       return;
@@ -216,10 +234,10 @@ export function ServerDetail() {
     } finally {
       setScriptLoading(false);
     }
-  }, [selectedServerId]);
+  }, [selectedServerId, canViewSsh]);
 
   const loadServerSshConfig = useCallback(async () => {
-    if (!selectedServerId) {
+    if (!selectedServerId || !canViewSsh) {
       setServerSshConfig(null);
       return;
     }
@@ -235,7 +253,50 @@ export function ServerDetail() {
     } finally {
       setSshConfigLoading(false);
     }
-  }, [selectedServerId]);
+  }, [selectedServerId, canViewSsh]);
+
+  const fetchDuplicates = useCallback(async ({ silent = false } = {}) => {
+    if (!canViewDuplicates) {
+      setDuplicates([]);
+      setDuplicatesError("");
+      setDuplicatesUpdatedAt(null);
+      return;
+    }
+
+    if (duplicatesRequestRef.current) {
+      return duplicatesRequestRef.current;
+    }
+
+    const requestPromise = (async () => {
+      if (silent) {
+        setDuplicatesRefreshing(true);
+      } else {
+        setDuplicatesLoading(true);
+      }
+      setDuplicatesError("");
+
+      try {
+        const response = await axios.get("/api/maintenance/duplicates");
+        const payload = response.data;
+        const items = Array.isArray(payload) ? payload : payload?.items ?? [];
+        setDuplicates(items);
+        setDuplicatesUpdatedAt(new Date());
+      } catch (err) {
+        const message = err.response?.data?.error || err.message || "Fehler beim Laden der Wartungsdaten";
+        setDuplicatesError(message);
+      } finally {
+        if (silent) {
+          setDuplicatesRefreshing(false);
+        } else {
+          setDuplicatesLoading(false);
+        }
+        duplicatesRequestRef.current = null;
+      }
+    })();
+
+    duplicatesRequestRef.current = requestPromise;
+    return requestPromise;
+  }, [canViewDuplicates]);
 
   useEffect(() => {
     loadServerDetail();
@@ -246,16 +307,22 @@ export function ServerDetail() {
   }, [loadServerStatus]);
 
   useEffect(() => {
+    fetchDuplicates();
+  }, [fetchDuplicates, canViewDuplicates]);
+
+  useEffect(() => {
+    setStatusData(null);
+    setStatusError("");
+    setStatusFetchedAt(null);
+  }, [selectedServerId]);
+
+  useEffect(() => {
     loadServerScript();
   }, [loadServerScript]);
 
   useEffect(() => {
     loadServerSshConfig();
   }, [loadServerSshConfig]);
-
-  useEffect(() => {
-    loadAgentConfig();
-  }, [loadAgentConfig]);
 
   useEffect(() => {
     if (!serverDetail) {
@@ -315,8 +382,7 @@ export function ServerDetail() {
   }, [serverDetail]);
   const portainerEditionLabel = statusData?.portainer?.edition ?? "-";
   const isCommunityEdition = (portainerEditionLabel || "").toLowerCase().includes("community");
-  const agentOnline = statusData?.agent?.online ?? agentConfig?.online ?? null;
-  const agentStatusLabel = agentOnline === true ? "Agent online" : agentOnline === false ? "Agent offline" : "Unbekannt";
+  const showPortainerSection = canViewPortainer;
 
   const normalizedSshDraft = useMemo(() => {
     const normalized = {
@@ -360,39 +426,13 @@ export function ServerDetail() {
         description: "Serverdetails wurden aktualisiert."
       });
       await loadServerDetail();
-      await loadServerStatus({ silent: true });
     } catch (err) {
       const message = err.response?.data?.error || err.message || "Server konnte nicht aktualisiert werden";
       showToast({ variant: "error", title: "Speichern fehlgeschlagen", description: message });
     } finally {
       setServerSaving(false);
     }
-  }, [canEditServers, selectedServerId, serverDirty, serverDraft, loadServerDetail, loadServerStatus, showToast]);
-
-  const handleAgentDraftChange = useCallback((field, value) => {
-    setAgentDraft((prev) => ({ ...prev, [field]: value }));
-  }, []);
-
-  const handleAgentSave = useCallback(async () => {
-    if (!selectedServerId) return;
-    setAgentSaving(true);
-    try {
-      await axios.put(`/api/servers/${selectedServerId}/agent`, {
-        agentUrl: agentDraft.agentUrl
-      });
-      showToast({
-        variant: "success",
-        title: "Agent gespeichert",
-        description: "Agent-Einstellungen wurden aktualisiert."
-      });
-      await loadAgentConfig();
-    } catch (err) {
-      const message = err.response?.data?.error || err.message || "Agent konnte nicht aktualisiert werden";
-      showToast({ variant: "error", title: "Agent speichern fehlgeschlagen", description: message });
-    } finally {
-      setAgentSaving(false);
-    }
-  }, [selectedServerId, agentDraft, loadAgentConfig, showToast]);
+  }, [canEditServers, selectedServerId, serverDirty, serverDraft, loadServerDetail, showToast]);
 
   const handleApiKeySave = useCallback(async () => {
     if (!canEditServers || !selectedServerId) {
@@ -417,18 +457,78 @@ export function ServerDetail() {
       });
       setApiKeyDraft("");
       await loadServerDetail();
-      await loadServerStatus({ silent: true });
     } catch (err) {
       const message = err.response?.data?.error || err.message || "API-Key konnte nicht gespeichert werden";
       showToast({ variant: "error", title: "Speichern fehlgeschlagen", description: message });
     } finally {
       setApiKeySaving(false);
     }
-  }, [apiKeyDraft, canEditServers, selectedServerId, updateSetupApiKey, loadServerDetail, loadServerStatus, showToast]);
+  }, [apiKeyDraft, canEditServers, selectedServerId, updateSetupApiKey, loadServerDetail, showToast]);
 
   const handleStatusRefresh = useCallback(() => {
     loadServerStatus();
   }, [loadServerStatus]);
+
+  const duplicateTotals = useMemo(() => {
+    const groups = Array.isArray(duplicates) ? duplicates.length : 0;
+    const duplicateCount = Array.isArray(duplicates)
+      ? duplicates.reduce((sum, entry) => sum + ((entry?.duplicates?.length) || 0), 0)
+      : 0;
+    return { groups, duplicateCount };
+  }, [duplicates]);
+
+  const handleDuplicateCleanup = useCallback(async (entry) => {
+    if (!canManageDuplicates || !entry) return;
+    const canonicalId = entry.canonical?.Id;
+    if (!canonicalId) return;
+
+    const duplicateIds = (entry.duplicates || []).map((dup) => dup.Id).filter(Boolean);
+    if (!duplicateIds.length) return;
+
+    const canonicalName = entry.canonical?.Name || entry.name || `Stack ${canonicalId}`;
+
+    if (typeof window !== "undefined") {
+      const confirmation = window.confirm(
+        `Bereinigung für "${canonicalName}" starten?\n` +
+        `Es werden ${duplicateIds.length} Duplikate entfernt: ${duplicateIds.join(", ")}`
+      );
+      if (!confirmation) {
+        return;
+      }
+    }
+
+    setActiveCleanupId(String(canonicalId));
+    try {
+      const response = await axios.post("/api/maintenance/duplicates/cleanup", {
+        canonicalId,
+        duplicateIds
+      });
+      const payload = response.data ?? {};
+      if (payload.success === false) {
+        throw new Error(payload.error || "Bereinigung fehlgeschlagen");
+      }
+
+      const removedIds = Array.isArray(payload.results)
+        ? payload.results.filter((result) => result.status === "deleted").map((result) => result.id)
+        : duplicateIds;
+
+      showToast({
+        variant: "success",
+        title: "Bereinigung abgeschlossen",
+        description: `${canonicalName} – entfernte IDs: ${removedIds.join(", ")}`
+      });
+      await fetchDuplicates({ silent: true });
+    } catch (err) {
+      const message = err.response?.data?.error || err.message || "Bereinigung fehlgeschlagen";
+      showToast({
+        variant: "error",
+        title: "Bereinigung fehlgeschlagen",
+        description: message
+      });
+    } finally {
+      setActiveCleanupId(null);
+    }
+  }, [canManageDuplicates, fetchDuplicates, showToast]);
 
   const handleDeleteServer = useCallback(async () => {
     if (!canDeleteServers || !selectedServerId || serverDeleteId === selectedServerId) {
@@ -593,6 +693,8 @@ export function ServerDetail() {
     );
   }
 
+  const isReadOnlyServer = !canEditServers && canReadServers;
+
   return (
     <div className="mt-12 mb-8 flex flex-col gap-12">
       <Card>
@@ -633,390 +735,411 @@ export function ServerDetail() {
           )}
           {serverDetail && (
             <>
-               <div className="rounded-md border border-blue-gray-100 p-4">
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                      Verbindungsstatus
-                                          {statusFetchedAt && (
-                      <span className="antialiased font-sans font-light text-xs text-blue-gray-400 pl-2">Stand: {formatCreatedAt(statusFetchedAt)}</span>
-                    )}
-                    </Typography>
-                    <p className="text-sm text-stormGrey-600 break-all">{serverDetail.url}</p>
-
-                    {statusError && (
-                      <p className="text-xs text-sunsetCoral-600 mt-2 text-right">{statusError}</p>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Chip
-                      value={statusData?.online === true ? "Server online" : statusData?.online === false ? "Offline" : "Unbekannt"}
-                      size="sm"
-                      color={statusData?.online === true ? "green" : statusData?.online === false ? "red" : "blue-gray"}
-                      variant="ghost"
-                    />
-                    <Chip
-                      value={(() => {
-                        const flag = statusData?.portainer?.updateAvailable;
-                        if (flag === true) return "Update vorhanden";
-                        if (flag === false) return "Portainer aktuell";
-                        return "Portainer unbekannt";
-                      })()}
-                      size="sm"
-                      color={statusData?.portainer?.updateAvailable === true ? "amber" : "blue-gray"}
-                      variant="ghost"
-                    />
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span>Installierte Version</span>
-                    <span className="font-medium">{statusData?.portainer?.currentVersion ?? "–"}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Neueste Version</span>
-                    <span className="font-medium">{statusData?.portainer?.latestVersion ?? "–"}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Edition</span>
-                    <span className="font-medium">{portainerEditionLabel}</span>
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button
-                    variant="outlined"
-                    color="gray"
-                    size="sm"
-                    onClick={handleStatusRefresh}
-                    disabled={statusLoading}
-                  >
-                    {statusLoading ? "Prüfe…" : "Status aktualisieren"}
-                  </Button>
-                </div>
-              </div>
-
-
-              <div className="rounded-md border border-blue-gray-100 p-4">
-                <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                  Server
-                </Typography>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  <Input
-                    label="Servername"
-                    value={serverDraft.name}
-                    onChange={(event) => handleServerDraftChange("name", event.target.value)}
-                    disabled={!canEditServers || serverSaving}
-                  />
-                  <Input
-                    label="Server-URL"
-                    value={serverDraft.url}
-                    onChange={(event) => handleServerDraftChange("url", event.target.value)}
-                    disabled={!canEditServers || serverSaving}
-                  />
-                </div>
-                {canEditServers && (
-                  <div className="flex justify-end mt-2 mb-5">
-                    <Button color="blue" size="sm" onClick={handleServerSave} disabled={serverSaving || !serverDirty}>
-                      {serverSaving ? "Speichere…" : "Server speichern"}
-                    </Button>
-                  </div>
-                )}
-
-                <div className="flex flex-col gap-2 md:max-w-md">
-                  <p className="text-xs text-stormGrey-500">
-                    {apiKeyMeta?.hasKey ? "API-Key gespeichert" : "Kein API-Key hinterlegt"}
-                    {apiKeyMeta?.updatedAt ? ` – aktualisiert am ${formatCreatedAt(apiKeyMeta.updatedAt)}` : ""}
-                  </p>
-                  <Input
-                    type="password"
-                    label="Neuer API-Key"
-                    value={apiKeyDraft}
-                    onChange={(event) => setApiKeyDraft(event.target.value)}
-                    disabled={!canEditServers || apiKeySaving}
-                  />
-                  {canEditServers && (
-                    <div className="flex justify-end">
-                      <Button color="blue" size="sm" onClick={handleApiKeySave} disabled={apiKeySaving || !apiKeyDraft.trim()}>
-                        {apiKeySaving ? "Speichere…" : "API-Key speichern"}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              {isCommunityEdition && (
+              {showPortainerSection ? (
                 <div className="rounded-md border border-blue-gray-100 p-4">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
-                        Agent (CE)
+                        Verbindungsstatus
+                        {statusFetchedAt && (
+                          <span className="antialiased font-sans font-light text-xs text-blue-gray-400 pl-2">
+                            Stand: {formatCreatedAt(statusFetchedAt)}
+                          </span>
+                        )}
                       </Typography>
-                      <p className="text-sm text-stormGrey-600 break-all">
-                        {agentDraft.agentUrl || "Keine Agent-URL hinterlegt"}
-                      </p>
-                      {agentError && <p className="text-xs text-sunsetCoral-600 mt-1">{agentError}</p>}
+                      <p className="text-sm text-stormGrey-600 break-all">{serverDetail.url}</p>
+
+                      {statusError && (
+                        <p className="text-xs text-sunsetCoral-600 mt-2 text-right">{statusError}</p>
+                      )}
                     </div>
-                    <Chip
-                      value={agentStatusLabel}
-                      size="sm"
-                      color={agentOnline === true ? "green" : agentOnline === false ? "red" : "blue-gray"}
-                      variant="ghost"
-                    />
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <Input
-                      label="Agent URL"
-                      value={agentDraft.agentUrl}
-                      onChange={(e) => handleAgentDraftChange("agentUrl", e.target.value)}
-                      disabled={agentSaving}
-                    />
-                    <div className="w-full">
-                      <div className="relative w-full">
-                        <Input
-                          label="Agent Token"
-                          value={agentDraft.agentToken}
-                          readOnly
-                          disabled
-                          className="pr-24"
-                        />
-                        <Button
-                          variant="outlined"
-                          color="gray"
-                          size="sm"
-                          className="!absolute right-1 top-1"
-                          onClick={async () => {
-                            if (!agentDraft.agentToken) return;
-                            const text = agentDraft.agentToken;
-                            const tryClipboard = async () => {
-                              if (typeof navigator !== "undefined" && navigator?.clipboard?.writeText) {
-                                await navigator.clipboard.writeText(text);
-                                return true;
-                              }
-                              return false;
-                            };
-                            const tryFallback = () => {
-                              try {
-                                const textarea = document.createElement("textarea");
-                                textarea.value = text;
-                                textarea.style.position = "fixed";
-                                textarea.style.opacity = "0";
-                                document.body.appendChild(textarea);
-                                textarea.select();
-                                document.execCommand("copy");
-                                document.body.removeChild(textarea);
-                                return true;
-                              } catch {
-                                return false;
-                              }
-                            };
-                            try {
-                              const ok = (await tryClipboard()) || tryFallback();
-                              if (ok) {
-                                showToast({
-                                  variant: "success",
-                                  title: "Token kopiert",
-                                  description: "Agent-Token wurde in die Zwischenablage kopiert."
-                                });
-                              } else {
-                                throw new Error("Clipboard API nicht verfügbar");
-                              }
-                            } catch (err) {
-                              showToast({
-                                variant: "error",
-                                title: "Kopieren fehlgeschlagen",
-                                description: err?.message || "Token konnte nicht kopiert werden."
-                              });
-                            }
-                          }}
-                        >
-                          Kopieren
-                        </Button>
-                      </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Chip
+                        value={statusData?.online === true ? "Server online" : statusData?.online === false ? "Offline" : "Unbekannt"}
+                        size="sm"
+                        color={statusData?.online === true ? "green" : statusData?.online === false ? "red" : "blue-gray"}
+                        variant="ghost"
+                      />
+                      <Chip
+                        value={(() => {
+                          const flag = statusData?.portainer?.updateAvailable;
+                          if (flag === true) return "Update vorhanden";
+                          if (flag === false) return "Portainer aktuell";
+                          return "Portainer unbekannt";
+                        })()}
+                        size="sm"
+                        color={statusData?.portainer?.updateAvailable === true ? "amber" : "blue-gray"}
+                        variant="ghost"
+                      />
                     </div>
                   </div>
-                  <div className="mt-4 flex justify-end gap-2">
+                  <div className="mt-4 grid gap-2 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>Installierte Version</span>
+                      <span className="font-medium">{statusData?.portainer?.currentVersion ?? "–"}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Neueste Version</span>
+                      <span className="font-medium">{statusData?.portainer?.latestVersion ?? "–"}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Edition</span>
+                      <span className="font-medium">{portainerEditionLabel}</span>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-end">
                     <Button
                       variant="outlined"
                       color="gray"
                       size="sm"
-                      onClick={loadAgentConfig}
-                      disabled={agentLoading}
+                      onClick={handleStatusRefresh}
+                      disabled={statusLoading}
+                      className="w-full sm:w-auto"
                     >
-                      {agentLoading ? "Lade…" : "Agent neu laden"}
-                    </Button>
-                    <Button color="blue" size="sm" onClick={handleAgentSave} disabled={agentSaving}>
-                      {agentSaving ? "Speichere…" : "Agent speichern"}
+                      {statusLoading ? "Prüfe…" : "Status manuell abgleichen"}
                     </Button>
                   </div>
                 </div>
+              ) : (
+                <Alert color="blue" className="border border-blue-200 bg-blue-50 text-blue-900">
+                  Keine Berechtigung für die Portainer-Sektion.
+                </Alert>
+              )}
+
+              {showPortainerSection && canEditServers && (
+                <div className="rounded-md border border-blue-gray-100 p-4">
+                  <Typography variant="small" color="blue-gray" className="font-semibold uppercase">
+                    Server
+                  </Typography>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <Input
+                      label="Servername"
+                      value={serverDraft.name}
+                      onChange={(event) => handleServerDraftChange("name", event.target.value)}
+                      disabled={(!canEditServers && !isReadOnlyServer) || serverSaving || isReadOnlyServer}
+                    />
+                    <Input
+                      label="Server-URL"
+                      value={serverDraft.url}
+                      onChange={(event) => handleServerDraftChange("url", event.target.value)}
+                      disabled={(!canEditServers && !isReadOnlyServer) || serverSaving || isReadOnlyServer}
+                    />
+                  </div>
+                  {canEditServers && !isReadOnlyServer && (
+                    <div className="flex mt-2 mb-5">
+                      <Button color="blue" size="sm" onClick={handleServerSave} disabled={serverSaving || !serverDirty}>
+                        {serverSaving ? "Speichere…" : "Server speichern"}
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-2 md:max-w-md">
+                    <p className="text-xs text-stormGrey-500">
+                      {apiKeyMeta?.hasKey ? "API-Key gespeichert" : "Kein API-Key hinterlegt"}
+                      {apiKeyMeta?.updatedAt ? ` – aktualisiert am ${formatCreatedAt(apiKeyMeta.updatedAt)}` : ""}
+                    </p>
+                    <Input
+                      type="password"
+                      label="Neuer API-Key"
+                      value={apiKeyDraft}
+                      onChange={(event) => setApiKeyDraft(event.target.value)}
+                      disabled={!canEditServers || apiKeySaving}
+                    />
+                    {canEditServers && (
+                      <div className="flex">
+                        <Button
+                          color="blue"
+                          size="sm"
+                          onClick={handleApiKeySave}
+                          disabled={apiKeySaving || !apiKeyDraft.trim()}
+                          className="w-full sm:w-auto"
+                        >
+                          {apiKeySaving ? "Speichere…" : "API-Key speichern"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {canViewSsh && (
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <Card>
+                    <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+                      <Typography variant="h6" color="white">
+                        SSH-Verbindung
+                      </Typography>
+                    </CardHeader>
+                    <CardBody className="flex flex-col gap-3 p-4">
+                      <label className="grid gap-1">
+                        <span className="text-xs uppercase tracking-wide">Host</span>
+                        <input
+                          type="text"
+                          value={sshDraft.host}
+                          onChange={(event) => handleSshDraftChange("host", event.target.value)}
+                          disabled={sshControlsDisabled}
+                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                      </label>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="grid gap-1">
+                          <span className="text-xs uppercase tracking-wide">Port</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={sshDraft.port}
+                            onChange={(event) => handleSshDraftChange("port", event.target.value)}
+                            disabled={sshControlsDisabled}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-xs uppercase tracking-wide">Benutzer</span>
+                          <input
+                            type="text"
+                            value={sshDraft.username}
+                            onChange={(event) => handleSshDraftChange("username", event.target.value)}
+                            disabled={sshControlsDisabled}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-1">
+                        <div className="flex items-center justify-between text-xs uppercase tracking-wide">
+                          <label htmlFor="server-ssh-password" className="cursor-pointer">Passwort</label>
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword((prev) => !prev)}
+                            disabled={sshControlsDisabled}
+                            className="text-[11px] font-medium text-blue-500 transition hover:text-blue-800 disabled:opacity-50"
+                          >
+                            {showPassword ? "Verbergen" : "Anzeigen"}
+                          </button>
+                        </div>
+                        <input
+                          id="server-ssh-password"
+                          type={showPassword ? "text" : "password"}
+                          value={sshDraft.password}
+                          onChange={(event) => handleSshDraftChange("password", event.target.value)}
+                          disabled={sshControlsDisabled}
+                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                          placeholder="Passwort für den SSH-Benutzer"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        {sshPasswordStored && !sshDraft.password && (
+                          <span className="text-[11px] text-stormGrey-500">
+                            Ein Passwort ist gespeichert. Neuer Inhalt ersetzt es oder lösche die Konfiguration unten.
+                          </span>
+                        )}
+                      </div>
+                      <label className="grid gap-1">
+                        <span className="text-xs uppercase tracking-wide">Weitere SSH-Argumente</span>
+                        <textarea
+                          rows={3}
+                          value={sshDraft.extraSshArgs}
+                          onChange={(event) => handleSshDraftChange("extraSshArgs", event.target.value)}
+                          disabled={sshControlsDisabled}
+                          className="w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-[11px] focus:border-blue-500 focus:outline-none"
+                          placeholder="je Zeile ein Argument (optional)"
+                        />
+                      </label>
+                      <div className="mt-2 grid gap-2">
+                        <Button onClick={handleSshSaveConfig} disabled={sshControlsDisabled}>
+                          {sshSaving ? "Speichern…" : "SSH-Konfiguration speichern"}
+                        </Button>
+                        <Button
+                          onClick={handleSshTestConnection}
+                          disabled={sshControlsDisabled}
+                          className="bg-arcticBlue-500 hover:bg-arcticBlue-600"
+                        >
+                          {sshTesting ? "Test läuft…" : "Verbindung testen"}
+                        </Button>
+                        <Button
+                          onClick={handleSshDeleteConfig}
+                          disabled={sshControlsDisabled}
+                          className="bg-sunsetCoral-500 hover:bg-sunsetCoral-600"
+                        >
+                          {sshDeleting ? "Löschen…" : "SSH-Einstellungen löschen"}
+                        </Button>
+                      </div>
+                      {sshConfigLoading && (
+                        <p className="text-xs text-stormGrey-500">SSH-Konfiguration wird geladen…</p>
+                      )}
+                      {sshConfigError && (
+                        <p className="text-xs text-sunsetCoral-500">{sshConfigError}</p>
+                      )}
+                      {sshTestResult && (
+                        <p className={`text-xs ${sshTestResult.success ? "text-mossGreen-600" : "text-sunsetCoral-500"}`}>
+                          {sshTestResult.success
+                            ? "SSH-Verbindung erfolgreich."
+                            : `SSH-Verbindung fehlgeschlagen: ${sshTestResult.error}`}
+                        </p>
+                      )}
+                    </CardBody>
+                  </Card>
+
+                  <Card>
+                    <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+                      <Typography variant="h6" color="white" className="flex items-center justify-between">
+                        <span>Update-Skript</span>
+                        <span className="text-xs">Quelle: {scriptSourceLabel}</span>
+                      </Typography>
+                    </CardHeader>
+                    <CardBody className="flex flex-col gap-3 p-4">
+                      <textarea
+                        value={scriptDraft}
+                        onChange={(event) => setScriptDraft(event.target.value)}
+                        rows={12}
+                        disabled={!canManageSsh || scriptSaving || scriptLoading || !selectedServerId}
+                        className="w-full rounded-md border border-blue-gray-100 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                      />
+                      {scriptLoading && (
+                        <p className="text-xs text-stormGrey-500">Skript wird geladen…</p>
+                      )}
+                      {scriptError && (
+                        <p className="text-xs text-sunsetCoral-500">{scriptError}</p>
+                      )}
+                      <div className="grid gap-2">
+                        <Button
+                          onClick={handleScriptSave}
+                          disabled={!canManageSsh || !scriptIsDirty || scriptSaving || scriptLoading || !selectedServerId}
+                        >
+                          Speichern
+                        </Button>
+                        <Button
+                          color="purple"
+                          onClick={handleScriptReset}
+                          disabled={!canManageSsh || !scriptConfig || scriptConfig.source !== "custom" || scriptSaving || scriptLoading || !selectedServerId}
+                          className="bg-sunsetCoral-500 hover:bg-sunsetCoral-600"
+                        >
+                          Standard wiederherstellen
+                        </Button>
+                      </div>
+                      {scriptConfig?.customUpdatedAt && (
+                        <p className="text-xs text-stormGrey-500">
+                          Zuletzt geändert: {formatCreatedAt(scriptConfig.customUpdatedAt)}
+                        </p>
+                      )}
+                    </CardBody>
+                  </Card>
+                </div>
+              )}
+              {canViewDuplicates && (
+                <Card>
+                  <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
+                    <Typography
+                      variant="h6"
+                      color="white"
+                      className="flex items-center justify-between"
+                    >
+                      <span>Doppelte Stacks</span>
+                    </Typography>
+                  </CardHeader>
+                  <CardBody className="flex flex-col gap-4 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <p className="text-sm antialiased font-sans font-light leading-normal text-inherit">
+                          {duplicatesLoading
+                            ? "Analyse läuft…"
+                            : duplicateTotals.groups === 0
+                              ? "Keine Duplikate gefunden"
+                              : `${duplicateTotals.groups} Stack-Namen mit insgesamt ${duplicateTotals.duplicateCount} Duplikaten gefunden`}
+                        </p>
+                        {duplicatesUpdatedAt && !duplicatesLoading && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Stand: {duplicatesUpdatedAt.toLocaleString("de-DE", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit"
+                            })}
+                          </p>
+                        )}
+                      </div>
+
+                      <Button
+                        onClick={() => fetchDuplicates({ silent: false })}
+                        disabled={duplicatesLoading || duplicatesRefreshing || activeCleanupId !== null}
+                      >
+                        Aktualisieren
+                      </Button>
+                    </div>
+                    {duplicatesError && (
+                      <Alert color="red" className="border border-red-200 bg-red-50 text-red-800">
+                        {duplicatesError}
+                      </Alert>
+                    )}
+                    {duplicatesLoading ? (
+                      <div className="flex flex-col gap-4 p-4 text-sm text-blue-gray-500">
+                        Daten werden geladen…
+                      </div>
+                    ) : duplicateTotals.groups === 0 ? (
+                      <div className="rounded-xl border-mossGreen-500/80 bg-mossGreen-900/90 text-mossGreen-100 p-6 text-center text-sm text-white">
+                        Es wurden keine doppelten Stacks gefunden.
+                      </div>
+                    ) : (
+                      <div className="space-y-5">
+                        {duplicates.map((entry) => {
+                          const canonicalId = entry?.canonical?.Id;
+                          const duplicatesForEntry = entry?.duplicates || [];
+                          const isProcessing = activeCleanupId === String(canonicalId);
+
+                          return (
+                            <div
+                              key={canonicalId || entry.name}
+                              className="rounded-xl border border-gray-700 bg-gray-800/70 p-6 shadow"
+                            >
+                              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <h3 className="text-lg font-semibold text-white">{entry.name}</h3>
+                                    <span className="rounded-full bg-amber-500/20 px-3 py-0.5 text-xs font-medium text-amber-200">
+                                      {duplicatesForEntry.length} Duplikat{duplicatesForEntry.length === 1 ? "" : "e"}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-gray-300">
+                                    Behaltener Stack: ID {canonicalId}
+                                  </p>
+                                  <p className="text-xs text-gray-500">
+                                    Typ: {resolveStackType(entry?.canonical?.Type)} • Erstellt: {formatCreatedAt(entry?.canonical?.Created)}
+                                  </p>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDuplicateCleanup(entry)}
+                                  disabled={!canManageDuplicates || isProcessing || duplicatesRefreshing || duplicatesLoading}
+                                  className="self-start rounded-lg bg-sunsetCoral-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sunsetCoral-600 disabled:opacity-50"
+                                >
+                                  {isProcessing ? "Bereinigung läuft…" : `Bereinigen (${duplicatesForEntry.length})`}
+                                </button>
+                              </div>
+
+                              <div className="mt-5 grid gap-3">
+                                {duplicatesForEntry.map((duplicate) => (
+                                  <div
+                                    key={duplicate.Id}
+                                    className="rounded-lg border border-sunsetCoral-500/40 bg-sunsetCoral-900/20 p-4 text-sm text-white"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="font-semibold text-white">ID: {duplicate.Id}</span>
+                                      <span>Typ: {resolveStackType(duplicate.Type)}</span>
+                                      <span>Erstellt: {formatCreatedAt(duplicate.Created)}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
               )}
             </>
           )}
         </CardBody>
       </Card>
-
-      {canViewSsh && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
-            <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
-              <Typography variant="h6" color="white">
-                SSH-Verbindung
-              </Typography>
-            </CardHeader>
-            <CardBody className="flex flex-col gap-3 p-4">
-              <label className="grid gap-1">
-                <span className="text-xs uppercase tracking-wide">Host</span>
-                <input
-                  type="text"
-                  value={sshDraft.host}
-                  onChange={(event) => handleSshDraftChange("host", event.target.value)}
-                  disabled={sshControlsDisabled}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-              </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs uppercase tracking-wide">Port</span>
-                  <input
-                    type="number"
-                    min="1"
-                    value={sshDraft.port}
-                    onChange={(event) => handleSshDraftChange("port", event.target.value)}
-                    disabled={sshControlsDisabled}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  />
-                </label>
-                <label className="grid gap-1">
-                  <span className="text-xs uppercase tracking-wide">Benutzer</span>
-                  <input
-                    type="text"
-                    value={sshDraft.username}
-                    onChange={(event) => handleSshDraftChange("username", event.target.value)}
-                    disabled={sshControlsDisabled}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  />
-                </label>
-              </div>
-              <div className="grid gap-1">
-                <div className="flex items-center justify-between text-xs uppercase tracking-wide">
-                  <label htmlFor="server-ssh-password" className="cursor-pointer">Passwort</label>
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    disabled={sshControlsDisabled}
-                    className="text-[11px] font-medium text-blue-500 transition hover:text-blue-800 disabled:opacity-50"
-                  >
-                    {showPassword ? "Verbergen" : "Anzeigen"}
-                  </button>
-                </div>
-                <input
-                  id="server-ssh-password"
-                  type={showPassword ? "text" : "password"}
-                  value={sshDraft.password}
-                  onChange={(event) => handleSshDraftChange("password", event.target.value)}
-                  disabled={sshControlsDisabled}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  placeholder="Passwort für den SSH-Benutzer"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                {sshPasswordStored && !sshDraft.password && (
-                  <span className="text-[11px] text-stormGrey-500">
-                    Ein Passwort ist gespeichert. Neuer Inhalt ersetzt es oder lösche die Konfiguration unten.
-                  </span>
-                )}
-              </div>
-              <label className="grid gap-1">
-                <span className="text-xs uppercase tracking-wide">Weitere SSH-Argumente</span>
-                <textarea
-                  rows={3}
-                  value={sshDraft.extraSshArgs}
-                  onChange={(event) => handleSshDraftChange("extraSshArgs", event.target.value)}
-                  disabled={sshControlsDisabled}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-[11px] focus:border-blue-500 focus:outline-none"
-                  placeholder="je Zeile ein Argument (optional)"
-                />
-              </label>
-              <div className="mt-2 grid gap-2">
-                <Button onClick={handleSshSaveConfig} disabled={sshControlsDisabled}>
-                  {sshSaving ? "Speichern…" : "SSH-Konfiguration speichern"}
-                </Button>
-                <Button
-                  onClick={handleSshTestConnection}
-                  disabled={sshControlsDisabled}
-                  className="bg-arcticBlue-500 hover:bg-arcticBlue-600"
-                >
-                  {sshTesting ? "Test läuft…" : "Verbindung testen"}
-                </Button>
-                <Button
-                  onClick={handleSshDeleteConfig}
-                  disabled={sshControlsDisabled}
-                  className="bg-sunsetCoral-500 hover:bg-sunsetCoral-600"
-                >
-                  {sshDeleting ? "Löschen…" : "SSH-Einstellungen löschen"}
-                </Button>
-              </div>
-              {sshConfigLoading && (
-                <p className="text-xs text-stormGrey-500">SSH-Konfiguration wird geladen…</p>
-              )}
-              {sshConfigError && (
-                <p className="text-xs text-sunsetCoral-500">{sshConfigError}</p>
-              )}
-              {sshTestResult && (
-                <p className={`text-xs ${sshTestResult.success ? "text-mossGreen-600" : "text-sunsetCoral-500"}`}>
-                  {sshTestResult.success
-                    ? "SSH-Verbindung erfolgreich."
-                    : `SSH-Verbindung fehlgeschlagen: ${sshTestResult.error}`}
-                </p>
-              )}
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader variant="gradient" color="gray" className="mb-5 p-4">
-              <Typography variant="h6" color="white" className="flex items-center justify-between">
-                <span>Update-Skript</span>
-                <span className="text-xs">Quelle: {scriptSourceLabel}</span>
-              </Typography>
-            </CardHeader>
-            <CardBody className="flex flex-col gap-3 p-4">
-              <textarea
-                value={scriptDraft}
-                onChange={(event) => setScriptDraft(event.target.value)}
-                rows={12}
-                disabled={!canManageSsh || scriptSaving || scriptLoading || !selectedServerId}
-                className="w-full rounded-md border border-blue-gray-100 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none"
-              />
-              {scriptLoading && (
-                <p className="text-xs text-stormGrey-500">Skript wird geladen…</p>
-              )}
-              {scriptError && (
-                <p className="text-xs text-sunsetCoral-500">{scriptError}</p>
-              )}
-              <div className="grid gap-2">
-                <Button
-                  onClick={handleScriptSave}
-                  disabled={!canManageSsh || !scriptIsDirty || scriptSaving || scriptLoading || !selectedServerId}
-                >
-                  Speichern
-                </Button>
-                <Button
-                  color="purple"
-                  onClick={handleScriptReset}
-                  disabled={!canManageSsh || !scriptConfig || scriptConfig.source !== "custom" || scriptSaving || scriptLoading || !selectedServerId}
-                  className="bg-sunsetCoral-500 hover:bg-sunsetCoral-600"
-                >
-                  Standard wiederherstellen
-                </Button>
-              </div>
-              {scriptConfig?.customUpdatedAt && (
-                <p className="text-xs text-stormGrey-500">
-                  Zuletzt geändert: {formatCreatedAt(scriptConfig.customUpdatedAt)}
-                </p>
-              )}
-            </CardBody>
-          </Card>
-        </div>
-      )}
     </div>
   );
 }

@@ -78,8 +78,14 @@ const LEVEL_PRIORITY = {
   full: 2
 };
 
-const normalizePermissionLevel = (key, value) =>
-  key === "maintenance-server-delete" && value !== "full" ? "none" : value;
+const isDependencySatisfied = (value, requirement) => {
+  const req = requirement || "!=none";
+  if (req === "!=none") return value !== "none";
+  if (req.startsWith("!=")) return value !== req.substring(2);
+  if (req.startsWith("=")) return value === req.substring(1);
+  if (!req) return true;
+  return value === req;
+};
 
 export function UserGroupDetail() {
   const { groupId } = useParams();
@@ -177,22 +183,28 @@ export function UserGroupDetail() {
           };
         };
 
+        const normalizeGroup = (group, groupIdx = 0) => {
+          const groupItems = Array.isArray(group.items)
+            ? group.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
+            : [];
+          const childGroups = Array.isArray(group.groups)
+            ? group.groups.map((child, childIdx) => normalizeGroup(child, childIdx))
+            : [];
+          return {
+            ...group,
+            sortOrder: typeof group.sortOrder === "number" ? group.sortOrder : groupIdx,
+            items: groupItems,
+            groups: childGroups
+          };
+        };
+
         const normalizedSections = rawSections.map((section, sectionIndex) => {
           const sectionItems = Array.isArray(section.items)
             ? section.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
             : [];
 
           const sectionGroups = Array.isArray(section.groups)
-            ? section.groups.map((group, groupIdx) => {
-              const groupItems = Array.isArray(group.items)
-                ? group.items.map((item, itemIdx) => normalizeItem(item, itemIdx)).filter(Boolean)
-                : [];
-              return {
-                ...group,
-                sortOrder: typeof group.sortOrder === "number" ? group.sortOrder : groupIdx,
-                items: groupItems
-              };
-            })
+            ? section.groups.map((group, groupIdx) => normalizeGroup(group, groupIdx))
             : [];
 
           return {
@@ -515,16 +527,52 @@ export function UserGroupDetail() {
     if (!permissionKey || !canAdjustPermissions || isSuperuserGroup) {
       return;
     }
-    const nextValue = normalizePermissionLevel(permissionKey, value);
-    setPermissionSelection((prev) => {
-      const shouldResetDelete =
-        permissionKey === "maintenance-server-manage" && nextValue !== "full";
-      const shouldResetEdit =
-        permissionKey === "maintenance-server-manage" && nextValue === "none";
-      const shouldResetDeleteFromEdit =
-        permissionKey === "maintenance-server-edit" && nextValue !== "full";
+    const getValueWithDefaults = (key, selectionMap) =>
+      selectionMap[key] ?? permissionDefaults[key] ?? "none";
 
-      if (!shouldResetDelete && !shouldResetEdit && !shouldResetDeleteFromEdit && prev[permissionKey] === nextValue) {
+    const collectAllItems = () => {
+      const items = [];
+      const walkGroups = (groups) => {
+        (groups || []).forEach((group) => {
+          (group.items || []).forEach((item) => items.push(item));
+          if (group.groups) {
+            walkGroups(group.groups);
+          }
+        });
+      };
+      permissionSections.forEach((section) => {
+        (section.items || []).forEach((item) => items.push(item));
+        walkGroups(section.groups);
+      });
+      return items;
+    };
+
+    const allItems = collectAllItems();
+    const itemMap = new Map(allItems.map((item) => [item.key, item]));
+
+    const clampToAllowed = (itemKey, desiredLevel) => {
+      const item = itemMap.get(itemKey);
+      if (!item) return desiredLevel;
+      const allowed = Array.isArray(item.availableLevels) && item.availableLevels.length
+        ? item.availableLevels
+        : LEVEL_OPTIONS.map((opt) => opt.value);
+      if (allowed.includes(desiredLevel)) {
+        return desiredLevel;
+      }
+      // Fallback: wähle niedrigstes erlaubtes Level
+      return allowed.reduce((lowest, candidate) => {
+        return LEVEL_PRIORITY[candidate] < LEVEL_PRIORITY[lowest] ? candidate : lowest;
+      }, allowed[0] || "none");
+    };
+
+    const nextValue = clampToAllowed(permissionKey, value);
+
+
+    setPermissionSelection((prev) => {
+      const currentValue = getValueWithDefaults(permissionKey, prev);
+      const isDowngrade = LEVEL_PRIORITY[nextValue] < LEVEL_PRIORITY[currentValue];
+
+      if (prev[permissionKey] === nextValue) {
         return prev;
       }
 
@@ -533,19 +581,31 @@ export function UserGroupDetail() {
         [permissionKey]: nextValue
       };
 
-      if (shouldResetDelete) {
-        nextState["maintenance-server-delete"] = "none";
-      }
-      if (shouldResetEdit) {
-        nextState["maintenance-server-edit"] = "none";
-      }
-      if (shouldResetDeleteFromEdit) {
-        nextState["maintenance-server-delete"] = "none";
+      // Kaskade: Nur bei Downgrade des auslösenden Rechts abhängige Rechte herabstufen.
+      if (isDowngrade) {
+        let changed = true;
+        while (changed) {
+          changed = false;
+          allItems.forEach((item) => {
+            const dependencies = Array.isArray(item.dependencies) ? item.dependencies : [];
+            if (!dependencies.length) return;
+            const satisfied = dependencies.every((dep) =>
+              isDependencySatisfied(getValueWithDefaults(dep.key, nextState), dep.requiredLevel)
+            );
+            if (!satisfied) {
+              const cascadedValue = clampToAllowed(item.key, nextValue);
+              if (getValueWithDefaults(item.key, nextState) !== cascadedValue) {
+                nextState[item.key] = cascadedValue;
+                changed = true;
+              }
+            }
+          });
+        }
       }
 
       return nextState;
     });
-  }, [canAdjustPermissions, isSuperuserGroup]);
+  }, [canAdjustPermissions, isSuperuserGroup, permissionDefaults, permissionSections]);
 
   const getPermissionValue = useCallback(
     (permissionKey) => {
@@ -559,7 +619,7 @@ export function UserGroupDetail() {
         value = permissionDefaults[permissionKey];
       }
       if (typeof value === "string") {
-        return normalizePermissionLevel(permissionKey, value);
+        return value;
       }
       return value;
     },
@@ -569,12 +629,6 @@ export function UserGroupDetail() {
   const radioIcon = useMemo(
     () => (
       <span className="mx-auto block h-2.5 w-2.5 rounded-full border border-blue-gray-400 bg-black" />
-    ),
-    []
-  );
-  const radioCheckedIcon = useMemo(
-    () => (
-      <span className="mx-auto block h-2.5 w-2.5 rounded-full border border-blue-gray-700 bg-gray-900" />
     ),
     []
   );
@@ -617,9 +671,7 @@ export function UserGroupDetail() {
 
     const rowName = `permission-${ownerKey}-${row.key}`;
     const currentValue = getPermissionValue(row.key) ?? "none";
-    const displayValue = normalizePermissionLevel(row.key, currentValue);
-    const serverManageLevel = getPermissionValue("maintenance-server-manage") ?? "none";
-    const serverEditLevel = getPermissionValue("maintenance-server-edit") ?? "none";
+    const displayValue = currentValue;
     const { addTopBorder = true } = options;
 
     const rowClasses = [
@@ -632,11 +684,7 @@ export function UserGroupDetail() {
     const baseLevels = Array.isArray(row.availableLevels) && row.availableLevels.length
       ? row.availableLevels
       : LEVEL_OPTIONS.map((option) => option.value);
-    const availableLevels = new Set(
-      row.key === "maintenance-server-delete"
-        ? baseLevels.filter((level) => level === "full" || level === "none")
-        : baseLevels
-    );
+    const availableLevels = new Set(baseLevels);
     const levelOptions = LEVEL_OPTIONS;
 
     return (
@@ -648,22 +696,12 @@ export function UserGroupDetail() {
           {levelOptions.map((option) => {
             const optionId = `${rowName}-${option.value}`;
             const checked = displayValue === option.value;
-            const requiresManageFull =
-              row.key === "maintenance-server-delete" &&
-              option.value === "full" &&
-              (LEVEL_PRIORITY[serverManageLevel] ?? 0) < LEVEL_PRIORITY.full;
-            const requiresEditFull =
-              row.key === "maintenance-server-delete" &&
-              option.value === "full" &&
-              (LEVEL_PRIORITY[serverEditLevel] ?? 0) < LEVEL_PRIORITY.full;
             const disabled =
               !availableLevels.has(option.value) ||
               permissionsLoading ||
               savingGroup ||
               !canAdjustPermissions ||
-              isSuperuserGroup ||
-              requiresManageFull ||
-              requiresEditFull;
+              isSuperuserGroup;
 
             return (
               <ListItem
@@ -689,7 +727,6 @@ export function UserGroupDetail() {
                         className: "p-0"
                       }}
                       icon={radioIcon}
-                      checkedIcon={radioCheckedIcon}
                     />
                   </ListItemPrefix>
                   <Typography
@@ -706,6 +743,30 @@ export function UserGroupDetail() {
         </List>
       </div>
     );
+  };
+
+  const groupHasVisibleRows = (grp) => {
+    if (!grp) {
+      return false;
+    }
+    const groupItems = Array.isArray(grp.items) ? grp.items : [];
+    const childGroups = Array.isArray(grp.groups) ? grp.groups : [];
+    if (groupItems.some(isPermissionRowVisible)) {
+      return true;
+    }
+    return childGroups.some(groupHasVisibleRows);
+  };
+
+  const sectionHasVisibleRows = (section) => {
+    if (!section) {
+      return false;
+    }
+    const sectionItems = Array.isArray(section.items) ? section.items : [];
+    const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
+    if (sectionItems.some(isPermissionRowVisible)) {
+      return true;
+    }
+    return sectionGroups.some(groupHasVisibleRows);
   };
 
   return (
@@ -725,9 +786,6 @@ export function UserGroupDetail() {
             </div>
           </div>
         )}
-        <div className="relative h-72 w-full overflow-hidden rounded-xl bg-[url('/img/background-image.png')] bg-cover\tbg-center">
-          <div className="absolute inset-0 h-full w-full bg-gray-900/75" />
-        </div>
         <Card className="mx-3 -mt-16 mb-6 lg:mx-4 border border-blue-gray-100">
           <CardBody className="p-4">
             <div className="mb-10 flex flex-wrap items-center justify-between gap-6">
@@ -893,7 +951,7 @@ export function UserGroupDetail() {
                         Die Superuser-Gruppe besitzt automatisch Vollzugriff auf alle Bereiche. Berechtigungen können hier nicht angepasst werden.
                       </div>
                     ) : !canViewPermissionSettings ? null : (
-                      <div className="rounded-xl border border-blue-gray-100 bg-white shadow-sm">
+                      <>
                         {permissionsLoading && (
                           <div className="border-b border-blue-gray-100 px-4 py-4">
                             <div className="flex items-center gap-3 text-sm text-blue-gray-500">
@@ -913,53 +971,85 @@ export function UserGroupDetail() {
                               Für diese Gruppe sind keine Berechtigungen definiert.
                             </div>
                           ) : (
-                            permissionSections.map((section, sectionIndex) => {
-                              const sectionItems = Array.isArray(section.items) ? section.items : [];
-                              const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
+                            (() => {
+                              const renderedSections = permissionSections
+                                .map((section, sectionIndex) => {
+                                  const sectionItems = Array.isArray(section.items) ? section.items : [];
+                                  const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
 
-                              return (
-                                <div
-                                  key={section.key || sectionIndex}
-                                  className={sectionIndex === 0 ? "" : "border-t border-blue-gray-100"}
-                                >
-                                  <div className="border-b border-blue-gray-100 px-4 py-4">
-                                    <Typography variant="h6" className="text-lg font-semibold text-blue-gray-700">
-                                      {section.title}
-                                    </Typography>
-                                  </div>
-                                  {sectionItems.map((row, rowIndex) =>
-                                    renderPermissionRow(row, section.key || sectionIndex, {
-                                      addTopBorder: rowIndex !== 0
-                                    })
-                                  )}
-                                  {sectionGroups.map((group, groupIdx) => {
-                                    const groupItems = Array.isArray(group.items) ? group.items : [];
-                                    const hasVisibleRows = groupItems.some(isPermissionRowVisible);
+                                  if (!sectionHasVisibleRows(section)) {
+                                    return null;
+                                  }
 
-                                    if (!hasVisibleRows) {
+                                  const renderGroup = (currentGroup, path = `${section.key || sectionIndex}-group`, depth = 0) => {
+                                    if (!groupHasVisibleRows(currentGroup)) {
                                       return null;
                                     }
 
+                                    const groupItems = Array.isArray(currentGroup.items) ? currentGroup.items : [];
+                                    const childGroups = Array.isArray(currentGroup.groups) ? currentGroup.groups : [];
+
                                     return (
-                                      <div key={group.key || `${section.key || sectionIndex}-${groupIdx}`} className="border-t border-blue-gray-100">
-                                        <div className="border-b border-blue-gray-100 px-4 py-3">
-                                          <Typography className="text-sm font-semibold uppercase tracking-wide text-blue-gray-600">
-                                            {group.title}
+                                      <div
+                                        key={currentGroup.key || path}
+                                        className=""
+                                      >
+                                        <div className="border-b border-blue-gray-100 bg-blue-gray-50/80 px-4 py-3">
+                                          <Typography className={`${depth > 0 ? "ml-2" : ""} text-xs font-semibold uppercase tracking-wide text-blue-gray-600`}>
+                                            {currentGroup.title}
                                           </Typography>
                                         </div>
-                                        {groupItems.map((row, rowIndex) =>
-                                          renderPermissionRow(row, group.key || `${section.key || sectionIndex}-${groupIdx}`, {
-                                            addTopBorder: rowIndex !== 0
-                                          })
-                                        )}
+                                        <div className="divide-y divide-blue-gray-100">
+                                          {groupItems.map((row) =>
+                                            renderPermissionRow(row, `${path}-${row.key}`, {
+                                              addTopBorder: false
+                                            })
+                                          )}
+                                          {childGroups.map((childGroup, childIdx) =>
+                                            renderGroup(childGroup, `${path}-${childGroup.key || childIdx}`, depth + 1)
+                                          )}
+                                        </div>
                                       </div>
                                     );
-                                  })}
-                                </div>
-                              );
-                            })
+                                  };
+
+                                  return (
+                                    <div
+                                      key={section.key || sectionIndex}
+                                      className="overflow-hidden rounded-xl border border-blue-gray-100 bg-white shadow-sm"
+                                    >
+                                      <div className="border-b border-blue-gray-100 bg-blue-gray-50/70 px-4 py-3">
+                                        <Typography variant="h6" className="text-lg font-semibold text-blue-gray-700">
+                                          {section.title}
+                                        </Typography>
+                                      </div>
+                                      <div className="divide-y divide-blue-gray-100">
+                                        {sectionItems.map((row) =>
+                                          renderPermissionRow(row, section.key || sectionIndex, {
+                                            addTopBorder: false
+                                          })
+                                        )}
+                                        {sectionGroups.map((group, groupIdx) =>
+                                          renderGroup(group, `${section.key || sectionIndex}-${groupIdx}`, 0)
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                                .filter(Boolean);
+
+                              if (renderedSections.length === 0) {
+                                return (
+                                  <div className="border-b border-blue-gray-100 px-4 py-4 text-sm text-blue-gray-500">
+                                    Für diese Gruppe sind keine Berechtigungen definiert.
+                                  </div>
+                                );
+                              }
+
+                              return <div className="flex flex-col gap-4">{renderedSections}</div>;
+                            })()
                           ))}
-                      </div>
+                      </>
                     )}
                   </>
 

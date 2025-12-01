@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { db } from './index.js';
-import crypto from 'crypto';
 
 const BLUEPRINT_FILENAME = 'dbs';
 const PERMISSION_BLUEPRINT = [
@@ -16,6 +15,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'stacks-redeploy-single',
         label: 'Redeploy einzeln',
         sortOrder: 0,
+        global: false,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: []
@@ -24,6 +24,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'stacks-redeploy-selection',
         label: 'Redeploy Auswahl',
         sortOrder: 1,
+        global: false,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: []
@@ -32,6 +33,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'stacks-redeploy-all',
         label: 'Redeploy Alle',
         sortOrder: 2,
+        global: false,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: []
@@ -48,6 +50,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'logs-access',
         label: 'Bereich & Navigation',
         sortOrder: 0,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         isRequired: 1,
@@ -57,6 +60,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'logs-export',
         label: 'Logs Exportieren',
         sortOrder: 1,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: [
@@ -67,6 +71,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'logs-delete',
         label: 'Logs löschen',
         sortOrder: 2,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: [
@@ -85,6 +90,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'users-access',
         label: 'Bereich & Navigation',
         sortOrder: 0,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         isRequired: 1,
@@ -94,6 +100,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'users-edit',
         label: 'Benutzer bearbeiten',
         sortOrder: 1,
+        global: true,
         defaultLevel: 'read',
         levels: ['full', 'read'],
         dependencies: [
@@ -104,6 +111,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'users-delete',
         label: 'Benutzer löschen',
         sortOrder: 2,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: [
@@ -114,6 +122,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'users-security-phrase',
         label: 'Sicherheitsschlüssel',
         sortOrder: 3,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: [
@@ -132,6 +141,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'user-groups-access',
         label: 'Bereich & Navigation',
         sortOrder: 0,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         isRequired: 1,
@@ -141,6 +151,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'user-groups-edit',
         label: 'Benutzergruppen bearbeiten',
         sortOrder: 1,
+        global: true,
         defaultLevel: 'read',
         levels: ['full', 'read'],
         dependencies: [
@@ -151,6 +162,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'user-groups-delete',
         label: 'Benutzergruppen löschen',
         sortOrder: 2,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         dependencies: [
@@ -169,6 +181,7 @@ const PERMISSION_BLUEPRINT = [
         key: 'maintenance-access',
         label: 'Bereich & Navigation',
         sortOrder: 0,
+        global: true,
         defaultLevel: 'none',
         levels: ['full', 'none'],
         isRequired: 1,
@@ -185,8 +198,9 @@ const PERMISSION_BLUEPRINT = [
             key: 'maintenance-server-manage',
             label: 'Server-Sektion',
             sortOrder: 0,
+            global: true,
             defaultLevel: 'none',
-            levels: ['full', 'read', 'none'],
+            levels: ['full', 'none'],
             dependencies: [
               { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' }
             ]
@@ -195,8 +209,9 @@ const PERMISSION_BLUEPRINT = [
             key: 'maintenance-server-edit',
             label: 'Server bearbeiten',
             sortOrder: 1,
+            global: false,
             defaultLevel: 'none',
-            levels: ['full', 'none'],
+            levels: ['full', 'read', 'none'],
             dependencies: [
               { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
               { dependsOnKey: 'maintenance-server-manage', requiredLevel: '!=none' }
@@ -206,12 +221,65 @@ const PERMISSION_BLUEPRINT = [
             key: 'maintenance-server-delete',
             label: 'Server löschen',
             sortOrder: 2,
+            global: false,
             defaultLevel: 'none',
             levels: ['full', 'none'],
             dependencies: [
               { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
               { dependsOnKey: 'maintenance-server-manage', requiredLevel: 'full' },
               { dependsOnKey: 'maintenance-server-edit', requiredLevel: '=full' }
+            ]
+          }
+        ],
+        groups: [
+          {
+            key: 'maintenance-portainer-group',
+            title: 'Portainer',
+            sortOrder: 1,
+            items: [
+              {
+                key: 'maintenance-ssh-update',
+                label: 'SSH/Update-Skript',
+                sortOrder: 0,
+                global: false,
+                defaultLevel: 'none',
+                levels: ['full', 'read', 'none'],
+                dependencies: [
+                  { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
+                  { dependsOnKey: 'maintenance-server-edit', requiredLevel: '!=none' }
+                ]
+              },
+              {
+                key: 'maintenance-update',
+                label: 'Update durchführen',
+                sortOrder: 1,
+                global: false,
+                defaultLevel: 'none',
+                levels: ['full', 'none'],
+                dependencies: [
+                  { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
+                  { dependsOnKey: 'maintenance-server-edit', requiredLevel: '!=none' }
+                ]
+              }
+            ]
+          },
+          {
+            key: 'maintenance-duplicates-group',
+            title: 'Doppelte Stacks',
+            sortOrder: 2,
+            items: [
+              {
+                key: 'maintenance-duplicates',
+                label: 'Doppelte Stacks',
+                sortOrder: 0,
+                global: false,
+                defaultLevel: 'none',
+                levels: ['full', 'read', 'none'],
+                dependencies: [
+                  { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
+                  { dependsOnKey: 'maintenance-server-edit', requiredLevel: '!=none' }
+                ]
+              }
             ]
           }
         ]
@@ -225,6 +293,7 @@ const PERMISSION_BLUEPRINT = [
             key: 'maintenance-superuser-delete',
             label: 'Superuser löschen',
             sortOrder: 0,
+            global: true,
             defaultLevel: 'none',
             levels: ['full', 'none'],
             dependencies: [
@@ -234,55 +303,17 @@ const PERMISSION_BLUEPRINT = [
         ]
       },
       {
-        key: 'maintenance-portainer-group',
-        title: 'Portainer',
+        key: 'maintenance-mtls-group',
+        title: 'mTLS',
         sortOrder: 2,
         items: [
           {
-            key: 'maintenance-portainer',
-            label: 'Portainer-Sektion',
+            key: 'maintenance-mtls',
+            label: 'mTLS Sektion',
             sortOrder: 0,
+            global: true,
             defaultLevel: 'none',
             levels: ['full', 'none'],
-            dependencies: [
-              { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' }
-            ]
-          },
-          {
-            key: 'maintenance-ssh-update',
-            label: 'SSH/Update-Skript',
-            sortOrder: 1,
-            defaultLevel: 'none',
-            levels: ['full', 'read', 'none'],
-            dependencies: [
-              { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
-              { dependsOnKey: 'maintenance-portainer', requiredLevel: '!=none' }
-            ]
-          },
-          {
-            key: 'maintenance-update',
-            label: 'Update durchführen',
-            sortOrder: 2,
-            defaultLevel: 'none',
-            levels: ['full', 'none'],
-            dependencies: [
-              { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' },
-              { dependsOnKey: 'maintenance-portainer', requiredLevel: '!=none' }
-            ]
-          }
-        ]
-      },
-      {
-        key: 'maintenance-duplicates-group',
-        title: 'Doppelte Stacks',
-        sortOrder: 3,
-        items: [
-          {
-            key: 'maintenance-duplicates',
-            label: 'Doppelte Stacks',
-            sortOrder: 0,
-            defaultLevel: 'none',
-            levels: ['full', 'read', 'none'],
             dependencies: [
               { dependsOnKey: 'maintenance-access', requiredLevel: '!=none' }
             ]
@@ -381,7 +412,13 @@ const tableExists = (tableName) => {
 };
 
 const dropDeprecatedArtifacts = () => {
-  const deprecatedTables = ['user_endpoint_permission_overrides', 'endpoints'];
+  const deprecatedTables = [
+    'user_endpoint_permission_overrides',
+    'endpoints',
+    'server_agents',
+    'agent_tls_material',
+    'agent_bootstrap_tokens'
+  ];
   deprecatedTables.forEach((table) => {
     if (tableExists(table)) {
       db.exec(`DROP TABLE IF EXISTS ${table}`);
@@ -453,19 +490,23 @@ const ensurePermissionSeeds = () => {
   `);
 
   const selectGroup = db.prepare(`
-    SELECT id, title, sort_order
+    SELECT id, title, sort_order, parent_group_id
     FROM permission_groups
     WHERE section_id = ? AND key = ?
     LIMIT 1
   `);
   const insertGroup = db.prepare(`
-    INSERT INTO permission_groups (section_id, key, title, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    INSERT INTO permission_groups (section_id, parent_group_id, key, title, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `);
   const updateGroup = db.prepare(`
     UPDATE permission_groups
-    SET title = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+    SET title = ?, sort_order = ?, parent_group_id = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
+  `);
+  const deleteUnusedGroups = db.prepare(`
+    DELETE FROM permission_groups
+    WHERE key NOT IN (SELECT value FROM json_each(?))
   `);
 
   const selectItem = db.prepare(`
@@ -477,6 +518,7 @@ const ensurePermissionSeeds = () => {
       sort_order,
       default_level,
       available_levels,
+      is_global_scope,
       is_required
     FROM permission_items
     WHERE key = ?
@@ -491,11 +533,12 @@ const ensurePermissionSeeds = () => {
       sort_order,
       default_level,
       available_levels,
+      is_global_scope,
       is_required,
       created_at,
       updated_at
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
     )
   `);
   const updateItem = db.prepare(`
@@ -507,9 +550,23 @@ const ensurePermissionSeeds = () => {
       sort_order = ?,
       default_level = ?,
       available_levels = ?,
+      is_global_scope = ?,
       is_required = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
+  `);
+  const deleteUnusedItems = db.prepare(`
+    DELETE FROM permission_items
+    WHERE key NOT IN (SELECT value FROM json_each(?))
+  `);
+  const deleteOrphanDependencies = db.prepare(`
+    DELETE FROM permission_dependencies
+    WHERE permission_id NOT IN (SELECT id FROM permission_items)
+       OR depends_on_permission_id NOT IN (SELECT id FROM permission_items)
+  `);
+  const deleteOrphanPermissionValues = db.prepare(`
+    DELETE FROM group_permission_values
+    WHERE permission_id NOT IN (SELECT id FROM permission_items)
   `);
 
   const selectDependency = db.prepare(`
@@ -536,6 +593,100 @@ const ensurePermissionSeeds = () => {
   `);
 
   const itemKeyToId = new Map();
+  const dependencyQueue = [];
+  const itemKeys = new Set();
+  const groupKeys = new Set();
+
+  const upsertItem = ({ item, sectionId, groupId = null, sortOrder }) => {
+    const existingItem = selectItem.get(item.key);
+    const itemSortOrder = typeof sortOrder === 'number' ? sortOrder : 0;
+    const levelOptions = Array.isArray(item.levels) && item.levels.length
+      ? item.levels
+      : ['full', 'read', 'none'];
+    const availableLevels = JSON.stringify(levelOptions);
+    const isRequired = item.isRequired ? 1 : 0;
+    const isGlobal = item.global === false ? 0 : 1;
+    const label = item.label || item.key || '';
+
+    if (!existingItem) {
+      const result = insertItem.run(
+        sectionId,
+        groupId,
+        item.key,
+        label,
+        itemSortOrder,
+        item.defaultLevel || 'none',
+        availableLevels,
+        isGlobal,
+        isRequired
+      );
+      itemKeyToId.set(item.key, Number(result.lastInsertRowid));
+      console.log(`ℹ️ Berechtigung ${item.key} ${groupId ? `in Gruppe ${groupId}` : ''} angelegt`);
+    } else {
+      const hasChanges =
+        existingItem.section_id !== sectionId ||
+        existingItem.group_id !== groupId ||
+        existingItem.label !== label ||
+        (existingItem.sort_order ?? itemSortOrder) !== itemSortOrder ||
+        existingItem.default_level !== (item.defaultLevel || 'none') ||
+        existingItem.available_levels !== availableLevels ||
+        Number(existingItem.is_global_scope ?? 1) !== isGlobal ||
+        Number(existingItem.is_required) !== isRequired;
+      updateItem.run(
+        sectionId,
+        groupId,
+        label,
+        itemSortOrder,
+        item.defaultLevel || 'none',
+        availableLevels,
+        isGlobal,
+        isRequired,
+        existingItem.id
+      );
+      itemKeyToId.set(item.key, existingItem.id);
+      if (hasChanges) {
+        console.log(`ℹ️ Berechtigung ${item.key} aktualisiert`);
+      }
+    }
+
+    itemKeys.add(item.key);
+    dependencyQueue.push({ itemKey: item.key, dependencies: item.dependencies || [] });
+  };
+
+  const processGroups = (groups, sectionId, parentGroupId = null) => {
+    const list = Array.isArray(groups) ? groups : [];
+    list.forEach((group, groupIdx) => {
+      const sortOrder = typeof group.sortOrder === 'number' ? group.sortOrder : groupIdx;
+      const existingGroup = selectGroup.get(sectionId, group.key);
+      let groupId;
+      if (!existingGroup) {
+        const result = insertGroup.run(sectionId, parentGroupId, group.key, group.title, sortOrder);
+        groupId = Number(result.lastInsertRowid);
+        console.log(`ℹ️ Berechtigungs-Gruppe ${group.key} in Sektion ${sectionId} angelegt`);
+      } else {
+        const hasGroupChanges =
+          existingGroup.title !== group.title ||
+          (existingGroup.sort_order ?? sortOrder) !== sortOrder ||
+          existingGroup.parent_group_id !== parentGroupId;
+        updateGroup.run(group.title, sortOrder, parentGroupId, existingGroup.id);
+        groupId = existingGroup.id;
+        if (hasGroupChanges) {
+          console.log(`ℹ️ Berechtigungs-Gruppe ${group.key} in Sektion ${sectionId} aktualisiert`);
+        }
+      }
+
+      groupKeys.add(group.key);
+
+      const groupItems = Array.isArray(group.items) ? group.items : [];
+      groupItems.forEach((item, itemIdx) => {
+        upsertItem({ item, sectionId, groupId, sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : itemIdx });
+      });
+
+      if (group.groups) {
+        processGroups(group.groups, sectionId, groupId);
+      }
+    });
+  };
 
   PERMISSION_BLUEPRINT.forEach((section, sectionIndex) => {
     const existingSection = selectSection.get(section.key);
@@ -568,190 +719,41 @@ const ensurePermissionSeeds = () => {
 
     const sectionItems = Array.isArray(section.items) ? section.items : [];
     sectionItems.forEach((item, itemIdx) => {
-      const existingItem = selectItem.get(item.key);
-      const sortOrder = typeof item.sortOrder === 'number' ? item.sortOrder : itemIdx;
-      const levelOptions = Array.isArray(item.levels) && item.levels.length
-        ? item.levels
-        : ['full', 'read', 'none'];
-      const availableLevels = JSON.stringify(levelOptions);
-      const isRequired = item.isRequired ? 1 : 0;
-      if (!existingItem) {
-        const result = insertItem.run(
-          sectionId,
-          null,
-          item.key,
-          item.label,
-          sortOrder,
-          item.defaultLevel || 'none',
-          availableLevels,
-          isRequired
-        );
-        itemKeyToId.set(item.key, Number(result.lastInsertRowid));
-        console.log(`ℹ️ Berechtigung ${item.key} angelegt`);
-      } else {
-        const hasChanges =
-          existingItem.section_id !== sectionId ||
-          existingItem.group_id !== null ||
-          existingItem.label !== item.label ||
-          (existingItem.sort_order ?? sortOrder) !== sortOrder ||
-          existingItem.default_level !== (item.defaultLevel || 'none') ||
-          existingItem.available_levels !== availableLevels ||
-          Number(existingItem.is_required) !== isRequired;
-        updateItem.run(
-          sectionId,
-          null,
-          item.label,
-          sortOrder,
-          item.defaultLevel || 'none',
-          availableLevels,
-          isRequired,
-          existingItem.id
-        );
-        itemKeyToId.set(item.key, existingItem.id);
-        if (hasChanges) {
-          console.log(`ℹ️ Berechtigung ${item.key} aktualisiert`);
-        }
+      upsertItem({ item, sectionId, groupId: null, sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : itemIdx });
+    });
+
+    processGroups(section.groups, sectionId, null);
+  });
+
+  dependencyQueue.forEach(({ itemKey, dependencies }) => {
+    const permissionId = itemKeyToId.get(itemKey);
+    if (!permissionId) return;
+    dependencies.forEach((dependency) => {
+      const dependsId = itemKeyToId.get(dependency.dependsOnKey);
+      if (!dependsId) return;
+      const existing = selectDependency.get(permissionId, dependsId);
+      const requiredLevel = dependency.requiredLevel ?? null;
+      if (!existing) {
+        insertDependency.run(permissionId, dependsId, requiredLevel);
+        console.log(`ℹ️ Abhängigkeit ${itemKey} -> ${dependency.dependsOnKey} angelegt`);
+      } else if (existing.required_level !== requiredLevel) {
+        updateDependency.run(requiredLevel, existing.id);
+        console.log(`ℹ️ Abhängigkeit ${itemKey} -> ${dependency.dependsOnKey} aktualisiert`);
       }
     });
-
-    const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
-    sectionGroups.forEach((group, groupIdx) => {
-      const existingGroup = selectGroup.get(sectionId, group.key);
-      const sortOrder = typeof group.sortOrder === 'number' ? group.sortOrder : groupIdx;
-      let groupId;
-      if (!existingGroup) {
-        const result = insertGroup.run(sectionId, group.key, group.title, sortOrder);
-        groupId = Number(result.lastInsertRowid);
-        console.log(`ℹ️ Berechtigungs-Gruppe ${group.key} in Sektion ${section.key} angelegt`);
-      } else {
-        const hasGroupChanges =
-          existingGroup.title !== group.title ||
-          (existingGroup.sort_order ?? sortOrder) !== sortOrder;
-        updateGroup.run(group.title, sortOrder, existingGroup.id);
-        groupId = existingGroup.id;
-        if (hasGroupChanges) {
-          console.log(`ℹ️ Berechtigungs-Gruppe ${group.key} in Sektion ${section.key} aktualisiert`);
-        }
-      }
-      const groupItems = Array.isArray(group.items) ? group.items : [];
-      groupItems.forEach((item, itemIdx) => {
-        const existingItem = selectItem.get(item.key);
-        const itemSortOrder = typeof item.sortOrder === 'number' ? item.sortOrder : itemIdx;
-        const levelOptions = Array.isArray(item.levels) && item.levels.length
-          ? item.levels
-          : ['full', 'read', 'none'];
-        const availableLevels = JSON.stringify(levelOptions);
-        const isRequired = item.isRequired ? 1 : 0;
-        if (!existingItem) {
-          const result = insertItem.run(
-            sectionId,
-            groupId,
-            item.key,
-            item.label,
-            itemSortOrder,
-            item.defaultLevel || 'none',
-            availableLevels,
-            isRequired
-          );
-          itemKeyToId.set(item.key, Number(result.lastInsertRowid));
-           console.log(`ℹ️ Berechtigung ${item.key} in Gruppe ${group.key} angelegt`);
-        } else {
-          const hasChanges =
-            existingItem.section_id !== sectionId ||
-            existingItem.group_id !== groupId ||
-            existingItem.label !== item.label ||
-            (existingItem.sort_order ?? itemSortOrder) !== itemSortOrder ||
-            existingItem.default_level !== (item.defaultLevel || 'none') ||
-            existingItem.available_levels !== availableLevels ||
-            Number(existingItem.is_required) !== isRequired;
-          updateItem.run(
-            sectionId,
-            groupId,
-            item.label,
-            itemSortOrder,
-            item.defaultLevel || 'none',
-            availableLevels,
-            isRequired,
-            existingItem.id
-          );
-          itemKeyToId.set(item.key, existingItem.id);
-          if (hasChanges) {
-            console.log(`ℹ️ Berechtigung ${item.key} in Gruppe ${group.key} aktualisiert`);
-          }
-        }
-      });
-    });
   });
 
-  PERMISSION_BLUEPRINT.forEach((section) => {
-    const sectionItems = Array.isArray(section.items) ? section.items : [];
-    sectionItems.forEach((item) => {
-      const permissionId = itemKeyToId.get(item.key);
-      if (!permissionId) return;
-      (item.dependencies || []).forEach((dependency) => {
-        const dependsId = itemKeyToId.get(dependency.dependsOnKey);
-        if (!dependsId) return;
-        const existing = selectDependency.get(permissionId, dependsId);
-        const requiredLevel = dependency.requiredLevel ?? null;
-        if (!existing) {
-          insertDependency.run(permissionId, dependsId, requiredLevel);
-          console.log(
-            `ℹ️ Abhängigkeit ${item.key} -> ${dependency.dependsOnKey} angelegt`
-          );
-        } else if (existing.required_level !== requiredLevel) {
-          updateDependency.run(requiredLevel, existing.id);
-          console.log(
-            `ℹ️ Abhängigkeit ${item.key} -> ${dependency.dependsOnKey} aktualisiert`
-          );
-        }
-      });
-    });
-
-    const sectionGroups = Array.isArray(section.groups) ? section.groups : [];
-    sectionGroups.forEach((group) => {
-      const groupItems = Array.isArray(group.items) ? group.items : [];
-      groupItems.forEach((item) => {
-        const permissionId = itemKeyToId.get(item.key);
-        if (!permissionId) return;
-        (item.dependencies || []).forEach((dependency) => {
-          const dependsId = itemKeyToId.get(dependency.dependsOnKey);
-          if (!dependsId) return;
-          const requiredLevel = dependency.requiredLevel ?? null;
-          const existing = selectDependency.get(permissionId, dependsId);
-        if (!existing) {
-          insertDependency.run(permissionId, dependsId, requiredLevel);
-          console.log(
-            `ℹ️ Abhängigkeit ${item.key} -> ${dependency.dependsOnKey} angelegt`
-          );
-        } else if (existing.required_level !== requiredLevel) {
-          updateDependency.run(requiredLevel, existing.id);
-          console.log(
-            `ℹ️ Abhängigkeit ${item.key} -> ${dependency.dependsOnKey} aktualisiert`
-          );
-        }
-      });
-    });
-    });
-  });
-};
-
-const ensureServerAgentEntries = () => {
-  if (!tableExists('server_agents')) return;
-  const servers = db.prepare('SELECT id FROM servers').all();
-  const insertAgent = db.prepare(`
-    INSERT OR IGNORE INTO server_agents (server_id, agent_url, agent_token, created_at, updated_at)
-    VALUES (?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `);
-  const updateMissingToken = db.prepare(`
-    UPDATE server_agents
-    SET agent_token = ?
-    WHERE server_id = ? AND (agent_token IS NULL OR agent_token = '')
-  `);
-  servers.forEach((server) => {
-    const token = `sp_${crypto.randomBytes(16).toString('hex')}`;
-    insertAgent.run(server.id, token);
-    updateMissingToken.run(token, server.id);
-  });
+  // Cleanup obsolete entries
+  if (itemKeys.size > 0) {
+    const itemKeyJson = JSON.stringify(Array.from(itemKeys));
+    deleteOrphanDependencies.run();
+    deleteOrphanPermissionValues.run();
+    deleteUnusedItems.run(itemKeyJson);
+  }
+  if (groupKeys.size > 0) {
+    const groupKeyJson = JSON.stringify(Array.from(groupKeys));
+    deleteUnusedGroups.run(groupKeyJson);
+  }
 };
 
 export const ensureDatabaseSchema = () => {
@@ -762,7 +764,6 @@ export const ensureDatabaseSchema = () => {
 
     dropDeprecatedArtifacts();
     ensureTablesAndColumns(tableDefinitions);
-    ensureServerAgentEntries();
     ensureIndexes(indexDefinitions);
     ensurePermissionSeeds();
   } catch (error) {

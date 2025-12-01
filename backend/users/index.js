@@ -75,6 +75,48 @@ const insertMembershipForUser = db.prepare(`
   VALUES (?, ?)
 `);
 
+const selectServerByIdForAssignment = db.prepare('SELECT id, name, url FROM servers WHERE id = ?');
+
+const selectAssignmentsByUser = db.prepare(`
+  SELECT
+    usa.user_id,
+    usa.server_id,
+    usa.group_id,
+    usa.use_global_group,
+    usa.created_at,
+    usa.updated_at,
+    s.name AS server_name,
+    s.url AS server_url,
+    g.name AS group_name
+  FROM user_server_assignments usa
+  JOIN servers s ON s.id = usa.server_id
+  LEFT JOIN user_groups g ON g.id = usa.group_id
+  WHERE usa.user_id = ?
+  ORDER BY s.name ASC, usa.server_id ASC
+`);
+
+const upsertUserServerAssignment = db.prepare(`
+  INSERT INTO user_server_assignments (
+    user_id,
+    server_id,
+    group_id,
+    use_global_group,
+    created_at,
+    updated_at
+  ) VALUES (
+    ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  )
+  ON CONFLICT(user_id, server_id) DO UPDATE SET
+    group_id = excluded.group_id,
+    use_global_group = excluded.use_global_group,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+const deleteUserServerAssignments = db.prepare(`
+  DELETE FROM user_server_assignments
+  WHERE user_id = ?
+`);
+
 const selectSecurityPhraseByUsername = db.prepare(`
   SELECT
     id,
@@ -881,6 +923,176 @@ export function updateUserDetails(userId, { username, email, password, avatarCol
   });
 
   return updatedUser;
+}
+
+const sanitizeAssignment = (row) => ({
+  userId: row.user_id,
+  serverId: row.server_id,
+  groupId: row.group_id ?? null,
+  groupName: row.group_name || null,
+  serverName: row.server_name || null,
+  serverUrl: row.server_url || null,
+  useGlobalGroup: Boolean(row.use_global_group),
+  createdAt: row.created_at || null,
+  updatedAt: row.updated_at || null
+});
+
+export function getUserServerAssignments(userId) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const existingUser = selectUserCredentialsById.get(numericUserId);
+  if (!existingUser) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  const superuserMembership = isUserInGroupStatement.get(numericUserId, SUPERUSER_GROUP_NAME);
+  if (superuserMembership?.has_membership) {
+    return [];
+  }
+
+  const rows = selectAssignmentsByUser.all(numericUserId);
+  return rows.map(sanitizeAssignment);
+}
+
+export function setUserServerAssignments(userId, assignments = [], options = {}) {
+  const actor = options.actor || null;
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  const userRecord = selectUserCredentialsById.get(numericUserId);
+  if (!userRecord) {
+    const error = new Error('USER_NOT_FOUND');
+    error.code = 'USER_NOT_FOUND';
+    throw error;
+  }
+
+  const superuserMembership = isUserInGroupStatement.get(numericUserId, SUPERUSER_GROUP_NAME);
+  if (superuserMembership?.has_membership) {
+    const error = new Error('USER_SUPERUSER_PROTECTED');
+    error.code = 'USER_SUPERUSER_PROTECTED';
+    throw error;
+  }
+
+  const normalizedList = Array.isArray(assignments) ? assignments : [];
+  const missingServers = [];
+  const missingGroups = [];
+  const normalizedAssignments = new Map();
+
+  normalizedList.forEach((entry) => {
+    const rawServerId = entry?.serverId ?? entry?.server_id ?? entry?.id;
+    const serverId = Number(rawServerId);
+    if (!Number.isFinite(serverId) || serverId <= 0) {
+      return;
+    }
+
+    const serverRow = selectServerByIdForAssignment.get(serverId);
+    if (!serverRow) {
+      missingServers.push(serverId);
+      return;
+    }
+
+    const useGlobalGroup =
+      entry?.useGlobalGroup === true ||
+      entry?.use_global_group === 1 ||
+      entry?.use_global_group === true;
+
+    const rawGroupId = entry?.groupId ?? entry?.group_id;
+    const groupId = Number(rawGroupId);
+    const normalizedGroupId = Number.isFinite(groupId) && groupId > 0 ? groupId : null;
+
+    if (!useGlobalGroup && normalizedGroupId === null) {
+      missingGroups.push(serverId);
+      return;
+    }
+
+    if (normalizedGroupId !== null) {
+      const groupRow = selectGroupById.get(normalizedGroupId);
+      if (!groupRow) {
+        missingGroups.push(serverId);
+        return;
+      }
+    }
+
+    normalizedAssignments.set(serverId, {
+      serverId,
+      groupId: normalizedGroupId,
+      useGlobalGroup
+    });
+  });
+
+  if (missingServers.length > 0) {
+    const error = new Error('SERVER_NOT_FOUND');
+    error.code = 'SERVER_NOT_FOUND';
+    error.missingServerIds = missingServers;
+    throw error;
+  }
+
+  if (missingGroups.length > 0) {
+    const error = new Error('GROUP_NOT_FOUND');
+    error.code = 'GROUP_NOT_FOUND';
+    error.missingServerIds = missingGroups;
+    throw error;
+  }
+
+  const previousAssignments = selectAssignmentsByUser.all(numericUserId);
+
+  const applyAssignments = db.transaction(() => {
+    deleteUserServerAssignments.run(numericUserId);
+    Array.from(normalizedAssignments.values()).forEach((assignment) => {
+      upsertUserServerAssignment.run(
+        numericUserId,
+        assignment.serverId,
+        assignment.groupId,
+        assignment.useGlobalGroup ? 1 : 0
+      );
+    });
+  });
+
+  applyAssignments();
+
+  const updatedAssignments = selectAssignmentsByUser.all(numericUserId);
+  const sanitizedUpdated = updatedAssignments.map(sanitizeAssignment);
+
+  logEvent({
+    category: 'benutzer',
+    eventType: 'benutzer-server-zuordnung-aktualisiert',
+    action: 'aktualisieren',
+    status: 'erfolgreich',
+    entityType: 'benutzer',
+    entityId: String(numericUserId),
+    entityName: userRecord?.username ?? `ID ${numericUserId}`,
+    message: `Serverzuordnungen für Benutzer "${userRecord?.username ?? numericUserId}" aktualisiert`,
+    metadata: {
+      assignments: sanitizedUpdated.map((entry) => ({
+        serverId: entry.serverId,
+        serverName: entry.serverName,
+        useGlobalGroup: entry.useGlobalGroup,
+        groupId: entry.groupId,
+        groupName: entry.groupName
+      })),
+      previousAssignments: previousAssignments.map((entry) => ({
+        serverId: entry.server_id,
+        serverName: entry.server_name,
+        useGlobalGroup: Boolean(entry.use_global_group),
+        groupId: entry.group_id,
+        groupName: entry.group_name || null
+      }))
+    },
+    ...resolveActorFields(actor)
+  });
+
+  return sanitizedUpdated;
 }
 
 const deleteMembershipsStatement = db.prepare(`

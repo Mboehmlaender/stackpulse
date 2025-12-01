@@ -1,6 +1,11 @@
 # Benutzergruppen & Rechte
 
-Dieser Bereich verwaltet Rollenmodelle und bestimmt, welche Aktionen Benutzer:innen durchführen dürfen. Du benötigst `user-groups-access` zum Lesen sowie `user-groups-edit`/`user-groups-delete` für Änderungen.
+Dieser Bereich verwaltet Rollenmodelle und bestimmt, welche Aktionen Benutzer:innen durchführen dürfen.
+
+**Relevante Rechte**
+- `Bereich & Navigation (Benutzergruppen)`
+- `Benutzergruppen bearbeiten`
+- `Benutzergruppen löschen`
 
 ## Gruppen anlegen
 1. Button **Gruppe erstellen** wählen.
@@ -23,7 +28,7 @@ Der Rechte-Dialog zeigt die gesamte Permissionstruktur in Kategorien (Stacks, Lo
    - **none** – kein Zugriff
    - **read** – Zugriff auf Ansicht/Lesen
    - **full** – volle Bearbeitungsrechte
-3. Abhängigkeiten werden automatisch hervorgehoben. Beispiel: Um `logs-delete` nutzen zu dürfen, muss `logs-access` mindestens `full` sein.
+3. Abhängigkeiten werden automatisch hervorgehoben. Beispiel: Um `Logs löschen` nutzen zu dürfen, muss `Bereich & Navigation (Logs)` mindestens `Vollzugriff` sein.
 4. Speichern bestätigt die Anpassungen. StackPulse aktualisiert sofort die effektiven Rechte aller Benutzer in dieser Gruppe.
 
 ## Benutzer zu Gruppen hinzufügen
@@ -36,6 +41,6 @@ Der Rechte-Dialog zeigt die gesamte Permissionstruktur in Kategorien (Stacks, Lo
 - Löschen entfernt keine Benutzer, aber deren effektive Rechte können sich dadurch verringern.
 
 ## Best Practices
-- Erstelle zunächst eine Basisgruppe (z. B. „Viewer“) mit `read`-Rechten für Stacks und Logs.
+- Erstelle zunächst eine Basisgruppe (z. B. „Viewer“) mit Leserechten für Stacks und Logs.
 - Verwende separate Gruppen für sensible Aktionen wie Wartung oder Superuser-Verwaltung.
 - Nutze sprechende Beschreibungen, damit Kolleg:innen sofort erkennen, wofür eine Gruppe gedacht ist.

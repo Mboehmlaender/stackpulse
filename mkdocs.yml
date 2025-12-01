@@ -12,9 +12,12 @@ nav:
       - Wartung: user-guide/maintenance.md
       - Benutzer: user-guide/users.md
       - Benutzergruppen & Rechte: user-guide/groups.md
-  - Technik:
+  - Getting Started:
       - Getting Started: getting-started.md
+      - Umgebungsvariablen: environment.md
+  - Technik:
       - Architektur: architecture.md
       - Backend & API: backend.md
       - Frontend: frontend.md
+      - Lokale Entwicklung: local-dev.md
       - Operations & Wartung: operations.md

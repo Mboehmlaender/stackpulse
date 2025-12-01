@@ -2,6 +2,10 @@
 
 Dieser Abschnitt deckt typische Aufgaben für Betriebsteams ab – von Backups über Wartungsmodus bis zu Störungssuche.
 
+**Relevante Rechte**
+- `Superuser löschen`
+- `Bereich & Navigation (Wartung)`
+
 ## Laufender Betrieb
 - **Services überwachen**: StackPulse stellt nur einen Prozess bereit (Node.js/Express). Nutze Systemd/Docker Healthchecks, indem du regelmäßig `/api/auth/session` (für Auth) oder `/api/maintenance/update-status` (für Backend + DB) abfragst.
 - **Ports**: Standardmäßig lauscht nur Port 4001 (HTTP + Socket.IO). Hinter einem Reverse Proxy sollte TLS terminiert werden.
@@ -13,12 +17,12 @@ Dieser Abschnitt deckt typische Aufgaben für Betriebsteams ab – von Backups �
 3. **Restore**: Ersetze die Datei im Volume und starte die App neu. Beim ersten Start führt `ensureDatabaseSchema` automatisch eventuelle Nachmigrationen aus.
 
 ## Benutzer- & Rechteverwaltung
-- Superuser können über `/api/auth/superuser/*` oder im UI registriert werden. Entfernen ist nur mit `maintenance-superuser-delete` möglich.
+- Superuser können über `/api/auth/superuser/*` oder im UI registriert werden. Entfernen ist nur mit `Superuser löschen` möglich.
 - Benutzerkonten lassen sich temporär deaktivieren (`/api/users/:id/active`). Die Historie bleibt erhalten.
 - Sicherheitsphrasen sind notwendig für Passwort-Reset. Admins können neue Phrasen erzeugen (`/api/users/:id/security-phrase/renew`), müssen diese aber dem Benutzer sicher zustellen.
 
 ## Wartungsmodus & Updates
-- Maintenance Mode aktivieren: `curl -X POST http://host:4001/api/maintenance/mode -H 'Content-Type: application/json' -d '{"active":true,"message":"Cluster Upgrade"}'` (Permission `maintenance-access`). Das UI informiert alle Nutzer und blockiert Redeploys.
+- Maintenance Mode aktivieren: `curl -X POST http://host:4001/api/maintenance/mode -H 'Content-Type: application/json' -d '{"active":true,"message":"Cluster Upgrade"}'` (Recht `Bereich & Navigation (Wartung)`). Das UI informiert alle Nutzer und blockiert Redeploys.
 - SSH-/Update-Setup: Hinterlege Host, Port, Benutzer, Passwort (optional) und zusätzliche SSH-Argumente. Passwörter werden verschlüsselt gespeichert (`PORTAINER_SSH_SECRET`).
 - Update-Skript: Das Default-Skript (`DEFAULT_PORTAINER_UPDATE_SCRIPT`) führt `docker stop`, `docker run` etc. aus. Du kannst im UI oder via API ein eigenes Skript setzen – wird erst aktualisiert, wenn kein Update läuft.
 - Update anstoßen: `POST /api/maintenance/portainer-update` triggert die SSH-Kommandos. Status & Logausgaben können über `/api/maintenance/update-status` überwacht werden.

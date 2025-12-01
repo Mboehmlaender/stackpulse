@@ -1,80 +1,61 @@
 # Getting Started
 
-Dieser Leitfaden hilft dir, StackPulse lokal oder als Container aufzusetzen und die ersten Schritte im UI abzuschließen.
+Dieser Leitfaden beschreibt ausschließlich den Docker-Deploy über die bereitgestellten GHCR-Images und die anschließende Einrichtung im UI.
 
 ## Voraussetzungen
-- Node.js **>= 20** und npm für lokale Entwicklung
-- Docker & Docker Compose (optional aber empfohlen für Deployment)
-- Zugriff auf eine **Portainer Business Edition** samt API-Key
-- Shell-Zugang zum Host, auf dem StackPulse laufen soll
+- Docker & Docker Compose
+- Portainer-Instanz (Business Edition empfohlen; bei Community/Edge zusätzlich Agent einsetzen)
 
-## Repository & Abhängigkeiten
-```bash
-# Repository klonen
-# git clone <repo-url>
-cd stackpulse
+## Zentrale Umgebungsvariablen (Kurzfassung)
+| Variable | Erforderlich | Beschreibung |
+|----------|--------------|--------------|
+| `PORTAINER_URL` | Nein | Basis-URL zu Portainer; kann im Setup-UI hinterlegt werden, falls nicht gesetzt. |
+| `PORTAINER_API_KEY` | Nein | API-Key; kann im Setup gespeichert werden (wird verschlüsselt). |
+| `PORTAINER_SERVER_NAME` | Nein | Anzeige-Name für den initialen Servereintrag. |
+| `PORTAINER_API_SECRET` | Nein | AES-Schlüssel für gespeicherte API-Keys; setze stabilen Wert, sonst muss der Key neu eingegeben werden. |
+| `SUPERUSER_USERNAME`, `SUPERUSER_EMAIL`, `SUPERUSER_PASSWORD` | Nein | Legt automatisch einen Superuser an, falls noch keiner existiert; sonst im Setup-UI anlegen. |
+| `SELF_STACK_ID` | Nein | ID des StackPulse-Stacks; schützt vor Self-Redeploy. |
+| `AUTH_COOKIE_NAME`, `AUTH_SESSION_TTL_MS`, `AUTH_COOKIE_SECURE` | Nein | Session/Cookie-Tuning (Name, Dauer, Secure-Flag). |
+| `SECURITY_PHRASE_SECRET` | Nein | Secret für verschlüsselte Sicherheitsphrasen; stabil halten, sonst Phrasen neu verteilen. |
+| `PORTAINER_SSH_SECRET` | Nein | Secret für verschlüsselte SSH-Passwörter; stabil halten, sonst Passwort neu setzen. |
+| `DISPLAY` | Nein | Wird an Update-Childprozesse weitergereicht (Default `:9999`). |
 
-# Skript ausführbar machen
-chmod +x scripts/start-dev.sh
-```
+Weitere Variablen (Agent, Registry, mTLS) findest du im Detail unter [Umgebungsvariablen](environment.md). Einstellungen wie Server-URL/API-Key, SSH-Config oder Update-Skript kannst du alternativ im UI (Setup/Wartung) verwalten.
 
-## Lokale Dev-Umgebung
-Das Skript `scripts/start-dev.sh` richtet Backend und Frontend automatisch ein:
-
-1. Backend: `npm install`, `npm run migrate` (erstellt/aktualisiert `backend/data/stackpulse.db`), `npm start`
-2. Frontend: `npm install`, `npm run dev` (Port 5173) und ein einmaliges `npm run build`, um statische Assets ins Backend zu spiegeln
-
-Nach erfolgreichem Start:
-- Frontend dev server: http://localhost:5173
-- Backend API & statische Assets: http://localhost:4001
-
-Zum Stoppen STRG+C verwenden.
-
-## Manuelles Starten
-```bash
-# Backend
-cd backend
-npm install
-npm run migrate
-PORTAINER_URL=https://portainer.local npm start
-
-# Frontend in zweiter Shell
-cd frontend
-npm install
-npm run dev
-```
-Das Backend liest Umgebungsvariablen beim Start. Alternativ kannst du eine `.env` neben `backend/index.js` anlegen.
-
-## Zentrale Umgebungsvariablen
-| Variable | Beschreibung |
-|----------|--------------|
-| `PORTAINER_URL` | Basis-URL zu deiner Portainer-Instanz (inkl. Protokoll). Kann später im Setup-UI überschrieben werden. |
-| `PORTAINER_API_KEY` | API-Key für Portainer. Wird in der DB verschlüsselt abgelegt, sobald du ihn im Setup speicherst. |
-| `PORTAINER_SERVER_NAME` | Optionaler Anzeigename für den Server während des Setups. |
-| `PORTAINER_API_SECRET` | Überschreibt den Schlüssel, der zur Verschlüsselung des API-Keys verwendet wird. |
-| `SUPERUSER_USERNAME`, `SUPERUSER_EMAIL`, `SUPERUSER_PASSWORD` | Legt einen Superuser automatisch beim Start an (falls nicht vorhanden). |
-| `SELF_STACK_ID` | Stack-ID von StackPulse selbst. Wird genutzt, um eigene Redeploys zu blockieren. |
-| `AUTH_COOKIE_NAME`, `AUTH_SESSION_TTL_MS`, `AUTH_COOKIE_SECURE` | Feintuning für die Session-Verwaltung der API. |
-| `SECURITY_PHRASE_SECRET` | Seed für die Generierung kryptografischer Sicherheitsphrasen. |
-| `PORTAINER_SSH_SECRET` | Secret für SSH-Passwortverschlüsselung (Wartungs-Update). |
-| `DISPLAY` | Wird an Kindprozesse weitergereicht, wenn Portainer-Updates ausgelöst werden müssen (Default `:9999`). |
-
-Weitere Einstellungen (SSH-Config, Update-Skripte) verwaltest du später direkt im Maintenance-Bereich des UI.
+**Hinweis zu Secrets:**  
+- `SECURITY_PHRASE_SECRET` und `PORTAINER_SSH_SECRET` steuern die AES-256-GCM-Verschlüsselung von Sicherheitsphrasen bzw. hinterlegten SSH-Passwörtern.  
+- Wenn sie nicht gesetzt sind, nutzt StackPulse fixe Fallbacks (`stackpulse-security-phrase-secret` bzw. `stackpulse-portainer-ssh-secret` / API-Key). Setze in Produktion eigene, stabile Werte – ein späterer Secret-Wechsel macht zuvor gespeicherte Phrasen/Passwörter unlesbar.  
+- Eine vollständige Übersicht aller Variablen (inkl. Agent) findest du unter „Technik → Umgebungsvariablen“.
 
 ## Ersteinrichtung im UI
-1. Öffne das Frontend (`/setup` führt dich automatisch durch den Wizard).
-2. Lege den Portainer-Server und den zugehörigen API-Key an – StackPulse testet die Verbindung per `/api/setup/test-portainer`.
+1. Öffne das Frontend.
+2. Lege den Portainer-Server und den zugehörigen API-Key an (der Wizard führt durch den Test).
 3. Registriere einen Superuser oder verwende den per Umgebungsvariablen automatisch angelegten Account.
 4. Nach erfolgreicher Einrichtung kannst du dich anmelden und erhältst Zugriff auf Dashboard, Logs, Benutzer & Wartung.
 
-## Docker-Deployment
+## Docker Run (Single Container)
+```bash
+docker run -d \
+  -p 4001:4001 \
+  -e PORTAINER_URL=https://portainer.example.com \
+  -e PORTAINER_API_KEY=xxxx \
+  -e SUPERUSER_USERNAME=admin \
+  -e SUPERUSER_EMAIL=admin@example.com \
+  -e SUPERUSER_PASSWORD=changeme \
+  -e SELF_STACK_ID=123 \
+  -e SECURITY_PHRASE_SECRET=$(openssl rand -hex 32) \
+  -e PORTAINER_SSH_SECRET=$(openssl rand -hex 32) \
+  -v stackpulse_data:/app/backend/data \
+  ghcr.io/mboehmlaender/stackpulse:latest
+```
+Das Volume `stackpulse_data` persistiert die SQLite-Datenbank. Passen Sie Secrets und Ports an Ihre Umgebung an; weitere Variablen siehe Kapitel „Umgebungsvariablen“.
+
+## Docker-Deployment (Compose)
 ```yaml
 # docker-compose.yml (Auszug)
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/mboehmlaender/stackpulse:latest
     ports:
       - "4001:4001"
     volumes:
@@ -91,13 +72,8 @@ volumes:
   stackpulse_data:
 ```
 
-1. `docker compose up -d --build`
-2. Das Frontend ist anschließend unter Port 4001 (via Backend `public/`) erreichbar.
+1. `docker compose up -d`
+2. Das Frontend ist anschließend unter Port 4001 erreichbar.
 3. Datenbank & Einstellungen liegen im benannten Volume `stackpulse_data`.
-
-## Datenbank & Migration
-- Datei: `backend/data/stackpulse.db`
-- Migration: `npm run migrate` (führt `backend/db/ensure.js` aus und erzeugt Schema, Rechte, Defaults)
-- Backup: Datei oder Volume regelmäßig sichern; enthält Benutzer, Logs und gespeicherte Secrets.
 
 Damit bist du bereit für die tieferen Kapitel zu Architektur sowie Backend- und Frontend-Details.

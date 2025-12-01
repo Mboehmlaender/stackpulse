@@ -8,6 +8,7 @@ StackPulse ist eine eigenständige Web-Anwendung, die die Portainer Business Edi
 - **Auditierbare Historie** durch strukturierte Event-Logs mit Export-, Lösch- und Filterfunktionen
 - **Feingranulare Rechteverwaltung** mit Gruppenrechten, Superuser-Handling und Sicherheitsphrasen
 - **Wartungsautomatisierung** (SSH Update-Skripte, Maintenance-Mode) ohne direkten Portainer-Zugang
+- **Agent-Integration** (mTLS) für Portainer Community/Edge, um Stacks & Versionen auch ohne Business-API auszulesen
 - **Bereitstellung als Docker-Image** sowie als lokale Dev-Umgebung via `scripts/start-dev.sh`
 
 ## Technische Eckdaten
